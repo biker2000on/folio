@@ -1,4 +1,9 @@
-# beez-trackz Sync
+# Atlas Sync (formerly beez-trackz)
+
+> beez-trackz is now **Atlas**. In the app this is Settings → Atlas
+> (`/settings/integrations/atlas`), which shows sync status, this book's
+> tokens and setup steps. The wire contract below is unchanged: routes stay
+> under `/api/integrations/beez/*` and links keep the `beez-trackz` source.
 
 Two-way transaction sync between folio and a [beez-trackz](https://github.com/)
 hive-management install, over `/api/integrations/beez/*`.

@@ -34,6 +34,8 @@ interface Endpoint {
 
 interface EndpointGroup {
     title: string;
+    /** Fragment id, for deep links from other pages. */
+    anchor?: string;
     blurb?: string;
     endpoints: Endpoint[];
 }
@@ -270,9 +272,11 @@ const GROUPS: EndpointGroup[] = [
         ],
     },
     {
-        title: 'beez-trackz Sync',
+        title: 'Atlas Sync',
+        anchor: 'atlas-sync',
         blurb:
-            'Two-way sync for a beez-trackz hive-management install. Amounts are integer cents in the '
+            'Two-way sync for an Atlas (formerly beez-trackz) hive-management install; status and setup '
+            + 'are under Settings → Atlas. The routes keep their original /beez/ path. Amounts are integer cents in the '
             + "book's base currency and every split set must sum to exactly zero. Each record is addressed "
             + 'by the id beez already uses for it, so a repeated create is answered from the existing link '
             + 'instead of posting a second ledger entry. All writes accept an optional Idempotency-Key header.',
@@ -469,7 +473,7 @@ export default function ApiDocsPage() {
             </section>
 
             {GROUPS.map(group => (
-                <section key={group.title} className="space-y-3">
+                <section key={group.title} id={group.anchor} className="scroll-mt-20 space-y-3">
                     <h2 className="text-lg font-semibold text-foreground">{group.title}</h2>
                     {group.blurb && <p className="text-sm text-foreground-secondary">{group.blurb}</p>}
                     <div className="space-y-3">
