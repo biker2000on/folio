@@ -778,7 +778,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
     return (
         <FeedbackProvider>
-        <div className="flex h-screen bg-background text-foreground font-sans">
+        <div data-feedback-root className="flex h-screen bg-background text-foreground font-sans">
             <GlobalShortcuts />
             <KeyboardShortcutHelp />
             {/* ============================================================= */}
@@ -1037,7 +1037,7 @@ export default function Layout({ children }: { children: ReactNode }) {
                     </div>
                 </div>
 
-                <div data-feedback-capture className={`p-4 md:p-8 ${isFullWidthPage ? '' : 'max-w-6xl mx-auto'}`}>
+                <div className={`p-4 md:p-8 ${isFullWidthPage ? '' : 'max-w-6xl mx-auto'}`}>
                     {children}
                 </div>
             </main>
