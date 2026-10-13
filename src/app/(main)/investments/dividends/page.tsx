@@ -136,7 +136,7 @@ export default function DividendsPage() {
                     cta="Payment calendar"
                 />
                 <KpiCard
-                    className={showYear ? '' : 'col-span-2 sm:col-span-1'}
+                    className={showYear ? 'col-span-2 lg:col-span-1' : ''}
                     label="Portfolio Yield"
                     value={data.portfolioYield != null ? `${data.portfolioYield.toFixed(2)}%` : '—'}
                     tone="positive"
