@@ -218,7 +218,7 @@ export default function IncomeStatementByPeriodPage() {
                     <table className="w-full text-sm">
                         <thead className="sticky top-0 bg-background-tertiary/80 backdrop-blur-sm z-10">
                             <tr className="border-b border-border">
-                                <th className="text-left px-4 py-3 text-xs uppercase tracking-wider text-foreground-muted font-medium sticky left-0 bg-background-tertiary/80 min-w-[220px]">
+                                <th className="text-left px-4 py-3 text-xs uppercase tracking-wider text-foreground-muted font-medium sticky left-0 z-[1] shadow-[1px_0_0_var(--border)] bg-background-tertiary min-w-[140px] sm:min-w-[220px]">
                                     Account
                                 </th>
                                 {reportData.periods.map(p => (
@@ -253,7 +253,7 @@ export default function IncomeStatementByPeriodPage() {
                             ))}
                             {/* Net income row */}
                             <tr className="border-t-2 border-border-hover bg-background-tertiary/60 font-bold">
-                                <td className="px-4 py-3 text-foreground">Net Income</td>
+                                <td className="px-4 py-3 text-foreground sticky left-0 z-[1] shadow-[1px_0_0_var(--border)] bg-background-tertiary">Net Income</td>
                                 {reportData.netByPeriod.map((v, i) => (
                                     <td
                                         key={i}
@@ -332,7 +332,7 @@ function PeriodicSectionRows({
                 const depth = row.depth ?? 0;
                 return (
                     <tr key={row.guid} className="hover:bg-surface-hover/30 transition-colors border-b border-border/30">
-                        <td className="px-4 py-1.5 sticky left-0 bg-background" style={{ paddingLeft: `${16 + depth * 18}px` }}>
+                        <td className="px-4 py-1.5 sticky left-0 z-[1] shadow-[1px_0_0_var(--border)] bg-background" style={{ paddingLeft: `${16 + depth * 18}px` }}>
                             <div className="flex items-center gap-1.5">
                                 {hasChildren ? (
                                     <button
@@ -420,7 +420,7 @@ function PeriodicSectionRows({
             })}
             {/* Section total */}
             <tr className="bg-background-tertiary/30 border-t border-border font-medium">
-                <td className="px-4 py-2 text-foreground sticky left-0 bg-background-tertiary/30">
+                <td className="px-4 py-2 text-foreground sticky left-0 z-[1] shadow-[1px_0_0_var(--border)] bg-background-tertiary">
                     Total {title}
                 </td>
                 {totals.map((v, i) => (
