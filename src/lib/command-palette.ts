@@ -30,6 +30,7 @@ const ACTIONS: PaletteCommand[] = [
     { id: 'act-switch-account', title: 'Jump to Account…', group: 'action', event: 'open-account-switcher', keywords: 'quick switcher find', shortcut: 'Ctrl+P' },
     { id: 'act-shortcuts', title: 'Keyboard Shortcuts Help', group: 'action', event: 'open-shortcut-help', keywords: 'keys bindings hotkeys', shortcut: '?' },
     { id: 'act-edit-mode', title: 'Enter Edit Mode', group: 'action', event: 'enter-edit-mode', keywords: 'bulk select', shortcut: 'e' },
+    { id: 'act-feedback', title: 'Send Feedback', group: 'action', event: 'open-feedback', keywords: 'bug report idea problem screenshot', shortcut: 'Shift+F' },
 ];
 
 const HELP_COMMANDS: PaletteCommand[] = [

@@ -68,6 +68,12 @@ function matchShortcutKey(event: KeyboardEvent, key: string): boolean {
     return event.altKey && event.key.toLowerCase() === targetKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
   }
 
+  // Handle Shift+<letter> shortcuts (e.g., Shift+F)
+  if (key.startsWith('Shift+')) {
+    const targetKey = key.slice(6).toLowerCase()
+    return event.shiftKey && event.key.toLowerCase() === targetKey && !event.ctrlKey && !event.metaKey && !event.altKey
+  }
+
   // Handle plain single keys
   return event.key === key && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey
 }

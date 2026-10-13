@@ -11,6 +11,7 @@ import { DataEventsProvider } from '@/components/DataEventsProvider';
 import BookSwitcher from './BookSwitcher';
 import { KeyboardShortcutHelp } from './KeyboardShortcutHelp';
 import { GlobalShortcuts } from './GlobalShortcuts';
+import { FeedbackButton, FeedbackProvider } from './feedback/FeedbackProvider';
 import { ContextualHelpLink } from './docs/ContextualHelpLink';
 import { BrandLockup } from '@/components/brand/BrandLockup';
 import { FEATURES, featureById, type FeatureDomain } from '@/lib/feature-registry';
@@ -776,6 +777,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     }
 
     return (
+        <FeedbackProvider>
         <div className="flex h-screen bg-background text-foreground font-sans">
             <GlobalShortcuts />
             <KeyboardShortcutHelp />
@@ -1027,6 +1029,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
                         <div className="flex items-center gap-2">
                             <ContextualHelpLink />
+                            <FeedbackButton />
                             <NotificationBell />
                             <DataEventsProvider />
                             <UserMenu />
@@ -1034,10 +1037,11 @@ export default function Layout({ children }: { children: ReactNode }) {
                     </div>
                 </div>
 
-                <div className={`p-4 md:p-8 ${isFullWidthPage ? '' : 'max-w-6xl mx-auto'}`}>
+                <div data-feedback-capture className={`p-4 md:p-8 ${isFullWidthPage ? '' : 'max-w-6xl mx-auto'}`}>
                     {children}
                 </div>
             </main>
         </div>
+        </FeedbackProvider>
     );
 }

@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { FeedbackIcon, useFeedback } from './feedback/FeedbackProvider';
 
 interface User {
     id: number;
@@ -15,6 +16,7 @@ export function UserMenu() {
     const [loading, setLoading] = useState(true);
     const [isOpen, setIsOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
+    const feedback = useFeedback();
 
     // Fetch current user
     useEffect(() => {
@@ -106,6 +108,34 @@ export function UserMenu() {
                             </svg>
                             Profile Settings
                         </Link>
+                        {feedback && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setIsOpen(false);
+                                    feedback.openFeedback();
+                                }}
+                                className="w-full px-4 py-2 text-left text-sm text-foreground-secondary hover:bg-surface-hover transition-colors flex items-center gap-2"
+                            >
+                                <FeedbackIcon className="w-4 h-4" />
+                                Send Feedback
+                            </button>
+                        )}
+                        {feedback?.isAdmin && (
+                            <Link
+                                href="/admin/feedback"
+                                onClick={() => setIsOpen(false)}
+                                className="w-full px-4 py-2 text-left text-sm text-foreground-secondary hover:bg-surface-hover transition-colors flex items-center gap-2"
+                            >
+                                <FeedbackIcon className="w-4 h-4 text-primary" />
+                                <span className="flex-1">Feedback Inbox</span>
+                                {feedback.newCount > 0 && (
+                                    <span className="rounded-md bg-primary-light px-1.5 text-[10px] font-semibold text-primary">
+                                        {feedback.newCount}
+                                    </span>
+                                )}
+                            </Link>
+                        )}
                         <button
                             onClick={handleLogout}
                             className="w-full px-4 py-2 text-left text-sm text-foreground-secondary hover:bg-surface-hover transition-colors flex items-center gap-2"
