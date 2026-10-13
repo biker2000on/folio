@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import { formatCurrency } from '@/lib/format';
 import { ExpandedContext } from '@/components/charts/ExpandableChart';
+import { ALLOCATION_COLORS, CHART_THEME } from '@/components/investments/ui';
 
 interface SectorExposure {
   sector: string;
@@ -23,30 +24,14 @@ interface IndustryExposureChartProps {
   data: SectorExposure[];
 }
 
-const SECTOR_COLORS = [
-  '#06b6d4', // cyan
-  '#10b981', // emerald
-  '#a855f7', // purple
-  '#f59e0b', // amber
-  '#f43f5e', // rose
-  '#3b82f6', // blue
-  '#84cc16', // lime
-  '#ec4899', // pink
-  '#14b8a6', // teal
-  '#f97316', // orange
-  '#8b5cf6', // violet
-  '#22d3ee', // light cyan
-];
+const SECTOR_COLORS = ALLOCATION_COLORS;
 
 export function IndustryExposureChart({ data }: IndustryExposureChartProps) {
   const expanded = useContext(ExpandedContext);
 
   if (!data || data.length === 0) {
     return (
-      <div className="bg-background-secondary rounded-lg p-6 border border-border h-full">
-        <h3 className="text-lg font-semibold text-foreground mb-4">Sector Exposure</h3>
-        <p className="text-foreground-muted">No sector data available</p>
-      </div>
+      <p className="py-10 text-center text-sm text-foreground-muted">No sector data available</p>
     );
   }
 
@@ -58,8 +43,7 @@ export function IndustryExposureChart({ data }: IndustryExposureChartProps) {
     : Math.max(250, sorted.length * 32);
 
   return (
-    <div className="bg-background-secondary rounded-lg p-6 border border-border h-full">
-      <h3 className="text-lg font-semibold text-foreground mb-4">Sector Exposure</h3>
+    <div className={expanded ? 'h-full' : ''}>
       <ResponsiveContainer width="100%" height={expanded ? '100%' : chartHeight}>
         <BarChart
           data={sorted}
@@ -69,26 +53,23 @@ export function IndustryExposureChart({ data }: IndustryExposureChartProps) {
           <XAxis
             type="number"
             tickFormatter={(v) => `${v.toFixed(0)}%`}
-            tick={{ fill: '#a3a3a3', fontSize: 12 }}
-            axisLine={{ stroke: '#404040' }}
-            tickLine={{ stroke: '#404040' }}
+            tick={CHART_THEME.tick}
+            axisLine={{ stroke: CHART_THEME.axis }}
+            tickLine={{ stroke: CHART_THEME.axis }}
           />
           <YAxis
             type="category"
             dataKey="sector"
-            width={expanded ? 140 : 100}
-            tick={{ fill: '#d4d4d4', fontSize: expanded ? 13 : 11 }}
+            width={expanded ? 160 : 130}
+            tick={{ ...CHART_THEME.tickStrong, fontSize: expanded ? 13 : 12 }}
             axisLine={false}
             tickLine={false}
           />
           <Tooltip
-            contentStyle={{
-              backgroundColor: '#f5f5f5',
-              border: '1px solid #d4d4d4',
-              borderRadius: '8px',
-              color: '#262626',
-            }}
-            labelStyle={{ color: '#262626', fontWeight: 600 }}
+            contentStyle={CHART_THEME.tooltip.contentStyle}
+            labelStyle={CHART_THEME.tooltip.labelStyle}
+            itemStyle={CHART_THEME.tooltip.itemStyle}
+            cursor={{ fill: 'var(--surface-hover)' }}
             formatter={(value, _name, entry) => {
               const numValue = typeof value === 'number' ? value : 0;
               const payload = (entry as { payload: SectorExposure }).payload;

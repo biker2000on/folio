@@ -1,14 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatCurrency } from '@/lib/format';
 import { useIsMobile } from '@/lib/hooks/useIsMobile';
-import { MobileCard } from '@/components/ui/MobileCard';
 import {
   CostBasisCoverageMark,
   CoveredSliceNote,
-  gainHeading,
   ShortPositionMark,
   ShortBasisNote,
   BASIS_CONSEQUENCE,
@@ -61,7 +59,7 @@ function GainAmount({ value, coverage }: { value: number; coverage: CostBasisCov
     <>
       {formatCurrency(value)}
       <CostBasisCoverageMark coverage={coverage} consequence={BASIS_CONSEQUENCE} />
-      <CoveredSliceNote coverage={coverage} />
+      <CoveredSliceNote coverage={coverage} className="ml-auto max-w-[10rem] font-sans text-[11px] leading-snug" />
     </>
   );
 }
@@ -129,20 +127,146 @@ interface HoldingsTableProps {
 type SortKey = 'symbol' | 'shares' | 'costBasis' | 'marketValue' | 'gainLoss' | 'gainLossPercent';
 type SortDir = 'asc' | 'desc';
 
-function SortHeader({ label, sortKeyName, sortKey, sortDir, onSort }: {
+const TNUM = { fontFeatureSettings: "'tnum'" } as const;
+/** Numeric cell: right-aligned JetBrains Mono, tabular figures (DESIGN.md). */
+// No nowrap: a cell may carry an always-visible coverage note under the number,
+// which must wrap rather than widen the column. Amounts contain no spaces.
+const NUM = 'px-4 py-3 text-right font-mono text-[13px]';
+const NUM_SUB = 'px-4 py-2 text-right font-mono text-xs';
+const signClass = (v: number) => (v >= 0 ? 'text-positive' : 'text-negative');
+
+function SortHeader({ label, sortKeyName, sortKey, sortDir, onSort, align = 'right', wide = false }: {
   label: string;
   sortKeyName: SortKey;
   sortKey: SortKey;
   sortDir: SortDir;
   onSort: (key: SortKey) => void;
+  align?: 'left' | 'right';
+  /** Takes the table's slack so numeric columns hug their content. */
+  wide?: boolean;
 }) {
+  const active = sortKey === sortKeyName;
   return (
     <th
-      onClick={() => onSort(sortKeyName)}
-      className="px-4 py-3 text-left text-sm font-medium text-foreground-secondary cursor-pointer hover:text-foreground"
+      aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className={`px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider whitespace-nowrap ${align === 'right' ? 'text-right' : 'text-left'} ${wide ? 'w-[38%]' : ''}`}
     >
-      {label} {sortKey === sortKeyName && (sortDir === 'asc' ? '\u2191' : '\u2193')}
+      <button
+        type="button"
+        onClick={() => onSort(sortKeyName)}
+        className={`inline-flex items-center gap-1 uppercase tracking-wider transition-colors hover:text-foreground ${
+          active ? 'text-foreground' : 'text-foreground-muted'
+        }`}
+      >
+        {label}
+        <span aria-hidden="true" className={`w-2 ${active ? '' : 'opacity-0'}`}>
+          {sortDir === 'asc' ? '\u2191' : '\u2193'}
+        </span>
+      </button>
     </th>
+  );
+}
+
+/** Shared header for both table variants: title, position count, closed toggle. */
+function HoldingsHeader({ count, showZeroShares, onToggle }: { count: number; showZeroShares: boolean; onToggle: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-sm font-semibold text-foreground">Holdings</h2>
+        <span className="font-mono text-xs text-foreground-muted" style={TNUM}>{count} {count === 1 ? 'position' : 'positions'}</span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={showZeroShares}
+        onClick={onToggle}
+        className="inline-flex items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-foreground-secondary transition-colors hover:bg-surface-hover hover:text-foreground"
+      >
+        <span
+          aria-hidden="true"
+          className={`relative h-4 w-7 rounded-full border transition-colors ${showZeroShares ? 'border-primary bg-primary' : 'border-border-hover bg-background-tertiary'}`}
+        >
+          <span className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-surface transition-all ${showZeroShares ? 'left-3.5' : 'left-0.5'}`} />
+        </span>
+        Show closed positions
+      </button>
+    </div>
+  );
+}
+
+const TABLE_SHELL = 'rounded-lg border border-border bg-surface overflow-hidden scroll-mt-6';
+
+const formatShares = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+
+/**
+ * Phone row: name on the left, value and gain on the right, shares/price/basis
+ * on a mono detail line. Every number the desktop row shows is still here.
+ */
+function MobileHoldingRow({
+  title,
+  badge,
+  subtitle,
+  detail,
+  marketValue,
+  gain,
+  gainPercent,
+  gainSign,
+  onClick,
+  expandable = false,
+  expanded = false,
+  nested = false,
+}: {
+  title: ReactNode;
+  badge?: ReactNode;
+  subtitle?: ReactNode;
+  detail: ReactNode;
+  marketValue: number;
+  gain: ReactNode;
+  gainPercent: ReactNode;
+  gainSign: number;
+  onClick?: () => void;
+  expandable?: boolean;
+  expanded?: boolean;
+  nested?: boolean;
+}) {
+  return (
+    <div
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      aria-expanded={expandable ? expanded : undefined}
+      onClick={onClick}
+      onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
+      className={`flex gap-3 border-b border-border/70 px-4 py-3 last:border-b-0 ${onClick ? 'cursor-pointer active:bg-surface-hover' : ''} ${
+        nested ? 'bg-background-secondary/40 pl-9' : ''
+      }`}
+    >
+      <div className="w-3 shrink-0 pt-1">
+        {expandable && (
+          <svg
+            className={`h-3 w-3 text-foreground-muted transition-transform ${expanded ? 'rotate-90' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+          </svg>
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className={nested ? 'truncate text-xs text-foreground-secondary' : 'font-semibold text-foreground'}>{title}</span>
+          {badge}
+        </div>
+        {subtitle && <div className="truncate text-xs text-foreground-muted">{subtitle}</div>}
+        <div className="mt-1 font-mono text-[11px] text-foreground-muted" style={TNUM}>{detail}</div>
+      </div>
+      <div className="shrink-0 text-right font-mono" style={TNUM}>
+        <div className={`text-sm font-medium ${nested ? 'text-foreground-secondary' : 'text-foreground'}`}>{formatCurrency(marketValue)}</div>
+        <div className={`text-xs ${signClass(gainSign)}`}>{gain}</div>
+        <div className={`text-xs ${signClass(gainSign)}`}>{gainPercent}</div>
+      </div>
+    </div>
   );
 }
 
@@ -189,10 +313,12 @@ export function HoldingsTable({ holdings, consolidatedHoldings }: HoldingsTableP
 
   if (!holdings || holdings.length === 0) {
     return (
-      <div className="bg-background-secondary rounded-lg p-6 border border-border">
-        <h3 className="text-lg font-semibold text-foreground mb-4">Holdings</h3>
-        <p className="text-foreground-muted">No holdings found</p>
-      </div>
+      <section id="holdings" className={TABLE_SHELL}>
+        <div className="border-b border-border px-4 py-3 sm:px-5">
+          <h2 className="text-sm font-semibold text-foreground">Holdings</h2>
+        </div>
+        <p className="px-5 py-10 text-center text-sm text-foreground-muted">No holdings found</p>
+      </section>
     );
   }
 
@@ -213,20 +339,8 @@ export function HoldingsTable({ holdings, consolidatedHoldings }: HoldingsTableP
     });
 
     return (
-      <div className="bg-background-secondary rounded-lg border border-border overflow-hidden">
-        <div className="p-4 border-b border-border flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-foreground">Holdings</h3>
-          <button
-            onClick={() => setShowZeroShares(!showZeroShares)}
-            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              showZeroShares
-                ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                : 'bg-background-tertiary text-foreground-secondary hover:bg-background-tertiary/80'
-            }`}
-          >
-            {showZeroShares ? 'Hide' : 'Show'} Closed Positions
-          </button>
-        </div>
+      <section id="holdings" className={TABLE_SHELL}>
+        <HoldingsHeader count={sorted.length} showZeroShares={showZeroShares} onToggle={() => setShowZeroShares(!showZeroShares)} />
         {isMobile ? (
           <div>
             {sorted.map((holding) => {
@@ -235,79 +349,35 @@ export function HoldingsTable({ holdings, consolidatedHoldings }: HoldingsTableP
 
               return (
                 <div key={holding.commodityGuid}>
-                  {/* Section header for expandable commodities */}
-                  {isMultiAccount && (
-                    <div
-                      onClick={() => toggleExpanded(holding.commodityGuid)}
-                      className="flex items-center gap-2 px-4 py-2 bg-background-tertiary/30 cursor-pointer"
-                    >
-                      <svg
-                        className={`w-4 h-4 text-foreground-secondary transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                      <span className="font-medium text-foreground">{holding.symbol}</span>
-                      <span className="text-sm text-foreground-muted">{holding.fullname}</span>
-                    </div>
-                  )}
-                  <MobileCard
-                    onClick={isMultiAccount ? undefined : () => router.push(`/accounts/${holding.accounts[0].accountGuid}`)}
-                    fields={[
-                      { label: 'Symbol', value: holding.symbol },
-                      { label: 'Full Name', value: holding.fullname },
-                      { label: 'Shares', value: holding.totalShares.toLocaleString(undefined, { maximumFractionDigits: 4 }) },
-                      { label: 'Price', value: formatCurrency(holding.latestPrice) },
-                      { label: 'Market Value', value: formatCurrency(holding.totalMarketValue) },
-                      { label: 'Cost Basis', value: <CostBasis value={holding.totalCostBasis} coverage={holding.totalCostBasisCoverage} positionSide={holding.totalPositionSide} /> },
-                      {
-                        label: gainHeading(holding.totalCostBasisCoverage),
-                        value: (
-                          <span className={holding.totalGainLoss >= 0 ? 'text-positive' : 'text-error'}>
-                            <GainAmount value={holding.totalGainLoss} coverage={holding.totalCostBasisCoverage} />
-                          </span>
-                        ),
-                      },
-                      {
-                        label: 'Gain %',
-                        value: (
-                          <span className={holding.totalGainLossPercent >= 0 ? 'text-positive' : 'text-error'}>
-                            <GainPercent value={holding.totalGainLossPercent} coverage={holding.totalCostBasisCoverage} />
-                          </span>
-                        ),
-                      },
-                    ]}
+                  <MobileHoldingRow
+                    title={holding.symbol}
+                    badge={isMultiAccount ? (
+                      <span className="rounded-sm bg-background-tertiary px-1.5 py-px text-[10px] font-medium text-foreground-muted">
+                        {holding.accounts.length} accounts
+                      </span>
+                    ) : undefined}
+                    subtitle={holding.fullname}
+                    detail={<>{formatShares(holding.totalShares)} sh @ {formatCurrency(holding.latestPrice)} · basis <CostBasis value={holding.totalCostBasis} coverage={holding.totalCostBasisCoverage} positionSide={holding.totalPositionSide} /></>}
+                    marketValue={holding.totalMarketValue}
+                    gain={<GainAmount value={holding.totalGainLoss} coverage={holding.totalCostBasisCoverage} />}
+                    gainPercent={<GainPercent value={holding.totalGainLossPercent} coverage={holding.totalCostBasisCoverage} />}
+                    gainSign={holding.totalGainLoss}
+                    expandable={isMultiAccount}
+                    expanded={isExpanded}
+                    onClick={isMultiAccount ? () => toggleExpanded(holding.commodityGuid) : () => router.push(`/accounts/${holding.accounts[0].accountGuid}`)}
                   />
                   {/* Expanded sub-accounts */}
                   {isMultiAccount && isExpanded && holding.accounts.map((account) => (
-                    <MobileCard
+                    <MobileHoldingRow
                       key={account.accountGuid}
+                      nested
+                      title={stripRoot(account.accountPath)}
+                      detail={<>{formatShares(account.shares)} sh · basis <CostBasis value={account.costBasis} coverage={account.costBasisCoverage} positionSide={account.positionSide} /></>}
+                      marketValue={account.marketValue}
+                      gain={<GainAmount value={account.gainLoss} coverage={account.costBasisCoverage} />}
+                      gainPercent={<GainPercent value={account.gainLossPercent} coverage={account.costBasisCoverage} />}
+                      gainSign={account.gainLoss}
                       onClick={() => router.push(`/accounts/${account.accountGuid}`)}
-                      className="pl-8 bg-background-tertiary/20"
-                      fields={[
-                        { label: 'Account', value: stripRoot(account.accountPath) },
-                        { label: 'Shares', value: account.shares.toLocaleString(undefined, { maximumFractionDigits: 4 }) },
-                        { label: 'Market Value', value: formatCurrency(account.marketValue) },
-                        { label: 'Cost Basis', value: <CostBasis value={account.costBasis} coverage={account.costBasisCoverage} positionSide={account.positionSide} /> },
-                        {
-                          label: gainHeading(account.costBasisCoverage),
-                          value: (
-                            <span className={account.gainLoss >= 0 ? 'text-positive/70' : 'text-error/70'}>
-                              <GainAmount value={account.gainLoss} coverage={account.costBasisCoverage} />
-                            </span>
-                          ),
-                        },
-                        {
-                          label: 'Gain %',
-                          value: (
-                            <span className={account.gainLossPercent >= 0 ? 'text-positive/70' : 'text-error/70'}>
-                              <GainPercent value={account.gainLossPercent} coverage={account.costBasisCoverage} />
-                            </span>
-                          ),
-                        },
-                      ]}
                     />
                   ))}
                 </div>
@@ -316,19 +386,20 @@ export function HoldingsTable({ holdings, consolidatedHoldings }: HoldingsTableP
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-background-tertiary/50">
+            <table className="w-full text-sm">
+              <thead className="border-b border-border bg-background-secondary/60">
                 <tr>
-                  <th className="w-8 px-2 py-3"></th>
-                  <SortHeader label="Symbol" sortKeyName="symbol" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                  <th className="w-8 px-2 py-2.5"><span className="sr-only">Expand</span></th>
+                  <SortHeader label="Symbol" sortKeyName="symbol" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="left" wide />
                   <SortHeader label="Shares" sortKeyName="shares" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                  <th className="whitespace-nowrap px-4 py-2.5 text-right text-[11px] font-medium uppercase tracking-wider text-foreground-muted">Price</th>
                   <SortHeader label="Cost Basis" sortKeyName="costBasis" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <SortHeader label="Market Value" sortKeyName="marketValue" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <SortHeader label="Gain/Loss" sortKeyName="gainLoss" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <SortHeader label="Gain %" sortKeyName="gainLossPercent" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border">
+              <tbody className="divide-y divide-border/70">
                 {sorted.map((holding) => {
                   const isMultiAccount = holding.accounts.length > 1;
                   const isExpanded = expandedCommodities.has(holding.commodityGuid);
@@ -348,7 +419,7 @@ export function HoldingsTable({ holdings, consolidatedHoldings }: HoldingsTableP
             </table>
           </div>
         )}
-      </div>
+      </section>
     );
   }
 
@@ -366,58 +437,30 @@ export function HoldingsTable({ holdings, consolidatedHoldings }: HoldingsTableP
   });
 
   return (
-    <div className="bg-background-secondary rounded-lg border border-border overflow-hidden">
-      <div className="p-4 border-b border-border flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-foreground">Holdings</h3>
-        <button
-          onClick={() => setShowZeroShares(!showZeroShares)}
-          className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-            showZeroShares
-              ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-              : 'bg-background-tertiary text-foreground-secondary hover:bg-background-tertiary/80'
-          }`}
-        >
-          {showZeroShares ? 'Hide' : 'Show'} Closed Positions
-        </button>
-      </div>
+    <section id="holdings" className={TABLE_SHELL}>
+      <HoldingsHeader count={sortedHoldings.length} showZeroShares={showZeroShares} onToggle={() => setShowZeroShares(!showZeroShares)} />
       {isMobile ? (
         <div>
           {sortedHoldings.map((holding) => (
-            <MobileCard
+            <MobileHoldingRow
               key={holding.accountGuid}
+              title={holding.symbol}
+              subtitle={holding.accountName}
+              detail={<>{holding.isCash ? 'Cash' : `${formatShares(holding.shares)} sh`} · basis <CostBasis value={holding.costBasis} coverage={holding.costBasisCoverage} positionSide={holding.positionSide} /></>}
+              marketValue={holding.marketValue}
+              gain={<GainAmount value={holding.gainLoss} coverage={holding.costBasisCoverage} />}
+              gainPercent={<GainPercent value={holding.gainLossPercent} coverage={holding.costBasisCoverage} />}
+              gainSign={holding.gainLoss}
               onClick={holding.disableNavigation ? undefined : () => router.push(`/accounts/${holding.accountGuid}`)}
-              fields={[
-                { label: 'Symbol', value: <><span className="font-medium">{holding.symbol}</span> <span className="text-foreground-muted">{holding.accountName}</span></> },
-                { label: 'Full Name', value: holding.accountName },
-                { label: 'Shares', value: holding.isCash ? 'Cash' : holding.shares.toLocaleString(undefined, { maximumFractionDigits: 4 }) },
-                { label: 'Market Value', value: formatCurrency(holding.marketValue) },
-                { label: 'Cost Basis', value: <CostBasis value={holding.costBasis} coverage={holding.costBasisCoverage} positionSide={holding.positionSide} /> },
-                {
-                  label: gainHeading(holding.costBasisCoverage),
-                  value: (
-                    <span className={holding.gainLoss >= 0 ? 'text-positive' : 'text-error'}>
-                      <GainAmount value={holding.gainLoss} coverage={holding.costBasisCoverage} />
-                    </span>
-                  ),
-                },
-                {
-                  label: 'Gain %',
-                  value: (
-                    <span className={holding.gainLossPercent >= 0 ? 'text-positive' : 'text-error'}>
-                      <GainPercent value={holding.gainLossPercent} coverage={holding.costBasisCoverage} />
-                    </span>
-                  ),
-                },
-              ]}
             />
           ))}
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-background-tertiary/50">
+          <table className="w-full text-sm">
+            <thead className="border-b border-border bg-background-secondary/60">
               <tr>
-                <SortHeader label="Symbol" sortKeyName="symbol" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortHeader label="Symbol" sortKeyName="symbol" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="left" wide />
                 <SortHeader label="Shares" sortKeyName="shares" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <SortHeader label="Cost Basis" sortKeyName="costBasis" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <SortHeader label="Market Value" sortKeyName="marketValue" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
@@ -425,28 +468,28 @@ export function HoldingsTable({ holdings, consolidatedHoldings }: HoldingsTableP
                 <SortHeader label="Gain %" sortKeyName="gainLossPercent" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
               </tr>
             </thead>
-            <tbody className="divide-y divide-border">
+            <tbody className="divide-y divide-border/70">
               {sortedHoldings.map((holding) => (
                 <tr
                   key={holding.accountGuid}
                   onClick={holding.disableNavigation ? undefined : () => router.push(`/accounts/${holding.accountGuid}`)}
-                  className={`transition-colors ${holding.disableNavigation ? '' : 'hover:bg-surface-hover/50 cursor-pointer'}`}
+                  className={`transition-colors ${holding.disableNavigation ? '' : 'hover:bg-surface-hover/60 cursor-pointer'}`}
                 >
                   <td className="px-4 py-3">
-                    <Tip content={holding.accountPath ? stripRoot(holding.accountPath) : undefined}><div className="font-medium text-foreground">{holding.symbol}</div></Tip>
-                    <div className="text-sm text-foreground-muted">{holding.accountName}</div>
+                    <Tip content={holding.accountPath ? stripRoot(holding.accountPath) : undefined}><div className="w-fit font-semibold text-foreground">{holding.symbol}</div></Tip>
+                    <div className="max-w-[28rem] truncate text-xs text-foreground-muted">{holding.accountName}</div>
                   </td>
-                  <td className="px-4 py-3 text-foreground-secondary">
+                  <td className={`${NUM} text-foreground-secondary`} style={TNUM}>
                     {holding.isCash ? '\u2014' : holding.shares.toLocaleString(undefined, { maximumFractionDigits: 4 })}
                   </td>
-                  <td className="px-4 py-3 text-foreground-secondary">
+                  <td className={`${NUM} text-foreground-secondary`} style={TNUM}>
                     <CostBasis value={holding.costBasis} coverage={holding.costBasisCoverage} positionSide={holding.positionSide} />
                   </td>
-                  <td className="px-4 py-3 text-foreground-secondary">{formatCurrency(holding.marketValue)}</td>
-                  <td className={`px-4 py-3 ${holding.gainLoss >= 0 ? 'text-positive' : 'text-error'}`}>
+                  <td className={`${NUM} font-medium text-foreground`} style={TNUM}>{formatCurrency(holding.marketValue)}</td>
+                  <td className={`${NUM} ${signClass(holding.gainLoss)}`} style={TNUM}>
                     <GainAmount value={holding.gainLoss} coverage={holding.costBasisCoverage} />
                   </td>
-                  <td className={`px-4 py-3 ${holding.gainLossPercent >= 0 ? 'text-positive' : 'text-error'}`}>
+                  <td className={`${NUM} ${signClass(holding.gainLossPercent)}`} style={TNUM}>
                     <GainPercent value={holding.gainLossPercent} coverage={holding.costBasisCoverage} />
                   </td>
                 </tr>
@@ -455,7 +498,7 @@ export function HoldingsTable({ holdings, consolidatedHoldings }: HoldingsTableP
           </table>
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -480,35 +523,44 @@ function ConsolidatedRow({
       {/* Main consolidated row */}
       <tr
         onClick={isMultiAccount ? onToggle : () => onNavigate(holding.accounts[0].accountGuid)}
-        className="hover:bg-surface-hover/50 cursor-pointer transition-colors"
+        className="cursor-pointer transition-colors hover:bg-surface-hover/60"
       >
-        <td className="px-2 py-3 text-center">
+        <td className="px-2 py-3 text-center align-middle">
           {isMultiAccount && (
             <svg
-              className={`w-4 h-4 text-foreground-secondary transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+              className={`mx-auto w-4 h-4 text-foreground-muted transition-transform ${isExpanded ? 'rotate-90' : ''}`}
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
+              aria-hidden="true"
             >
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
           )}
         </td>
         <td className="px-4 py-3">
-          <div className="font-medium text-foreground">{holding.symbol}</div>
-          <div className="text-sm text-foreground-muted">{holding.fullname}</div>
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-foreground">{holding.symbol}</span>
+            {isMultiAccount && (
+              <span className="rounded-sm bg-background-tertiary px-1.5 py-px text-[10px] font-medium text-foreground-muted">
+                {holding.accounts.length} accounts
+              </span>
+            )}
+          </div>
+          <div className="max-w-[28rem] truncate text-xs text-foreground-muted">{holding.fullname}</div>
         </td>
-        <td className="px-4 py-3 text-foreground-secondary">
+        <td className={`${NUM} text-foreground-secondary`} style={TNUM}>
           {holding.totalShares.toLocaleString(undefined, { maximumFractionDigits: 4 })}
         </td>
-        <td className="px-4 py-3 text-foreground-secondary">
+        <td className={`${NUM} text-foreground-secondary`} style={TNUM}>{formatCurrency(holding.latestPrice)}</td>
+        <td className={`${NUM} text-foreground-secondary`} style={TNUM}>
           <CostBasis value={holding.totalCostBasis} coverage={holding.totalCostBasisCoverage} positionSide={holding.totalPositionSide} />
         </td>
-        <td className="px-4 py-3 text-foreground-secondary">{formatCurrency(holding.totalMarketValue)}</td>
-        <td className={`px-4 py-3 ${holding.totalGainLoss >= 0 ? 'text-positive' : 'text-error'}`}>
+        <td className={`${NUM} font-medium text-foreground`} style={TNUM}>{formatCurrency(holding.totalMarketValue)}</td>
+        <td className={`${NUM} ${signClass(holding.totalGainLoss)}`} style={TNUM}>
           <GainAmount value={holding.totalGainLoss} coverage={holding.totalCostBasisCoverage} />
         </td>
-        <td className={`px-4 py-3 ${holding.totalGainLossPercent >= 0 ? 'text-positive' : 'text-error'}`}>
+        <td className={`${NUM} ${signClass(holding.totalGainLossPercent)}`} style={TNUM}>
           <GainPercent value={holding.totalGainLossPercent} coverage={holding.totalCostBasisCoverage} />
         </td>
       </tr>
@@ -518,23 +570,24 @@ function ConsolidatedRow({
         <tr
           key={account.accountGuid}
           onClick={() => onNavigate(account.accountGuid)}
-          className="hover:bg-surface-hover/30 cursor-pointer transition-colors bg-background-tertiary/20"
+          className="cursor-pointer bg-background-secondary/40 transition-colors hover:bg-surface-hover/50"
         >
           <td className="px-2 py-2"></td>
-          <td className="px-4 py-2 pl-8">
-            <div className="text-sm text-foreground-secondary">{stripRoot(account.accountPath)}</div>
+          <td className="px-4 py-2 pl-6">
+            <div className="border-l-2 border-border pl-3 text-xs text-foreground-secondary">{stripRoot(account.accountPath)}</div>
           </td>
-          <td className="px-4 py-2 text-sm text-foreground-muted">
+          <td className={`${NUM_SUB} text-foreground-muted`} style={TNUM}>
             {account.shares.toLocaleString(undefined, { maximumFractionDigits: 4 })}
           </td>
-          <td className="px-4 py-2 text-sm text-foreground-muted">
+          <td className="px-4 py-2"></td>
+          <td className={`${NUM_SUB} text-foreground-muted`} style={TNUM}>
             <CostBasis value={account.costBasis} coverage={account.costBasisCoverage} positionSide={account.positionSide} />
           </td>
-          <td className="px-4 py-2 text-sm text-foreground-muted">{formatCurrency(account.marketValue)}</td>
-          <td className={`px-4 py-2 text-sm ${account.gainLoss >= 0 ? 'text-positive/70' : 'text-error/70'}`}>
+          <td className={`${NUM_SUB} text-foreground-secondary`} style={TNUM}>{formatCurrency(account.marketValue)}</td>
+          <td className={`${NUM_SUB} ${account.gainLoss >= 0 ? 'text-positive/80' : 'text-negative/80'}`} style={TNUM}>
             <GainAmount value={account.gainLoss} coverage={account.costBasisCoverage} />
           </td>
-          <td className={`px-4 py-2 text-sm ${account.gainLossPercent >= 0 ? 'text-positive/70' : 'text-error/70'}`}>
+          <td className={`${NUM_SUB} ${account.gainLossPercent >= 0 ? 'text-positive/80' : 'text-negative/80'}`} style={TNUM}>
             <GainPercent value={account.gainLossPercent} coverage={account.costBasisCoverage} />
           </td>
         </tr>

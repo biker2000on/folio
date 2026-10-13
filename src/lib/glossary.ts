@@ -277,6 +277,22 @@ export const GLOSSARY: Record<string, GlossaryEntry> = {
         expansion: 'Restricted Stock Unit',
         gloss: 'Employer stock that vests over time; the value at vesting is taxed as wages.',
     },
+    TWR: {
+        expansion: 'Time-Weighted Return',
+        gloss: 'Growth of the investments themselves, with the timing and size of your deposits and withdrawals stripped out. The fair number to compare against an index.',
+    },
+    MWR: {
+        expansion: 'Money-Weighted Return',
+        gloss: 'Your personal rate of return, weighting each period by how much money you had invested then — so when you added or withdrew cash matters.',
+    },
+    YTM: {
+        expansion: 'Yield to Maturity',
+        gloss: 'The annualized return on a bond if bought at its price today and held to maturity, counting coupons and the gain or loss back to par.',
+    },
+    TTM: {
+        expansion: 'Trailing Twelve Months',
+        gloss: 'The total over the most recent twelve months, ending today.',
+    },
     FX: {
         expansion: 'Foreign Exchange',
         gloss: 'Currency conversion. FX rates translate amounts held in other currencies into the book currency.',

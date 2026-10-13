@@ -40,6 +40,12 @@ interface ExpandableChartProps {
     /** Initial period for the expanded view (usually the dashboard period). */
     initialStartDate?: string | null;
     initialEndDate?: string | null;
+    /**
+     * Position/visibility classes for the expand button. Defaults to the
+     * hover-revealed top-right corner; panels with their own header row pass
+     * a persistent placement that lines up with the header instead.
+     */
+    expandButtonClassName?: string;
 }
 
 export default function ExpandableChart({
@@ -48,6 +54,7 @@ export default function ExpandableChart({
     controls,
     initialStartDate = null,
     initialEndDate = null,
+    expandButtonClassName = 'top-2 right-2 opacity-0 group-hover:opacity-100',
 }: ExpandableChartProps) {
     const [expanded, setExpanded] = useState(false);
     const [view, setView] = useState<ChartViewState>({
@@ -77,7 +84,7 @@ export default function ExpandableChart({
             <Tip content="Expand chart" describedBy={false}>
             <button
                 onClick={openExpanded}
-                className="absolute top-2 right-2 p-1.5 rounded-lg bg-surface/80 backdrop-blur-sm border border-border opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface-hover z-10"
+                className={`absolute ${expandButtonClassName} p-1.5 rounded-lg bg-surface/80 backdrop-blur-sm border border-border transition-opacity hover:bg-surface-hover z-10`}
                 aria-label="Expand chart"
             >
                 {/* Expand SVG icon */}

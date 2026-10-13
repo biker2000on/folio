@@ -3,7 +3,7 @@
 import { useState, useMemo, useContext, useEffect, useCallback } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, AreaChart, Area, ReferenceLine, Legend,
+  CartesianGrid, AreaChart, Area, ReferenceLine,
 } from 'recharts';
 import { formatCurrency } from '@/lib/format';
 import { ExpandedContext } from '@/components/charts/ExpandableChart';
@@ -13,6 +13,7 @@ import type { ChartDefaults } from '@/lib/user-preferences';
 import type { CashFlowPoint, IndicesData } from '@/types/investments';
 import { calculateMoneyWeightedReturn, calculateTimeWeightedReturn } from '@/lib/investment-performance';
 import { Tip } from '@/components/ui/Tooltip';
+import { ChartPanel, CHART_THEME, Segmented, type SegmentedOption } from '@/components/investments/ui';
 
 export type { ChartDefaults };
 
@@ -259,14 +260,84 @@ export function PerformanceChart({
   const isTimeWeightedMode = chartMode === 'twr';
   const hasIndices = indices && (indices.sp500.length > 0 || indices.djia.length > 0 || indices.nasdaq.length > 0 || indices.russell2000.length > 0);
 
+  const periodOptions: SegmentedOption<Period>[] = periods.map(p => ({ value: p, label: p }));
+  const modeOptions: SegmentedOption<ChartMode>[] = [
+    { value: 'value', label: '$', ariaLabel: 'Dollar value', hint: 'Show dollar value' },
+    { value: 'twr', label: 'TWR', hint: 'Time-weighted return' },
+    { value: 'mwr', label: 'MWR', hint: 'Money-weighted return' },
+  ];
+  const handleModeChange = (mode: ChartMode) => {
+    setChartMode(mode);
+    if (mode !== 'value') onReturnMetricChange?.(mode);
+  };
+
+  const panelTitle = (
+    <span className="flex items-center gap-1">
+      {title}
+      <ChartSettingsPanel currentDefaults={currentDefaults} onSettingsChange={handleSettingsChange} />
+    </span>
+  );
+  const controls = (
+    <>
+      <Segmented ariaLabel="Time range" options={periodOptions} value={period} onChange={setPeriod} />
+      <Segmented ariaLabel="Chart metric" options={modeOptions} value={chartMode} onChange={handleModeChange} />
+    </>
+  );
+
   if (!data || data.length === 0) {
     return (
-        <div className="bg-background-secondary rounded-lg p-6 border border-border h-full">
-        <h3 className="text-lg font-semibold text-foreground mb-4">{title}</h3>
-        <p className="text-foreground-muted">No performance data available</p>
-      </div>
+      <ChartPanel expanded={expanded} title={panelTitle}>
+        <p className="py-10 text-center text-sm text-foreground-muted">No performance data available</p>
+      </ChartPanel>
     );
   }
+
+  const indexToggles: Array<{ key: keyof typeof INDEX_COLORS; label: string; on: boolean; set: (v: boolean) => void }> = [
+    { key: 'sp500', label: 'S&P 500', on: showSP500, set: setShowSP500 },
+    { key: 'djia', label: 'Dow Jones', on: showDJIA, set: setShowDJIA },
+    { key: 'nasdaq', label: 'NASDAQ', on: showNasdaq, set: setShowNasdaq },
+    { key: 'russell2000', label: 'Russell 2000', on: showRussell2000, set: setShowRussell2000 },
+  ];
+
+  // Index lines are legend toggles under the chart rather than a third row of
+  // header buttons; they only apply to the time-weighted view.
+  const compareFooter = hasIndices ? (
+    <div className="flex flex-wrap items-center gap-x-1 gap-y-1">
+      <span className="mr-2 text-xs font-medium text-foreground-muted">Compare</span>
+      <span className="mr-1 inline-flex items-center gap-1.5 px-1 text-xs text-foreground-secondary">
+        <span aria-hidden="true" className="h-0.5 w-3 rounded-sm" style={{ backgroundColor: INDEX_COLORS.portfolio }} />
+        {title.replace(/ Performance$/, '')}
+      </span>
+      {indexToggles.map(t => {
+        const active = isTimeWeightedMode && t.on;
+        return (
+          <Tip
+            key={t.key}
+            content={!isTimeWeightedMode ? 'Switch to TWR to compare against an index' : (t.on ? `Hide ${t.label}` : `Show ${t.label}`)}
+          >
+            <button
+              type="button"
+              aria-pressed={active}
+              onClick={() => isTimeWeightedMode && t.set(!t.on)}
+              disabled={!isTimeWeightedMode}
+              className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors duration-150 sm:h-7 ${
+                active
+                  ? 'border-border-hover bg-surface-hover text-foreground'
+                  : 'border-transparent text-foreground-muted hover:bg-surface-hover hover:text-foreground'
+              } disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
+            >
+              <span
+                aria-hidden="true"
+                className="h-0.5 w-3 rounded-sm"
+                style={{ backgroundColor: active ? INDEX_COLORS[t.key] : 'var(--foreground-muted)' }}
+              />
+              {t.label}
+            </button>
+          </Tip>
+        );
+      })}
+    </div>
+  ) : undefined;
 
   const tooltipFormatter = (value: number | undefined, name?: string): [string, string] | [null, null] => {
     if (value === undefined || value === null) return [null, null];
@@ -284,154 +355,9 @@ export function PerformanceChart({
   };
 
   return (
-    <div className="bg-background-secondary rounded-lg p-6 border border-border h-full">
-      <div className="flex items-center justify-between gap-2 mb-4">
-        <div className="flex items-center gap-2">
-          <h3 className="text-lg font-semibold text-foreground shrink-0">{title}</h3>
-          <ChartSettingsPanel
-            currentDefaults={currentDefaults}
-            onSettingsChange={handleSettingsChange}
-          />
-        </div>
-        <div className="flex items-center gap-1 flex-wrap justify-end">
-          {/* Period selector */}
-          <div className="flex gap-1">
-            {periods.map(p => (
-              <button
-                key={p}
-                onClick={() => setPeriod(p)}
-                className={`px-2.5 py-1.5 min-h-[44px] min-w-[44px] text-xs rounded transition-colors flex items-center justify-center ${
-                  period === p
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                }`}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-
-          {/* Value / return metric toggle */}
-          <div className="flex gap-1 border-l border-border pl-1">
-            <Tip content="Show dollar value">
-            <button
-              onClick={() => setChartMode('value')}
-              className={`px-2.5 py-1.5 min-h-[44px] min-w-[44px] text-xs rounded transition-colors flex items-center justify-center ${
-                chartMode === 'value'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-              }`}
-            >
-              $
-            </button>
-            </Tip>
-            <Tip content="Time-weighted return">
-            <button
-              onClick={() => {
-                setChartMode('twr');
-                onReturnMetricChange?.('twr');
-              }}
-              className={`px-2.5 py-1.5 min-h-[44px] min-w-[44px] text-xs rounded transition-colors flex items-center justify-center ${
-                chartMode === 'twr'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-              }`}
-            >
-              TWR
-            </button>
-            </Tip>
-            <Tip content="Money-weighted return">
-            <button
-              onClick={() => {
-                setChartMode('mwr');
-                onReturnMetricChange?.('mwr');
-              }}
-              className={`px-2.5 py-1.5 min-h-[44px] min-w-[44px] text-xs rounded transition-colors flex items-center justify-center ${
-                chartMode === 'mwr'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-              }`}
-            >
-              MWR
-            </button>
-            </Tip>
-          </div>
-
-          {/* Index toggle buttons. The active chip's background comes from the
-              fixed INDEX_COLORS hue below, so its label stays literally white
-              in both themes rather than following a theme token. */}
-          {hasIndices && (
-            <div className="flex gap-1 border-l border-border pl-1 relative">
-              <Tip content={!isTimeWeightedMode ? 'Switch to TWR mode for index comparison' : (showSP500 ? 'Hide S&P 500' : 'Show S&P 500')}>
-              <button
-                onClick={() => isTimeWeightedMode && setShowSP500(!showSP500)}
-                disabled={!isTimeWeightedMode}
-                className={`px-2.5 py-1.5 min-h-[44px] text-xs rounded transition-colors flex items-center justify-center ${
-                  !isTimeWeightedMode
-                    ? 'bg-background-tertiary text-foreground-muted opacity-50 cursor-not-allowed'
-                    : showSP500
-                      ? 'text-white'
-                      : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                }`}
-                style={isTimeWeightedMode && showSP500 ? { backgroundColor: INDEX_COLORS.sp500 } : undefined}
-              >
-                S&P
-              </button>
-              </Tip>
-              <Tip content={!isTimeWeightedMode ? 'Switch to TWR mode for index comparison' : (showDJIA ? 'Hide DJIA' : 'Show DJIA')}>
-              <button
-                onClick={() => isTimeWeightedMode && setShowDJIA(!showDJIA)}
-                disabled={!isTimeWeightedMode}
-                className={`px-2.5 py-1.5 min-h-[44px] text-xs rounded transition-colors flex items-center justify-center ${
-                  !isTimeWeightedMode
-                    ? 'bg-background-tertiary text-foreground-muted opacity-50 cursor-not-allowed'
-                    : showDJIA
-                      ? 'text-white'
-                      : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                }`}
-                style={isTimeWeightedMode && showDJIA ? { backgroundColor: INDEX_COLORS.djia } : undefined}
-              >
-                DJIA
-              </button>
-              </Tip>
-              <Tip content={!isTimeWeightedMode ? 'Switch to TWR mode for index comparison' : (showNasdaq ? 'Hide NASDAQ' : 'Show NASDAQ')}>
-              <button
-                onClick={() => isTimeWeightedMode && setShowNasdaq(!showNasdaq)}
-                disabled={!isTimeWeightedMode}
-                className={`px-2.5 py-1.5 min-h-[44px] text-xs rounded transition-colors flex items-center justify-center ${
-                  !isTimeWeightedMode
-                    ? 'bg-background-tertiary text-foreground-muted opacity-50 cursor-not-allowed'
-                    : showNasdaq
-                      ? 'text-white'
-                      : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                }`}
-                style={isTimeWeightedMode && showNasdaq ? { backgroundColor: INDEX_COLORS.nasdaq } : undefined}
-              >
-                NDQ
-              </button>
-              </Tip>
-              <Tip content={!isTimeWeightedMode ? 'Switch to TWR mode for index comparison' : (showRussell2000 ? 'Hide Russell 2000' : 'Show Russell 2000')}>
-              <button
-                onClick={() => isTimeWeightedMode && setShowRussell2000(!showRussell2000)}
-                disabled={!isTimeWeightedMode}
-                className={`px-2.5 py-1.5 min-h-[44px] text-xs rounded transition-colors flex items-center justify-center ${
-                  !isTimeWeightedMode
-                    ? 'bg-background-tertiary text-foreground-muted opacity-50 cursor-not-allowed'
-                    : showRussell2000
-                      ? 'text-white'
-                      : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                }`}
-                style={isTimeWeightedMode && showRussell2000 ? { backgroundColor: INDEX_COLORS.russell2000 } : undefined}
-              >
-                R2K
-              </button>
-              </Tip>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <ResponsiveContainer width="100%" height={expanded ? "100%" : 300}>
+    <ChartPanel expanded={expanded} title={panelTitle} actions={controls} footer={compareFooter}>
+      <div className={expanded ? 'h-full' : 'min-h-[300px] flex-1 sm:min-h-[340px]'}>
+      <ResponsiveContainer width="100%" height="100%">
         {isReturnMode ? (
           <AreaChart data={displayData}>
             <defs>
@@ -448,25 +374,28 @@ export function PerformanceChart({
                 <stop offset="100%" stopColor={CHART_COLORS.red} stopOpacity={1} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#404040" />
+            <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} vertical={false} />
             <XAxis
               dataKey="date"
-              stroke="#a3a3a3"
-              tick={{ fill: '#a3a3a3', fontSize: 12 }}
+              stroke={CHART_THEME.axis}
+              tick={CHART_THEME.tick}
+              tickLine={false}
               tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
             />
             <YAxis
-              stroke="#a3a3a3"
-              tick={{ fill: '#a3a3a3', fontSize: 12 }}
+              stroke={CHART_THEME.axis}
+              tick={CHART_THEME.tick}
+              tickLine={false}
               tickFormatter={(value) => `${Number(value).toFixed(1)}%`}
             />
             <Tooltip
-              contentStyle={{ backgroundColor: '#262626', border: '1px solid #404040', borderRadius: '8px' }}
-              labelStyle={{ color: '#f5f5f5' }}
+              contentStyle={CHART_THEME.tooltip.contentStyle}
+              labelStyle={CHART_THEME.tooltip.labelStyle}
+              itemStyle={CHART_THEME.tooltip.itemStyle}
               formatter={tooltipFormatter as never}
               labelFormatter={(date) => new Date(date).toLocaleDateString()}
             />
-            <ReferenceLine y={0} stroke="#737373" strokeDasharray="3 3" />
+            <ReferenceLine y={0} stroke={CHART_THEME.zeroLine} strokeDasharray="3 3" />
             <Area
               type="monotone"
               dataKey="value"
@@ -527,40 +456,27 @@ export function PerformanceChart({
                 connectNulls
               />
             )}
-            {(showSP500 || showDJIA || showNasdaq || showRussell2000) && (
-              <Legend
-                verticalAlign="bottom"
-                height={24}
-                formatter={(val: string) => {
-                  const labels: Record<string, string> = {
-                    value: chartMode === 'mwr' ? 'Portfolio MWR' : 'Portfolio TWR',
-                    sp500: 'S&P 500',
-                    djia: 'DJIA',
-                    nasdaq: 'NASDAQ',
-                    russell2000: 'Russell 2000',
-                  };
-                  return <span style={{ color: '#d4d4d4', fontSize: 11 }}>{labels[val] || val}</span>;
-                }}
-              />
-            )}
           </AreaChart>
         ) : (
           <LineChart data={displayData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#404040" />
+            <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} vertical={false} />
             <XAxis
               dataKey="date"
-              stroke="#a3a3a3"
-              tick={{ fill: '#a3a3a3', fontSize: 12 }}
+              stroke={CHART_THEME.axis}
+              tick={CHART_THEME.tick}
+              tickLine={false}
               tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
             />
             <YAxis
-              stroke="#a3a3a3"
-              tick={{ fill: '#a3a3a3', fontSize: 12 }}
+              stroke={CHART_THEME.axis}
+              tick={CHART_THEME.tick}
+              tickLine={false}
               tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
             />
             <Tooltip
-              contentStyle={{ backgroundColor: '#262626', border: '1px solid #404040', borderRadius: '8px' }}
-              labelStyle={{ color: '#f5f5f5' }}
+              contentStyle={CHART_THEME.tooltip.contentStyle}
+              labelStyle={CHART_THEME.tooltip.labelStyle}
+              itemStyle={CHART_THEME.tooltip.itemStyle}
               formatter={(value) => value !== undefined ? [formatCurrency(Number(value)), 'Portfolio Value'] : ['', '']}
               labelFormatter={(date) => new Date(date).toLocaleDateString()}
             />
@@ -575,6 +491,7 @@ export function PerformanceChart({
           </LineChart>
         )}
       </ResponsiveContainer>
-    </div>
+      </div>
+    </ChartPanel>
   );
 }

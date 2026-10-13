@@ -527,7 +527,10 @@ export default function Layout({ children }: { children: ReactNode }) {
         pathname === '/ledger' ||
         pathname === '/settings/commodities' ||
         (pathname?.startsWith('/accounts/') && pathname !== '/accounts/') ||
-        pathname === '/reports/income_statement_by_period';
+        pathname === '/reports/income_statement_by_period' ||
+        // The Investments section sets its own (wider) content width.
+        pathname === '/investments' ||
+        pathname?.startsWith('/investments/');
 
     // Desktop collapsed state -- initialised to false, hydrated from localStorage
     const hydrated = useSyncExternalStore(subscribe, () => true, () => false);

@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useInvestmentData } from '@/contexts/InvestmentDataContext';
@@ -9,17 +8,38 @@ import { AllocationChart } from '@/components/investments/AllocationChart';
 import { IndustryExposureChart } from '@/components/investments/IndustryExposureChart';
 import { PerformanceChart } from '@/components/investments/PerformanceChart';
 import { HoldingsTable } from '@/components/investments/HoldingsTable';
-import ExpandableChart from '@/components/charts/ExpandableChart';
+import ExpandableChart, { ExpandedContext } from '@/components/charts/ExpandableChart';
 import { calculateMoneyWeightedReturn, calculateTimeWeightedReturn } from '@/lib/investment-performance';
 import { ScrubAllButton } from '@/components/investments/ScrubAllButton';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { RelatedLinks } from '@/components/RelatedLinks';
 import { CashAllocationCard } from '@/components/investments/CashAllocationCard';
+import {
+  CHART_EXPAND_BUTTON,
+  ChartPanel,
+  EmptyState,
+  InvestmentsPage,
+  SectionTabs,
+  Segmented,
+} from '@/components/investments/ui';
 import { BenchmarkPanel } from './benchmark/BenchmarkPanel';
 
 type AllocationTab = 'holdings' | 'cashPct' | 'cashAcct' | 'sector';
 type InvestmentView = 'overview' | 'cash' | 'benchmark';
 type CashSortMode = 'percent' | 'amount';
+
+const VIEW_TABS = [
+  { key: 'overview', href: '/investments', label: 'Overview' },
+  { key: 'cash', href: '/investments?view=cash', label: 'Cash' },
+  { key: 'benchmark', href: '/investments?view=benchmark', label: 'Benchmark' },
+];
+
+const ALLOCATION_OPTIONS: { value: AllocationTab; label: string }[] = [
+  { value: 'holdings', label: 'Holdings' },
+  { value: 'cashPct', label: 'Cash %' },
+  { value: 'cashAcct', label: 'Cash by Account' },
+  { value: 'sector', label: 'Sector' },
+];
 
 export default function HoldingsPage() {
   const searchParams = useSearchParams();
@@ -75,36 +95,15 @@ export default function HoldingsPage() {
     />
   );
 
-  const viewTabs = (
-    <nav aria-label="Investment views" className="flex max-w-full gap-1 overflow-x-auto border-b border-border">
-      {([
-        ['overview', '/investments', 'Overview'],
-        ['cash', '/investments?view=cash', 'Cash'],
-        ['benchmark', '/investments?view=benchmark', 'Benchmark'],
-      ] as const).map(([key, href, label]) => (
-        <Link
-          key={key}
-          href={href}
-          aria-current={view === key ? 'page' : undefined}
-          className={`shrink-0 border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
-            view === key
-              ? 'border-primary text-foreground'
-              : 'border-transparent text-foreground-secondary hover:text-foreground'
-          }`}
-        >
-          {label}
-        </Link>
-      ))}
-    </nav>
-  );
+  const viewTabs = <SectionTabs ariaLabel="Investment views" tabs={VIEW_TABS} active={view} />;
 
   if (view === 'benchmark') {
     return (
-      <div className="space-y-6">
+      <InvestmentsPage>
         {pageHeader}
         {viewTabs}
         <BenchmarkPanel />
-      </div>
+      </InvestmentsPage>
     );
   }
 
@@ -133,32 +132,35 @@ export default function HoldingsPage() {
 
   if (loading) {
     return (
-      <div className="space-y-6">
+      <InvestmentsPage>
         {pageHeader}
         {viewTabs}
-        <div className="sm:hidden h-48 bg-background-tertiary rounded-lg animate-pulse" />
-        <div className="hidden sm:grid grid-cols-1 md:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map(i => (
-            <div key={i} className="h-32 bg-background-tertiary rounded-lg animate-pulse" />
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
+          {[1, 2, 3, 4, 5].map(i => (
+            <div
+              key={i}
+              className={`h-[104px] rounded-lg border border-border bg-surface animate-pulse sm:h-[124px] ${i === 1 ? 'col-span-2 lg:col-span-1' : ''}`}
+            />
           ))}
         </div>
-      </div>
+        <div className="grid gap-4 xl:grid-cols-12">
+          <div className="h-[420px] rounded-lg border border-border bg-surface animate-pulse xl:col-span-7" />
+          <div className="h-[420px] rounded-lg border border-border bg-surface animate-pulse xl:col-span-5" />
+        </div>
+      </InvestmentsPage>
     );
   }
 
   if (view === 'cash') {
     if (!portfolio?.cashByAccount?.length) {
       return (
-        <div className="space-y-6">
+        <InvestmentsPage>
           {pageHeader}
           {viewTabs}
-          <div className="rounded-lg border border-border bg-surface p-8 text-center">
-            <p className="mb-2 text-lg text-foreground-secondary">No cash data available</p>
-            <p className="text-foreground-muted">
-              Cash balances will appear here once detected in your investment accounts.
-            </p>
-          </div>
-        </div>
+          <EmptyState title="No cash data available">
+            Cash balances will appear here once detected in your investment accounts.
+          </EmptyState>
+        </InvestmentsPage>
       );
     }
 
@@ -169,53 +171,39 @@ export default function HoldingsPage() {
     );
 
     return (
-      <div className="space-y-6">
+      <InvestmentsPage>
         {pageHeader}
         {viewTabs}
-        <div className="flex justify-end gap-1">
-          {([
-            ['percent', 'Sort by %'],
-            ['amount', 'Sort by $'],
-          ] as const).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setCashSortMode(key)}
-              className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-                cashSortMode === key
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <CashAllocationCard cashByAccount={sortedCash} overallCash={portfolio.overallCash} />
-      </div>
+        <CashAllocationCard
+          cashByAccount={sortedCash}
+          overallCash={portfolio.overallCash}
+          actions={
+            <Segmented
+              ariaLabel="Sort accounts"
+              value={cashSortMode}
+              onChange={setCashSortMode}
+              options={[
+                { value: 'percent', label: 'Sort by %' },
+                { value: 'amount', label: 'Sort by $' },
+              ]}
+            />
+          }
+        />
+      </InvestmentsPage>
     );
   }
 
   if (!portfolio || portfolio.holdings.length === 0) {
     return (
-      <div className="space-y-6">
+      <InvestmentsPage>
         {pageHeader}
         {viewTabs}
-        <div className="bg-background-secondary rounded-lg p-8 border border-border text-center">
-          <p className="text-foreground-secondary text-lg mb-2">No investment accounts found</p>
-          <p className="text-foreground-muted">
-            Investment accounts (STOCK type) will appear here once they exist in your book.
-          </p>
-        </div>
-      </div>
+        <EmptyState title="No investment accounts found">
+          Investment accounts (STOCK type) will appear here once they exist in your book.
+        </EmptyState>
+      </InvestmentsPage>
     );
   }
-
-  const allocationTabs: { key: AllocationTab; label: string }[] = [
-    { key: 'holdings', label: 'Holdings' },
-    { key: 'cashPct', label: 'Cash %' },
-    { key: 'cashAcct', label: 'Cash by Account' },
-    { key: 'sector', label: 'Sector' },
-  ];
 
   const allocationTitle = allocationTab === 'holdings'
     ? 'Portfolio Allocation'
@@ -225,8 +213,18 @@ export default function HoldingsPage() {
         ? 'Cash by Account'
         : 'Sector Exposure';
 
+  const allocationBody = allocationTab === 'holdings' ? (
+    <AllocationChart data={portfolio.allocation} />
+  ) : allocationTab === 'cashPct' ? (
+    <AllocationChart data={cashPctOfPortfolio} />
+  ) : allocationTab === 'cashAcct' ? (
+    <AllocationChart data={cashByAccountPie} centerLabel="Cash" />
+  ) : (
+    <IndustryExposureChart data={portfolio.sectorExposure} />
+  );
+
   return (
-    <div className="space-y-6">
+    <InvestmentsPage>
       {pageHeader}
       {viewTabs}
 
@@ -243,7 +241,7 @@ export default function HoldingsPage() {
         </div>
       )}
 
-      {/* Summary Cards */}
+      {/* Summary cards — each one opens the view that explains it */}
       <PortfolioSummaryCards
         totalValue={portfolio.summary.totalValue}
         totalCostBasis={portfolio.summary.totalCostBasis}
@@ -251,48 +249,49 @@ export default function HoldingsPage() {
         totalGainLoss={portfolio.summary.totalGainLoss}
         performancePercent={safePerformancePercent}
         performanceMetric={performanceMetric}
+        valueSub="Holdings at market, excl. cash"
+        cash={
+          portfolio.overallCash
+            ? { balance: portfolio.overallCash.totalCashBalance, percent: portfolio.overallCash.cashPercent }
+            : undefined
+        }
       />
 
-      {/* Charts Row */}
-      <div className="grid md:grid-cols-2 gap-6 items-stretch">
-        <div className="flex flex-col gap-0">
-          {/* Allocation tab selector */}
-          <div className="flex gap-1 mb-2 overflow-x-auto [scrollbar-width:thin]">
-            {allocationTabs.map(tab => (
-              <button
-                key={tab.key}
-                onClick={() => setAllocationTab(tab.key)}
-                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
-                  allocationTab === tab.key
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-          <ExpandableChart title={allocationTitle}>
-            {allocationTab === 'holdings' ? (
-              <AllocationChart data={portfolio.allocation} />
-            ) : allocationTab === 'cashPct' ? (
-              <AllocationChart data={cashPctOfPortfolio} />
-            ) : allocationTab === 'cashAcct' ? (
-              <AllocationChart data={cashByAccountPie} />
-            ) : (
-              <IndustryExposureChart data={portfolio.sectorExposure} />
-            )}
+      {/* Charts: performance leads, allocation beside it on wide screens */}
+      <div className="grid gap-4 xl:grid-cols-12">
+        <div className="min-w-0 xl:col-span-7">
+          <ExpandableChart title="Portfolio Performance" expandButtonClassName={CHART_EXPAND_BUTTON}>
+            <PerformanceChart
+              data={history}
+              cashFlows={portfolioCashFlows}
+              indices={indices}
+              returnMetric={performanceMetric}
+              onReturnMetricChange={setPerformanceMetric}
+            />
           </ExpandableChart>
         </div>
-        <ExpandableChart title="Portfolio Performance">
-          <PerformanceChart
-            data={history}
-            cashFlows={portfolioCashFlows}
-            indices={indices}
-            returnMetric={performanceMetric}
-            onReturnMetricChange={setPerformanceMetric}
-          />
-        </ExpandableChart>
+        <div className="min-w-0 xl:col-span-5">
+          <ExpandableChart title={allocationTitle} expandButtonClassName={CHART_EXPAND_BUTTON}>
+            <ExpandedContext.Consumer>
+              {expanded => (
+                <ChartPanel
+                  expanded={expanded}
+                  title="Allocation"
+                  actions={
+                    <Segmented
+                      ariaLabel="Allocation view"
+                      options={ALLOCATION_OPTIONS}
+                      value={allocationTab}
+                      onChange={setAllocationTab}
+                    />
+                  }
+                >
+                  {allocationBody}
+                </ChartPanel>
+              )}
+            </ExpandedContext.Consumer>
+          </ExpandableChart>
+        </div>
       </div>
 
       {/* Holdings Table */}
@@ -301,6 +300,6 @@ export default function HoldingsPage() {
         consolidatedHoldings={portfolio.consolidatedHoldings}
       />
       <RelatedLinks ids={['nav-inv-rebalancing', 'tool-sell-planner', 'rpt-lots', 'rpt-nw-attribution']} />
-    </div>
+    </InvestmentsPage>
   );
 }
