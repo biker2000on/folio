@@ -525,6 +525,7 @@ model gnucash_web_users {
   permissions            gnucash_web_book_permissions[]  @relation("permissions_user")
   granted_permissions    gnucash_web_book_permissions[]  @relation("permissions_granter")
   simplefin_connections  gnucash_web_simplefin_connections[]
+  feedback               gnucash_web_feedback[]
   created_invitations    gnucash_web_invitations[]       @relation("invitation_creator")
   used_invitations       gnucash_web_invitations[]       @relation("invitation_user")
   revoked_invitations    gnucash_web_invitations[]       @relation("invitation_revoker")
@@ -980,6 +981,31 @@ model gnucash_web_transaction_deletions {
   deleted_at   DateTime @db.Timestamp(6)
 
   @@index([book_guid, deleted_at, tx_guid], map: "idx_transaction_deletions_book_deleted")
+}
+
+/// In-app feedback (src/lib/services/feedback.service.ts, which also owns the
+/// DDL incl. the kind/status/body CHECK constraints). Screenshots live in the
+/// receipt object store under feedback/{user_id}/; screenshot_key is '' when
+/// none was stored.
+model gnucash_web_feedback {
+  id                 Int       @id @default(autoincrement())
+  user_id            Int
+  kind               String
+  body               String
+  route              String    @default("")
+  context            Json      @default("{}")
+  app_version        String    @default("")
+  screenshot_key     String    @default("")
+  status             String    @default("new")
+  admin_note         String    @default("")
+  resolved_at        DateTime? @db.Timestamptz(6)
+  resolution_seen_at DateTime? @db.Timestamptz(6)
+  created_at         DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime  @default(now()) @db.Timestamptz(6)
+  user               gnucash_web_users @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([status, created_at(sort: Desc)], map: "idx_feedback_status_created")
+  @@index([user_id, created_at(sort: Desc)], map: "idx_feedback_user_created")
 }
 
 model gnucash_web_simplefin_connections {
