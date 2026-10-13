@@ -47,7 +47,7 @@ interface TooltipProps {
 function CustomTooltip({ active, payload, label }: TooltipProps) {
     if (!active || !payload || !payload.length || !label) return null;
     return (
-        <div className="bg-background border border-border rounded-lg p-3 shadow-xl">
+        <div className="rounded-md border border-border bg-surface-elevated px-3 py-2 shadow-lg">
             <p className="text-xs text-foreground-muted mb-1">{formatMonthLong(label)}</p>
             <p
                 className="text-sm font-semibold font-mono text-foreground"
@@ -81,18 +81,18 @@ export function DividendMonthlyChart({ data, height = 300 }: DividendMonthlyChar
                     dataKey="month"
                     tickFormatter={formatMonth}
                     stroke="var(--foreground-secondary)"
-                    tick={{ fill: 'var(--foreground-secondary)', fontSize: 12 }}
+                    tick={{ fill: 'var(--foreground-muted)', fontSize: 11 }}
                     axisLine={{ stroke: 'var(--border)' }}
-                    tickLine={{ stroke: 'var(--border)' }}
+                    tickLine={false}
                     interval="preserveStartEnd"
                     minTickGap={24}
                 />
                 <YAxis
                     tickFormatter={formatAxisCurrency}
                     stroke="var(--foreground-secondary)"
-                    tick={{ fill: 'var(--foreground-secondary)', fontSize: 12 }}
+                    tick={{ fill: 'var(--foreground-muted)', fontSize: 11 }}
                     axisLine={{ stroke: 'var(--border)' }}
-                    tickLine={{ stroke: 'var(--border)' }}
+                    tickLine={false}
                     width={64}
                 />
                 <Tooltip content={<CustomTooltip />} cursor={{ fill: 'var(--surface-hover)', opacity: 0.4 }} />

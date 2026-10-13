@@ -43,11 +43,11 @@ export function BenchmarkChart({ series, indexName, height = 320 }: BenchmarkCha
   return (
     <ResponsiveContainer width="100%" height={expanded ? '100%' : height}>
       <LineChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
         <XAxis
           dataKey="date"
           stroke="var(--foreground-muted)"
-          tick={{ fill: 'var(--foreground-muted)', fontSize: 12 }}
+          tick={{ fill: 'var(--foreground-muted)', fontSize: 11 }}
           tickFormatter={(date) =>
             new Date(date).toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
           }
@@ -55,7 +55,7 @@ export function BenchmarkChart({ series, indexName, height = 320 }: BenchmarkCha
         />
         <YAxis
           stroke="var(--foreground-muted)"
-          tick={{ fill: 'var(--foreground-muted)', fontSize: 12 }}
+          tick={{ fill: 'var(--foreground-muted)', fontSize: 11 }}
           domain={['auto', 'auto']}
           tickFormatter={(value) => Number(value).toFixed(0)}
         />
@@ -63,7 +63,7 @@ export function BenchmarkChart({ series, indexName, height = 320 }: BenchmarkCha
           contentStyle={{
             backgroundColor: 'var(--surface-elevated)',
             border: '1px solid var(--border)',
-            borderRadius: '8px',
+            borderRadius: 6,
           }}
           labelStyle={{ color: 'var(--foreground)' }}
           itemStyle={{ fontFamily: 'var(--font-mono, monospace)' }}

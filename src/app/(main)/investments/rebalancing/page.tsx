@@ -11,6 +11,10 @@ import { TargetEditor } from './TargetEditor';
 import { DriftBars } from './DriftBars';
 import { SuggestionsTable } from './SuggestionsTable';
 import { SectorSuggestionsTable } from './SectorSuggestionsTable';
+import { inputClass } from '@/components/ui/form';
+import { EmptyState, InvestmentsPage, KpiCard, Panel, Segmented } from '@/components/investments/ui';
+
+const CONTROL_LABEL = 'mb-1.5 block text-[11px] font-medium uppercase tracking-wider text-foreground-muted';
 
 function parseTargets(inputs: Record<string, string>): RebalanceTarget[] {
     return Object.entries(inputs)
@@ -184,33 +188,45 @@ export default function RebalancingPage() {
 
     if (loading) {
         return (
-            <div className="space-y-6">
+            <InvestmentsPage>
                 <div className="h-8 bg-background-tertiary rounded animate-pulse w-48" />
-                <div className="h-40 bg-background-tertiary rounded-lg animate-pulse" />
-                <div className="h-64 bg-background-tertiary rounded-lg animate-pulse" />
-            </div>
+                <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+                    {[1, 2, 3, 4].map(i => (
+                        <div key={i} className="h-[124px] rounded-lg border border-border bg-surface animate-pulse" />
+                    ))}
+                </div>
+                <div className="h-64 rounded-lg border border-border bg-surface animate-pulse" />
+            </InvestmentsPage>
         );
     }
 
     if (!data || data.holdings.length === 0) {
         return (
-            <div className="space-y-6">
+            <InvestmentsPage>
                 <PageHeader title="Rebalancing" subtitle="Target allocation, drift, and tax-aware suggestions" />
-                <div className="bg-background-secondary rounded-lg p-8 border border-border text-center">
-                    <p className="text-foreground-secondary text-lg mb-2">No holdings to rebalance</p>
-                    <p className="text-foreground-muted">
-                        Investment holdings (STOCK/MUTUAL accounts) will appear here once present in your book.
-                    </p>
-                </div>
-            </div>
+                <EmptyState title="No holdings to rebalance">
+                    Investment holdings (STOCK/MUTUAL accounts) will appear here once present in your book.
+                </EmptyState>
+            </InvestmentsPage>
         );
     }
 
     const sectorMode = mode === 'sector';
     const unclassified = sectorMode ? (data.unclassifiedSymbols ?? []) : [];
 
+    // Headline figures, read straight off the response (no new math).
+    const trackedRows = data.rows.filter(r => r.currentPct > 0 || r.targetPct > 0);
+    const outOfBand = trackedRows.filter(r => r.outsideBand);
+    const largestDrift = trackedRows.reduce<typeof trackedRows[number] | null>(
+        (best, r) => (best == null || Math.abs(r.driftPct) > Math.abs(best.driftPct) ? r : best),
+        null,
+    );
+    const trades = sectorMode ? (data.symbolTrades ?? []) : data.suggestions;
+    const buyTotal = trades.filter(t => t.action === 'BUY').reduce((sum, t) => sum + t.amount, 0);
+    const sellTotal = trades.filter(t => t.action === 'SELL').reduce((sum, t) => sum + t.amount, 0);
+
     return (
-        <div className="space-y-6">
+        <InvestmentsPage>
             <PageHeader
                 title="Rebalancing"
                 subtitle="Target allocation, drift, and tax-aware suggestions"
@@ -218,86 +234,113 @@ export default function RebalancingPage() {
                     <button
                         onClick={handleSave}
                         disabled={!dirty || saving}
-                        className="px-4 py-2 text-sm bg-primary hover:bg-primary-hover disabled:bg-primary/30 disabled:cursor-not-allowed text-primary-foreground rounded-lg transition-colors"
+                        className="px-4 py-2 text-sm font-medium bg-primary hover:bg-primary-hover disabled:bg-primary/30 disabled:cursor-not-allowed text-primary-foreground rounded-md transition-colors"
                     >
                         {saving ? 'Saving…' : dirty ? 'Save Targets' : 'Targets Saved'}
                     </button>
                 }
             />
 
-            {/* Controls */}
-            <div className="bg-background-secondary rounded-lg border border-border p-4 flex flex-wrap items-end gap-x-6 gap-y-3">
-                <div>
-                    <div className="text-xs uppercase tracking-wider text-foreground-muted mb-1">
-                        Portfolio Value
+            {/* Summary cards — each opens the section behind the number */}
+            <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+                <KpiCard
+                    className="col-span-2 lg:col-span-1"
+                    emphasis
+                    label="Portfolio Value"
+                    value={formatCurrency(data.totalValue)}
+                    sub={data.newCash > 0 ? `plus ${formatCurrency(data.newCash)} new cash` : 'Holdings being rebalanced'}
+                    href="/investments#holdings"
+                    cta="Holdings"
+                />
+                <KpiCard
+                    label="Outside Band"
+                    value={`${outOfBand.length} of ${trackedRows.length}`}
+                    tone={outOfBand.length > 0 ? 'warning' : 'default'}
+                    sub={`±${data.bandPct} pts drift band`}
+                    href="#drift"
+                    cta="Current vs target"
+                />
+                <KpiCard
+                    label="Largest Drift"
+                    value={largestDrift ? `${largestDrift.driftPct > 0 ? '+' : ''}${largestDrift.driftPct.toFixed(1)} pts` : '—'}
+                    tone={largestDrift?.outsideBand ? 'warning' : 'default'}
+                    sub={largestDrift ? largestDrift.key : 'No targets set'}
+                    href="#targets"
+                    cta="Edit targets"
+                />
+                <KpiCard
+                    className="col-span-2 lg:col-span-1"
+                    label="Suggested Trades"
+                    value={String(trades.length)}
+                    sub={
+                        <span className="font-mono" style={{ fontFeatureSettings: "'tnum'" }}>
+                            Buy {formatCurrency(buyTotal)}{sellTotal > 0 ? ` · Sell ${formatCurrency(sellTotal)}` : ''}
+                        </span>
+                    }
+                    href="#suggestions"
+                    cta={data.mode === 'buy-only' ? 'Buy-only plan' : 'Trade list'}
+                />
+            </div>
+
+            {/* Scenario controls */}
+            <Panel
+                title="Scenario"
+                subtitle="Changes preview live; save to keep the targets and band"
+                actions={
+                    <>
+                        {refreshing && <span className="text-xs text-foreground-muted">Recalculating…</span>}
+                        {data.mode === 'buy-only' && (
+                            <span className="rounded-sm bg-secondary-light px-2 py-1 text-xs text-secondary">
+                                Buy-only mode — new cash covers rebalancing
+                            </span>
+                        )}
+                    </>
+                }
+            >
+                <div className="flex flex-wrap items-end gap-x-6 gap-y-4">
+                    <div>
+                        <span className={CONTROL_LABEL}>Allocate By</span>
+                        <Segmented
+                            ariaLabel="Allocate by"
+                            value={mode}
+                            onChange={handleModeChange}
+                            options={[
+                                { value: 'symbol', label: 'Symbol' },
+                                { value: 'sector', label: 'Sector' },
+                            ]}
+                        />
                     </div>
-                    <div className="font-mono tabular-nums text-lg font-semibold text-foreground">
-                        {formatCurrency(data.totalValue)}
-                    </div>
-                </div>
-                <div>
-                    <div className="text-xs uppercase tracking-wider text-foreground-muted mb-1">
-                        Allocate By
-                    </div>
-                    <div className="inline-flex rounded border border-border overflow-hidden">
-                        {(['symbol', 'sector'] as const).map(m => (
-                            <button
-                                key={m}
-                                onClick={() => handleModeChange(m)}
-                                aria-pressed={mode === m}
-                                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                                    mode === m
-                                        ? 'bg-primary text-primary-foreground'
-                                        : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                                }`}
-                            >
-                                {m === 'symbol' ? 'Symbol' : 'Sector'}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-                <label className="block">
-                    <span className="text-xs uppercase tracking-wider text-foreground-muted block mb-1">
-                        New Cash to Invest
-                    </span>
-                    <div className="flex items-center gap-1">
-                        <span className="text-foreground-muted text-sm">$</span>
+                    <label className="block">
+                        <span className={CONTROL_LABEL}>New Cash to Invest</span>
+                        <div className="relative">
+                            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-foreground-muted">$</span>
+                            <input
+                                type="number"
+                                min={0}
+                                step={100}
+                                inputMode="decimal"
+                                value={newCashInput}
+                                placeholder="0"
+                                onChange={e => setNewCashInput(e.target.value)}
+                                className={inputClass({ extra: 'w-40! py-1.5! pl-6! text-right font-mono tabular-nums' })}
+                            />
+                        </div>
+                    </label>
+                    <label className="block">
+                        <span className={CONTROL_LABEL}>Drift Band (± pts)</span>
                         <input
                             type="number"
                             min={0}
-                            step={100}
+                            max={50}
+                            step={1}
                             inputMode="decimal"
-                            value={newCashInput}
-                            placeholder="0"
-                            onChange={e => setNewCashInput(e.target.value)}
-                            className="w-32 bg-input-bg border border-border rounded px-2 py-1.5 text-right font-mono tabular-nums text-sm text-foreground focus:outline-none focus:border-primary/50"
+                            value={bandInput}
+                            onChange={e => setBandInput(e.target.value)}
+                            className={inputClass({ extra: 'w-24! py-1.5! text-right font-mono tabular-nums' })}
                         />
-                    </div>
-                </label>
-                <label className="block">
-                    <span className="text-xs uppercase tracking-wider text-foreground-muted block mb-1">
-                        Drift Band (± pts)
-                    </span>
-                    <input
-                        type="number"
-                        min={0}
-                        max={50}
-                        step={1}
-                        inputMode="decimal"
-                        value={bandInput}
-                        onChange={e => setBandInput(e.target.value)}
-                        className="w-20 bg-input-bg border border-border rounded px-2 py-1.5 text-right font-mono tabular-nums text-sm text-foreground focus:outline-none focus:border-primary/50"
-                    />
-                </label>
-                {data.mode === 'buy-only' && (
-                    <span className="text-xs px-2 py-1 rounded bg-secondary-light text-secondary">
-                        Buy-only mode — new cash covers rebalancing
-                    </span>
-                )}
-                {refreshing && (
-                    <span className="text-xs text-foreground-muted">Recalculating…</span>
-                )}
-            </div>
+                    </label>
+                </div>
+            </Panel>
 
             {/* Missing sector data callout */}
             {sectorMode && unclassified.length > 0 && (
@@ -310,7 +353,7 @@ export default function RebalancingPage() {
                     <button
                         onClick={handleFetchSectorData}
                         disabled={fetchingMeta}
-                        className="px-3 py-1.5 text-xs font-medium bg-primary hover:bg-primary-hover disabled:bg-primary/30 disabled:cursor-not-allowed text-primary-foreground rounded transition-colors"
+                        className="px-3 py-1.5 text-xs font-medium bg-primary hover:bg-primary-hover disabled:bg-primary/30 disabled:cursor-not-allowed text-primary-foreground rounded-md transition-colors"
                     >
                         {fetchingMeta ? 'Fetching…' : 'Fetch sector data'}
                     </button>
@@ -326,40 +369,48 @@ export default function RebalancingPage() {
                 </div>
             )}
 
-            {/* Drift bars */}
-            <DriftBars
-                rows={data.rows}
-                bandPct={data.bandPct}
-                keyWidthClass={sectorMode ? 'w-40' : 'w-16'}
-            />
+            <div className="grid gap-4 2xl:grid-cols-12">
+                {/* Drift bars */}
+                <div id="drift" className="min-w-0 scroll-mt-6 2xl:col-span-5">
+                    <DriftBars
+                        rows={data.rows}
+                        bandPct={data.bandPct}
+                        keyWidthClass={sectorMode ? 'w-40' : 'w-16'}
+                    />
+                </div>
 
-            {/* Target editor */}
-            <TargetEditor
-                rows={data.rows}
-                targetInputs={targetInputs}
-                onTargetChange={handleTargetChange}
-                keyHeader={sectorMode ? 'Sector' : 'Symbol'}
-            />
+                {/* Target editor */}
+                <div id="targets" className="min-w-0 scroll-mt-6 2xl:col-span-7">
+                    <TargetEditor
+                        rows={data.rows}
+                        targetInputs={targetInputs}
+                        onTargetChange={handleTargetChange}
+                        keyHeader={sectorMode ? 'Sector' : 'Symbol'}
+                    />
+                </div>
+            </div>
 
             {/* Suggestions */}
-            {sectorMode ? (
-                <>
-                    <SectorSuggestionsTable
-                        groups={data.sectorGroups ?? []}
-                        netBySymbol={data.symbolTrades ?? []}
-                        mode={data.mode}
-                    />
-                    {(data.symbolTrades?.length ?? 0) > 0 && (
-                        <SuggestionsTable
-                            suggestions={data.symbolTrades ?? []}
+            <div id="suggestions" className="scroll-mt-6 space-y-4">
+                {sectorMode ? (
+                    <>
+                        <SectorSuggestionsTable
+                            groups={data.sectorGroups ?? []}
+                            netBySymbol={data.symbolTrades ?? []}
                             mode={data.mode}
-                            title="Net Trades by Symbol (Tax Impact)"
                         />
-                    )}
-                </>
-            ) : (
-                <SuggestionsTable suggestions={data.suggestions} mode={data.mode} />
-            )}
-        </div>
+                        {(data.symbolTrades?.length ?? 0) > 0 && (
+                            <SuggestionsTable
+                                suggestions={data.symbolTrades ?? []}
+                                mode={data.mode}
+                                title="Net Trades by Symbol (Tax Impact)"
+                            />
+                        )}
+                    </>
+                ) : (
+                    <SuggestionsTable suggestions={data.suggestions} mode={data.mode} />
+                )}
+            </div>
+        </InvestmentsPage>
     );
 }

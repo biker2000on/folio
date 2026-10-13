@@ -39,7 +39,7 @@ export function SectorSuggestionsTable({ groups, netBySymbol, mode }: SectorSugg
         .reduce((sum, g) => sum + g.amount, 0);
 
     return (
-        <div className="bg-background-secondary rounded-lg border border-border overflow-hidden">
+        <div className="bg-surface rounded-lg border border-border overflow-hidden">
             <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3 flex-wrap">
                 <h3 className="text-sm font-semibold text-foreground">
                     {mode === 'buy-only'
@@ -73,14 +73,14 @@ export function SectorSuggestionsTable({ groups, netBySymbol, mode }: SectorSugg
             ) : (
                 <div className="overflow-x-auto">
                     <table className="w-full min-w-[560px] text-sm">
-                        <thead className="bg-background-tertiary/50">
-                            <tr className="text-left text-xs text-foreground-secondary">
+                        <thead className="border-b border-border bg-background-secondary/60">
+                            <tr className="text-left text-[11px] uppercase tracking-wider text-foreground-muted">
                                 <th className="px-4 py-2 font-medium">Sector / Symbol</th>
                                 <th className="px-4 py-2 font-medium text-right">Share of Sector</th>
                                 <th className="px-4 py-2 font-medium text-right">Amount</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-border">
+                        <tbody className="divide-y divide-border/70">
                             {groups.map(group => (
                                 <SectorGroup
                                     key={`${group.action}:${group.sector}`}

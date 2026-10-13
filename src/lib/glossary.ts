@@ -291,7 +291,7 @@ export const GLOSSARY: Record<string, GlossaryEntry> = {
     },
     TTM: {
         expansion: 'Trailing Twelve Months',
-        gloss: 'The total over the most recent twelve months, ending today.',
+        gloss: 'The total over the last 365 days, ending today.',
     },
     FX: {
         expansion: 'Foreign Exchange',

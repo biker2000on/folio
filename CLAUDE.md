@@ -91,6 +91,7 @@ docker run -p 3000:3000 -e DATABASE_URL="..." gnucash-web
 - `reports/ContributionTable.tsx` - Contribution report with expandable per-account drill-down and tax-year editing
 - `reports/ContributionLimitBar.tsx` - IRS limit progress bar with color-coded thresholds
 - `scheduled-transactions/CreateScheduledPanel.tsx` - Slide-over form for creating new scheduled transactions
+- `investments/ui.tsx` - Investments section primitives: `KpiCard` (every KPI links to the view that explains it), `Segmented`, `SectionTabs`, `Panel`/`ChartPanel`, `CHART_THEME` (see DESIGN.md "KPI cards and section primitives")
 
 ## Key Technical Details
 

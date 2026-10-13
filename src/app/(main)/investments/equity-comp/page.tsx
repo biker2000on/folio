@@ -5,6 +5,7 @@ import { PageHeader } from '@/components/ui/PageHeader';
 import { RsuVestPanel } from './RsuVestPanel';
 import { EsppPanel } from './EsppPanel';
 import { EquityCompHistory } from './EquityCompHistory';
+import { InvestmentsPage } from '@/components/investments/ui';
 
 /**
  * Equity Compensation tracking: record RSU vest events (with sell-to-cover)
@@ -17,18 +18,18 @@ export default function EquityCompPage() {
     const refreshHistory = useCallback(() => setHistoryVersion(v => v + 1), []);
 
     return (
-        <div className="space-y-6">
+        <InvestmentsPage>
             <PageHeader
                 title="Equity Compensation"
                 subtitle="Record RSU vests and ESPP purchases with FMV cost basis"
             />
 
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
                 <RsuVestPanel onPosted={refreshHistory} />
                 <EsppPanel onPosted={refreshHistory} />
             </div>
 
             <EquityCompHistory version={historyVersion} />
-        </div>
+        </InvestmentsPage>
     );
 }

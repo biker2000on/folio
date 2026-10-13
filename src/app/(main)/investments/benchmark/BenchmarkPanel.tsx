@@ -1,8 +1,15 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { StatCard, StatGrid } from '@/components/ui/StatCard';
-import ExpandableChart from '@/components/charts/ExpandableChart';
+import ExpandableChart, { ExpandedContext } from '@/components/charts/ExpandableChart';
+import { Abbr } from '@/components/ui/Abbr';
+import {
+  CHART_EXPAND_BUTTON,
+  ChartPanel,
+  EmptyState,
+  KpiCard,
+  Segmented,
+} from '@/components/investments/ui';
 import { useToast } from '@/contexts/ToastContext';
 import {
   BENCHMARK_INDEX_OPTIONS,
@@ -87,75 +94,55 @@ export function BenchmarkPanel() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface p-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h2 className="font-semibold text-foreground">Market comparison</h2>
-          <p className="text-sm text-foreground-muted">Time-weighted portfolio return against a selected index.</p>
-        </div>
+      {/* Comparison controls */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <p className="text-sm text-foreground-secondary">
+          <Abbr term="TWR" /> portfolio return against a market index.
+        </p>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <div className="flex max-w-full gap-1 overflow-x-auto [scrollbar-width:thin]">
-            {indexOptions.map((opt) => (
-              <button
-                key={opt.symbol}
-                onClick={() => setIndexSymbol(opt.symbol)}
-                className={`shrink-0 whitespace-nowrap rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-                  indexSymbol === opt.symbol
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                }`}
-              >
-                {opt.name}
-              </button>
-            ))}
-          </div>
-          <div className="flex gap-1 border-l border-border pl-2">
-            {WINDOWS.map((w) => (
-              <button
-                key={w.key}
-                onClick={() => setWindow(w.key)}
-                className={`rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                  window === w.key
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                }`}
-              >
-                {w.label}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            ariaLabel="Benchmark index"
+            value={indexSymbol}
+            onChange={setIndexSymbol}
+            options={indexOptions.map(opt => ({ value: opt.symbol, label: opt.name }))}
+          />
+          <Segmented ariaLabel="Window" value={window} onChange={setWindow} options={WINDOWS.map(w => ({ value: w.key, label: w.label }))} />
         </div>
       </div>
 
       {loading && !data ? (
         <div className="space-y-6">
-          <StatGrid cols={3}>
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="h-16 sm:h-28 bg-background-tertiary rounded-lg animate-pulse" />
+              <div key={i} className={`h-[124px] rounded-lg border border-border bg-surface animate-pulse ${i === 3 ? 'col-span-2 lg:col-span-1' : ''}`} />
             ))}
-          </StatGrid>
-          <div className="h-80 bg-background-tertiary rounded-lg animate-pulse" />
+          </div>
+          <div className="h-80 rounded-lg border border-border bg-surface animate-pulse" />
         </div>
       ) : !data ? (
-        <div className="bg-background-secondary rounded-lg p-8 border border-border text-center">
-          <p className="text-foreground-secondary text-lg">No benchmark data available</p>
-        </div>
+        <EmptyState title="No benchmark data available" />
       ) : (
         <>
-          {/* Headline cards */}
-          <StatGrid cols={3}>
-            <StatCard
+          {/* Headline cards — each opens what explains it */}
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
+            <KpiCard
               label="Your return"
               value={formatPercent(data.portfolioReturn)}
               tone={data.portfolioReturn >= 0 ? 'positive' : 'negative'}
               sub="Time-weighted return"
+              href="#growth"
+              cta="Growth chart"
             />
-            <StatCard
+            <KpiCard
               label={`${data.indexName} return`}
               value={data.insufficientCoverage ? '—' : formatPercent(data.indexReturn)}
               tone={data.indexReturn >= 0 ? 'positive' : 'negative'}
               sub={`${data.indexSymbol} total return`}
+              href="#growth"
+              cta="Growth chart"
             />
-            <StatCard
+            <KpiCard
+              className="col-span-2 lg:col-span-1"
               label="Difference (alpha)"
               value={data.insufficientCoverage ? '—' : formatPercent(data.alpha)}
               tone={data.alpha >= 0 ? 'positive' : 'negative'}
@@ -166,8 +153,10 @@ export function BenchmarkPanel() {
                     ? `Ahead of the ${data.indexName}`
                     : `Behind the ${data.indexName}`
               }
+              href="/investments/accounts"
+              cta="Returns by account"
             />
-          </StatGrid>
+          </div>
 
           {/* Coverage prompt */}
           {data.insufficientCoverage && (
@@ -179,7 +168,7 @@ export function BenchmarkPanel() {
               <button
                 onClick={handleBackfill}
                 disabled={backfilling}
-                className="px-4 py-2 text-sm bg-primary hover:bg-primary-hover disabled:bg-primary/30 disabled:cursor-not-allowed text-primary-foreground rounded-lg transition-colors shrink-0"
+                className="px-4 py-2 text-sm font-medium bg-primary hover:bg-primary-hover disabled:bg-primary/30 disabled:cursor-not-allowed text-primary-foreground rounded-md transition-colors shrink-0"
               >
                 {backfilling ? 'Backfilling…' : 'Backfill index prices'}
               </button>
@@ -187,16 +176,28 @@ export function BenchmarkPanel() {
           )}
 
           {/* Comparison chart */}
-          <ExpandableChart title={`Growth of 100 — Portfolio vs ${data.indexName}`}>
-            <BenchmarkChart series={data.series} indexName={data.indexName} />
-          </ExpandableChart>
-
-          <p className="text-xs text-foreground-muted">
-            Both lines start at 100 on{' '}
-            {data.startDate ? new Date(data.startDate).toLocaleDateString() : 'the window start'}.
-            Your line is the time-weighted return (contributions and withdrawals removed); the index
-            line is the price rebased to 100.
-          </p>
+          <div id="growth" className="scroll-mt-6">
+            <ExpandableChart title={`Growth of 100 — Portfolio vs ${data.indexName}`} expandButtonClassName={CHART_EXPAND_BUTTON}>
+              <ExpandedContext.Consumer>
+                {expanded => (
+                  <ChartPanel
+                    expanded={expanded}
+                    title={`Growth of 100 — Portfolio vs ${data.indexName}`}
+                    footer={
+                      <p className="text-xs text-foreground-muted">
+                        Both lines start at 100 on{' '}
+                        {data.startDate ? new Date(data.startDate).toLocaleDateString() : 'the window start'}.
+                        Your line is the time-weighted return (contributions and withdrawals removed); the index
+                        line is the price rebased to 100.
+                      </p>
+                    }
+                  >
+                    <BenchmarkChart series={data.series} indexName={data.indexName} height={360} />
+                  </ChartPanel>
+                )}
+              </ExpandedContext.Consumer>
+            </ExpandableChart>
+          </div>
         </>
       )}
     </div>

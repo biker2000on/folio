@@ -4,7 +4,9 @@ import Link from 'next/link';
 import { formatCurrency } from '@/lib/format';
 import type { PerSecurityDividend } from '@/lib/dividends';
 import { CostBasisCoverageMark, YIELD_CONSEQUENCE } from '@/components/investments/CostBasisCoverageMark';
-import { TTM_TITLE } from './ttm';
+import { Abbr } from '@/components/ui/Abbr';
+import { Tip } from '@/components/ui/Tooltip';
+import { Panel } from '@/components/investments/ui';
 
 function formatPercent(value: number | null): string {
     if (value == null) return '—';
@@ -26,29 +28,26 @@ interface PerSecurityTableProps {
 export function PerSecurityTable({ rows, year }: PerSecurityTableProps) {
     if (rows.length === 0) {
         return (
-            <div className="bg-surface border border-border rounded-lg p-8 text-center">
-                <p className="text-foreground-secondary">No dividend-paying securities found.</p>
-            </div>
+            <Panel title="By Security">
+                <p className="py-6 text-center text-sm text-foreground-muted">No dividend-paying securities found.</p>
+            </Panel>
         );
     }
 
     const mono = { fontFeatureSettings: "'tnum'" } as const;
 
     return (
-        <div className="bg-surface border border-border rounded-lg overflow-hidden">
+        <Panel title="By Security" subtitle={`${rows.length} dividend-paying ${rows.length === 1 ? 'security' : 'securities'}`} flush>
             <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                     <thead>
-                        <tr className="border-b border-border text-foreground-secondary">
-                            <th className="text-left font-medium px-4 py-2.5">Security</th>
+                        <tr className="border-b border-border bg-background-secondary/60 text-[11px] uppercase tracking-wider text-foreground-muted">
+                            <th className="w-[30%] text-left font-medium px-4 py-2.5 sm:px-5">Security</th>
                             {year != null && (
                                 <th className="text-right font-medium px-4 py-2.5 whitespace-nowrap">{year}</th>
                             )}
                             <th className="text-right font-medium px-4 py-2.5 whitespace-nowrap">
-                                <abbr title={TTM_TITLE} className="no-underline cursor-help border-b border-dotted border-foreground-muted">
-                                    TTM
-                                </abbr>{' '}
-                                Income
+                                <Abbr term="TTM" hideIcon /> Income
                             </th>
                             <th className="text-right font-medium px-4 py-2.5 whitespace-nowrap">Yield on Cost</th>
                             <th className="text-right font-medium px-4 py-2.5 whitespace-nowrap">Current Yield</th>
@@ -59,19 +58,20 @@ export function PerSecurityTable({ rows, year }: PerSecurityTableProps) {
                         {rows.map(row => (
                             <tr
                                 key={row.commodityGuid ?? row.ticker}
-                                className="border-b border-border/40 last:border-0 hover:bg-surface-hover transition-colors"
+                                className="border-b border-border/70 last:border-0 hover:bg-surface-hover/60 transition-colors"
                             >
-                                <td className="px-4 py-2.5">
+                                <td className="px-4 py-2.5 sm:px-5">
                                     {row.accountGuid ? (
-                                        <Link
-                                            href={`/accounts/${row.accountGuid}`}
-                                            className="font-medium text-foreground hover:text-primary transition-colors"
-                                            title="Open investment account ledger"
-                                        >
-                                            {row.ticker}
-                                        </Link>
+                                        <Tip content="Open investment account ledger">
+                                            <Link
+                                                href={`/accounts/${row.accountGuid}`}
+                                                className="font-semibold text-foreground hover:text-primary transition-colors"
+                                            >
+                                                {row.ticker}
+                                            </Link>
+                                        </Tip>
                                     ) : (
-                                        <span className="font-medium text-foreground">{row.ticker}</span>
+                                        <span className="font-semibold text-foreground">{row.ticker}</span>
                                     )}
                                     {row.commodityGuid == null && (
                                         <span className="ml-2 text-xs text-foreground-muted">(cash)</span>
@@ -108,6 +108,6 @@ export function PerSecurityTable({ rows, year }: PerSecurityTableProps) {
                     </tbody>
                 </table>
             </div>
-        </div>
+        </Panel>
     );
 }

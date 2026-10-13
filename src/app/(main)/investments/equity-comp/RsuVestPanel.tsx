@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { AccountSelector } from '@/components/ui/AccountSelector';
-import { FieldGrid } from '@/components/ui/form';
+import { FieldGrid, INPUT, LABEL } from '@/components/ui/form';
 import { toLocalDateString } from '@/lib/datePresets';
 import { formatCurrency } from '@/lib/format';
 import {
@@ -13,10 +13,9 @@ import {
 } from '@/lib/equity-comp-core';
 import { SplitPreviewTable } from './SplitPreviewTable';
 
-const LABEL_CLASS = 'block text-xs text-foreground-muted uppercase tracking-wider mb-1';
-const INPUT_CLASS =
-    'w-full bg-input-bg border border-border rounded-lg px-3 py-2 text-sm text-foreground ' +
-    'placeholder-foreground-muted focus:outline-none focus:border-primary/50';
+// The shared form recipes (DESIGN.md: one input recipe, radius md).
+const LABEL_CLASS = LABEL;
+const INPUT_CLASS = `${INPUT} placeholder-foreground-muted`;
 const MONO = { fontFeatureSettings: "'tnum'" } as const;
 
 export function RsuVestPanel({ onPosted }: { onPosted: () => void }) {
@@ -110,10 +109,10 @@ export function RsuVestPanel({ onPosted }: { onPosted: () => void }) {
     };
 
     return (
-        <div className="bg-surface border border-border rounded-lg p-4 sm:p-6 space-y-4">
-            <div className="pb-3 border-b border-border">
-                <h2 className="text-base font-semibold text-foreground">RSU Vest</h2>
-                <p className="text-xs text-foreground-secondary mt-0.5">
+        <div className="bg-surface border border-border rounded-lg p-4 sm:p-5 space-y-4">
+            <div className="-mx-4 -mt-4 border-b border-border px-4 py-3 sm:-mx-5 sm:-mt-5 sm:px-5">
+                <h2 className="text-sm font-semibold text-foreground">RSU Vest</h2>
+                <p className="text-xs text-foreground-muted mt-0.5">
                     Net shares enter at FMV cost basis; gross vest value is booked as W-2
                     compensation income, withheld shares as tax paid.
                 </p>
@@ -256,7 +255,7 @@ export function RsuVestPanel({ onPosted }: { onPosted: () => void }) {
                     type="button"
                     onClick={handlePost}
                     disabled={posting || preview.specs.length === 0}
-                    className="px-4 py-2 text-sm bg-primary hover:bg-primary-hover disabled:bg-primary/50 text-primary-foreground rounded-lg transition-colors flex items-center gap-2"
+                    className="px-4 py-2 text-sm bg-primary hover:bg-primary-hover disabled:bg-primary/50 text-primary-foreground rounded-md font-medium transition-colors flex items-center gap-2"
                 >
                     {posting ? (
                         <>

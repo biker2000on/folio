@@ -7,10 +7,18 @@ import { IndustryExposureChart } from '@/components/investments/IndustryExposure
 import { PerformanceChart } from '@/components/investments/PerformanceChart';
 import { HoldingsTable } from '@/components/investments/HoldingsTable';
 import { PortfolioSummaryCards } from '@/components/investments/PortfolioSummaryCards';
-import ExpandableChart from '@/components/charts/ExpandableChart';
+import ExpandableChart, { ExpandedContext } from '@/components/charts/ExpandableChart';
 import { calculateMoneyWeightedReturn, calculateTimeWeightedReturn } from '@/lib/investment-performance';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { totalHoldings } from '@/lib/holdings-coverage';
+import { SELECT } from '@/components/ui/form';
+import {
+  CHART_EXPAND_BUTTON,
+  ChartPanel,
+  EmptyState,
+  InvestmentsPage,
+  Segmented,
+} from '@/components/investments/ui';
 
 type AllocationTab = 'holdings' | 'cashPct' | 'sector';
 
@@ -147,35 +155,32 @@ export default function AccountsPage() {
 
   if (loading) {
     return (
-      <div className="space-y-6">
+      <InvestmentsPage>
         <div className="h-8 bg-background-tertiary rounded animate-pulse w-48" />
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
           {[1, 2, 3, 4].map(i => (
-            <div key={i} className="h-32 bg-background-tertiary rounded-lg animate-pulse" />
+            <div key={i} className={`h-[124px] rounded-lg border border-border bg-surface animate-pulse ${i === 1 ? 'col-span-2 lg:col-span-1' : ''}`} />
           ))}
         </div>
-      </div>
+      </InvestmentsPage>
     );
   }
 
   if (!portfolio || portfolio.holdings.length === 0) {
     return (
-      <div className="space-y-6">
+      <InvestmentsPage>
         <PageHeader title="Account View" subtitle="Per-account investment breakdown" />
-        <div className="bg-background-secondary rounded-lg p-8 border border-border text-center">
-          <p className="text-foreground-secondary text-lg mb-2">No investment accounts found</p>
-          <p className="text-foreground-muted">
-            Investment accounts will appear here once they exist in your book.
-          </p>
-        </div>
-      </div>
+        <EmptyState title="No investment accounts found">
+          Investment accounts will appear here once they exist in your book.
+        </EmptyState>
+      </InvestmentsPage>
     );
   }
 
-  const allocationTabs: { key: AllocationTab; label: string }[] = [
-    { key: 'holdings', label: 'Holdings' },
-    { key: 'cashPct', label: 'Cash %' },
-    { key: 'sector', label: 'Sector' },
+  const allocationTabs: { value: AllocationTab; label: string }[] = [
+    { value: 'holdings', label: 'Holdings' },
+    { value: 'cashPct', label: 'Cash %' },
+    { value: 'sector', label: 'Sector' },
   ];
 
   const allocationTitle = allocationTab === 'holdings'
@@ -185,15 +190,16 @@ export default function AccountsPage() {
       : 'Sector Exposure';
 
   return (
-    <div className="space-y-6">
+    <InvestmentsPage>
       <PageHeader
         title="Account View"
         subtitle="Per-account investment breakdown"
         actions={
           <select
+            aria-label="Investment account"
             value={effectiveSelectedAccount}
             onChange={(e) => setSelectedAccount(e.target.value)}
-            className="px-4 py-2 bg-background-secondary border border-border rounded-lg text-foreground max-w-full"
+            className={`${SELECT} max-w-full sm:w-72`}
           >
             {parentAccounts.map(a => (
               <option key={a.key} value={a.key}>{a.name}</option>
@@ -210,50 +216,57 @@ export default function AccountsPage() {
         totalGainLoss={filteredSummary.totalGainLoss}
         performancePercent={safePerformancePercent}
         performanceMetric={performanceMetric}
+        valueSub="Holdings plus account cash"
+        links={{ performance: '#performance' }}
+        performanceCta="Account performance"
       />
 
-      {/* Charts */}
-      <div className="grid md:grid-cols-2 gap-6 items-stretch">
-        <div className="flex flex-col gap-0">
-          <div className="flex gap-1 mb-2 overflow-x-auto [scrollbar-width:thin]">
-            {allocationTabs.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => setAllocationTab(tab.key)}
-                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
-                  allocationTab === tab.key
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-          <ExpandableChart title={allocationTitle}>
-            {allocationTab === 'holdings' ? (
-              <AllocationChart data={filteredAllocation} />
-            ) : allocationTab === 'cashPct' ? (
-              <AllocationChart data={cashPctForAccount} />
-            ) : (
-              <IndustryExposureChart data={sectorExposureForAccount} />
-            )}
+      {/* Charts: performance leads, allocation beside it on wide screens */}
+      <div className="grid gap-4 xl:grid-cols-12">
+        <div id="performance" className="min-w-0 scroll-mt-6 xl:col-span-7">
+          <ExpandableChart title="Account Performance" expandButtonClassName={CHART_EXPAND_BUTTON}>
+            <PerformanceChart
+              title="Account Performance"
+              data={accountHistory}
+              cashFlows={accountCashFlows}
+              indices={indices}
+              returnMetric={performanceMetric}
+              onReturnMetricChange={setPerformanceMetric}
+            />
           </ExpandableChart>
         </div>
-        <ExpandableChart title="Account Performance">
-          <PerformanceChart
-            title="Account Performance"
-            data={accountHistory}
-            cashFlows={accountCashFlows}
-            indices={indices}
-            returnMetric={performanceMetric}
-            onReturnMetricChange={setPerformanceMetric}
-          />
-        </ExpandableChart>
+        <div className="min-w-0 xl:col-span-5">
+          <ExpandableChart title={allocationTitle} expandButtonClassName={CHART_EXPAND_BUTTON}>
+            <ExpandedContext.Consumer>
+              {expanded => (
+                <ChartPanel
+                  expanded={expanded}
+                  title="Allocation"
+                  actions={
+                    <Segmented
+                      ariaLabel="Allocation view"
+                      options={allocationTabs}
+                      value={allocationTab}
+                      onChange={setAllocationTab}
+                    />
+                  }
+                >
+                  {allocationTab === 'holdings' ? (
+                    <AllocationChart data={filteredAllocation} />
+                  ) : allocationTab === 'cashPct' ? (
+                    <AllocationChart data={cashPctForAccount} />
+                  ) : (
+                    <IndustryExposureChart data={sectorExposureForAccount} />
+                  )}
+                </ChartPanel>
+              )}
+            </ExpandedContext.Consumer>
+          </ExpandableChart>
+        </div>
       </div>
 
       {/* Filtered holdings table */}
       <HoldingsTable holdings={holdingsWithCash} />
-    </div>
+    </InvestmentsPage>
   );
 }

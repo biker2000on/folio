@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { formatCurrency } from '@/lib/format';
 import type { DividendSummary } from '@/lib/dividends';
@@ -8,7 +8,10 @@ import { DividendMonthlyChart } from './DividendMonthlyChart';
 import { PerSecurityTable } from './PerSecurityTable';
 import { DividendCalendar } from './DividendCalendar';
 import { TTM_TITLE } from './ttm';
-import { Tip } from '@/components/ui/Tooltip';
+import { Abbr } from '@/components/ui/Abbr';
+import { EmptyState, InvestmentsPage, KpiCard, Panel, Segmented } from '@/components/investments/ui';
+
+const TTM_KEY = 'ttm';
 
 export default function DividendsPage() {
     const [data, setData] = useState<DividendSummary | null>(null);
@@ -42,154 +45,125 @@ export default function DividendsPage() {
 
     const years = useMemo(() => (data?.perYear ?? []).map(y => y.year).sort((a, b) => b - a), [data]);
 
+    const header = (actions?: ReactNode) => (
+        <PageHeader title="Dividend Income" subtitle="Dividend tracking and forward calendar" actions={actions} />
+    );
+
     if (loading && !data) {
         return (
-            <div className="space-y-6">
-                <div className="h-8 bg-background-tertiary rounded animate-pulse w-48" />
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <InvestmentsPage>
+                <div className="h-8 w-48 animate-pulse rounded bg-background-tertiary" />
+                <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
                     {[1, 2, 3].map(i => (
-                        <div key={i} className="h-28 bg-background-tertiary rounded-lg animate-pulse" />
+                        <div
+                            key={i}
+                            className={`h-[124px] animate-pulse rounded-lg border border-border bg-surface ${i === 1 ? 'col-span-2 lg:col-span-1' : ''}`}
+                        />
                     ))}
                 </div>
-                <div className="h-72 bg-background-tertiary rounded-lg animate-pulse" />
-            </div>
+                <div className="h-80 animate-pulse rounded-lg border border-border bg-surface" />
+            </InvestmentsPage>
         );
     }
 
     if (error) {
         return (
-            <div className="space-y-6">
-                <PageHeader title="Dividend Income" subtitle="Dividend tracking and forward calendar" />
-                <div className="bg-surface border border-border rounded-lg p-8 text-center">
+            <InvestmentsPage>
+                {header()}
+                <div className="rounded-lg border border-border bg-surface p-8 text-center">
                     <p className="text-error">{error}</p>
                 </div>
-            </div>
+            </InvestmentsPage>
         );
     }
 
     if (!data || data.paymentCount === 0) {
         return (
-            <div className="space-y-6">
-                <PageHeader title="Dividend Income" subtitle="Dividend tracking and forward calendar" />
-                <div className="bg-surface border border-border rounded-lg p-8 text-center">
-                    <p className="text-foreground-secondary text-lg mb-2">No dividend income found</p>
-                    <p className="text-foreground-muted">
-                        Dividends appear here once income transactions posted to a
-                        &ldquo;Dividend&rdquo; income account exist in this book.
-                    </p>
-                </div>
-            </div>
+            <InvestmentsPage>
+                {header()}
+                <EmptyState title="No dividend income found">
+                    Dividends appear here once income transactions posted to a
+                    &ldquo;Dividend&rdquo; income account exist in this book.
+                </EmptyState>
+            </InvestmentsPage>
         );
     }
 
-    const mono = { fontFeatureSettings: "'tnum'" } as const;
-
-    const cards = [
-        {
-            label: (
-                <>
-                    <abbr title={TTM_TITLE} className="no-underline cursor-help border-b border-dotted border-foreground-muted">
-                        TTM
-                    </abbr>{' '}
-                    Dividend Income
-                </>
-            ),
-            key: 'ttm',
-            value: formatCurrency(data.ttmTotal),
-            sub: 'Trailing 12 months',
-            color: 'text-foreground',
-        },
-        {
-            label: 'Projected Next 12mo',
-            key: 'projected',
-            value: formatCurrency(data.projectedNext12mo),
-            sub: `${data.forwardCalendar.calendar.length} expected payments`,
-            color: 'text-primary',
-        },
-        {
-            label: 'Portfolio Yield',
-            key: 'yield',
-            value: data.portfolioYield != null ? `${data.portfolioYield.toFixed(2)}%` : '—',
-            sub: data.portfolioValue > 0 ? `on ${formatCurrency(data.portfolioValue)}` : 'value unavailable',
-            color: 'text-positive',
-        },
+    const periodOptions = [
+        { value: TTM_KEY, label: 'TTM', hint: TTM_TITLE },
+        ...years.slice(0, 6).map(y => ({ value: String(y), label: <span className="font-mono">{y}</span> })),
     ];
 
+    const showYear = year != null && data.yearTotal != null;
+
     return (
-        <div className="space-y-6">
-            <PageHeader
-                title="Dividend Income"
-                subtitle="Dividend tracking and forward calendar"
-                actions={
-                    <div className="flex items-center gap-1">
-                        <Tip content={TTM_TITLE}>
-                        <button
-                            onClick={() => setYear(null)}
-                            className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
-                                year == null
-                                    ? 'bg-primary text-primary-foreground'
-                                    : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                            }`}
-                        >
-                            TTM
-                        </button>
-                        </Tip>
-                        {years.slice(0, 6).map(y => (
-                            <button
-                                key={y}
-                                onClick={() => setYear(y)}
-                                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors font-mono ${
-                                    year === y
-                                        ? 'bg-primary text-primary-foreground'
-                                        : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover'
-                                }`}
-                            >
-                                {y}
-                            </button>
-                        ))}
-                    </div>
-                }
-            />
-
-            {/* Summary cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {cards.map(card => (
-                    <div key={card.key} className="bg-background-secondary rounded-lg p-4 border border-border">
-                        <p className="text-foreground-muted text-sm">{card.label}</p>
-                        <p className={`text-2xl font-bold font-mono ${card.color}`} style={mono}>{card.value}</p>
-                        <p className="text-xs text-foreground-muted mt-1">{card.sub}</p>
-                    </div>
-                ))}
-            </div>
-
-            {year != null && data.yearTotal != null && (
-                <div className="bg-primary-light border border-border rounded-lg px-4 py-2.5 flex items-center justify-between">
-                    <span className="text-sm text-foreground-secondary">
-                        Total dividends in <span className="font-medium text-foreground">{year}</span>
-                    </span>
-                    <span className="text-sm font-bold font-mono text-foreground" style={mono}>
-                        {formatCurrency(data.yearTotal)}
-                    </span>
-                </div>
+        <InvestmentsPage>
+            {header(
+                <Segmented
+                    ariaLabel="Dividend period"
+                    options={periodOptions}
+                    value={year == null ? TTM_KEY : String(year)}
+                    onChange={v => setYear(v === TTM_KEY ? null : Number(v))}
+                />
             )}
 
-            {/* Monthly income chart */}
-            <div className="bg-surface border border-border rounded-lg p-4 sm:p-6">
-                <h2 className="text-sm font-semibold text-foreground mb-4">Monthly Dividend Income</h2>
-                <DividendMonthlyChart data={data.monthly} />
+            {/* Summary cards — each opens the section that breaks the number down */}
+            <div className={`grid grid-cols-2 gap-3 sm:gap-4 ${showYear ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
+                <KpiCard
+                    className="col-span-2 lg:col-span-1"
+                    emphasis
+                    label={<><Abbr term="TTM" /> Dividend Income</>}
+                    value={formatCurrency(data.ttmTotal)}
+                    sub="Trailing 12 months"
+                    href="#by-security"
+                    cta="By security"
+                />
+                {showYear && (
+                    <KpiCard
+                        label={`${year} Dividends`}
+                        value={formatCurrency(data.yearTotal ?? 0)}
+                        sub={`Total paid in ${year}`}
+                        href="#monthly"
+                        cta="Month by month"
+                    />
+                )}
+                <KpiCard
+                    label="Projected Next 12mo"
+                    value={formatCurrency(data.projectedNext12mo)}
+                    tone="primary"
+                    sub={`${data.forwardCalendar.calendar.length} expected payments`}
+                    href="#upcoming"
+                    cta="Payment calendar"
+                />
+                <KpiCard
+                    className={showYear ? '' : 'col-span-2 sm:col-span-1'}
+                    label="Portfolio Yield"
+                    value={data.portfolioYield != null ? `${data.portfolioYield.toFixed(2)}%` : '—'}
+                    tone="positive"
+                    sub={data.portfolioValue > 0 ? `on ${formatCurrency(data.portfolioValue)}` : 'value unavailable'}
+                    href="#by-security"
+                    cta="Yield by security"
+                />
             </div>
 
+            {/* Monthly income chart */}
+            <Panel id="monthly" title="Monthly Dividend Income">
+                <DividendMonthlyChart data={data.monthly} height={280} />
+            </Panel>
+
             {/* Per-security table */}
-            <div>
-                <h2 className="text-sm font-semibold text-foreground mb-3">By Security</h2>
+            <div id="by-security" className="min-w-0 scroll-mt-6">
                 <PerSecurityTable rows={data.perSecurity} year={year} />
             </div>
 
             {/* Forward calendar */}
-            <div>
-                <h2 className="text-sm font-semibold text-foreground mb-3">Upcoming Dividends (next 12 months)</h2>
+            <section id="upcoming" className="scroll-mt-6 space-y-3">
+                <div className="flex items-baseline justify-between gap-3">
+                    <h2 className="text-sm font-semibold text-foreground">Upcoming Dividends</h2>
+                    <span className="text-xs text-foreground-muted">Next 12 months, projected from payment cadence</span>
+                </div>
                 <DividendCalendar calendar={data.forwardCalendar} />
-            </div>
-        </div>
+            </section>
+        </InvestmentsPage>
     );
 }

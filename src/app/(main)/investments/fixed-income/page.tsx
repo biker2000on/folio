@@ -11,7 +11,6 @@ import {
     ResponsiveContainer,
 } from 'recharts';
 import { PageHeader } from '@/components/ui/PageHeader';
-import { StatCard, StatGrid } from '@/components/ui/StatCard';
 import { Modal } from '@/components/ui/Modal';
 import { AccountSelector } from '@/components/ui/AccountSelector';
 import { FieldGrid, INPUT, LABEL } from '@/components/ui/form';
@@ -23,6 +22,8 @@ import type {
     LadderBucket,
 } from '@/lib/fixed-income';
 import { Tip } from '@/components/ui/Tooltip';
+import { Abbr } from '@/components/ui/Abbr';
+import { EmptyState, InvestmentsPage, KpiCard, Panel } from '@/components/investments/ui';
 
 const TNUM = { fontFeatureSettings: "'tnum'" } as const;
 
@@ -88,7 +89,7 @@ function LadderTooltip({ active, payload, label }: LadderTooltipProps) {
     if (!active || !payload || !payload.length) return null;
     const bucket = payload[0].payload;
     return (
-        <div className="bg-background border border-border rounded-lg p-3 shadow-xl">
+        <div className="rounded-md border border-border bg-surface-elevated px-3 py-2 shadow-lg">
             <p className="text-xs text-foreground-muted mb-1">Maturing in {label}</p>
             <p className="text-sm font-semibold font-mono text-foreground" style={TNUM}>
                 {formatCurrency(bucket.faceValue)} face
@@ -115,14 +116,14 @@ function LadderChart({ ladder }: { ladder: LadderBucket[] }) {
                 <XAxis
                     dataKey="year"
                     stroke="var(--foreground-secondary)"
-                    tick={{ fill: 'var(--foreground-secondary)', fontSize: 12 }}
+                    tick={{ fill: 'var(--foreground-muted)', fontSize: 11 }}
                     axisLine={{ stroke: 'var(--border)' }}
                     tickLine={{ stroke: 'var(--border)' }}
                 />
                 <YAxis
                     tickFormatter={formatAxisCurrency}
                     stroke="var(--foreground-secondary)"
-                    tick={{ fill: 'var(--foreground-secondary)', fontSize: 12 }}
+                    tick={{ fill: 'var(--foreground-muted)', fontSize: 11 }}
                     axisLine={{ stroke: 'var(--border)' }}
                     tickLine={{ stroke: 'var(--border)' }}
                     width={64}
@@ -402,31 +403,31 @@ export default function FixedIncomePage() {
 
     if (loading) {
         return (
-            <div className="space-y-6">
+            <InvestmentsPage>
                 <div className="h-8 bg-background-tertiary rounded animate-pulse w-56" />
-                <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-                    {[1, 2, 3, 4].map(i => <div key={i} className="h-24 bg-background-tertiary rounded-lg animate-pulse" />)}
+                <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+                    {[1, 2, 3, 4].map(i => <div key={i} className="h-[124px] rounded-lg border border-border bg-surface animate-pulse" />)}
                 </div>
-                <div className="h-72 bg-background-tertiary rounded-lg animate-pulse" />
-            </div>
+                <div className="h-72 rounded-lg border border-border bg-surface animate-pulse" />
+            </InvestmentsPage>
         );
     }
 
     if (error || !data) {
         return (
-            <div className="space-y-6">
+            <InvestmentsPage>
                 <PageHeader title="Fixed Income Ladder" subtitle="Bonds, CDs, treasuries, and I-Bonds by maturity" />
                 <div className="bg-surface border border-border rounded-lg p-8 text-center">
                     <p className="text-error">{error ?? 'Failed to load fixed income data'}</p>
                 </div>
-            </div>
+            </InvestmentsPage>
         );
     }
 
     const addButton = (
         <button
             onClick={openAdd}
-            className="px-3 py-1.5 text-xs font-medium rounded bg-primary text-primary-foreground transition-colors"
+            className="px-4 py-2 text-sm font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary-hover transition-colors"
         >
             Add position
         </button>
@@ -434,77 +435,79 @@ export default function FixedIncomePage() {
 
     if (data.positions.length === 0) {
         return (
-            <div className="space-y-6">
+            <InvestmentsPage>
                 <PageHeader
                     title="Fixed Income Ladder"
                     subtitle="Bonds, CDs, treasuries, and I-Bonds by maturity"
                     actions={addButton}
                 />
-                <div className="bg-surface border border-border rounded-lg p-8 text-center">
-                    <p className="text-foreground-secondary text-lg mb-2">No fixed-income positions yet</p>
-                    <p className="text-foreground-muted max-w-lg mx-auto">
+                <EmptyState title="No fixed-income positions yet">
+                    <p>
                         Mark the accounts that hold your CDs, bonds, treasuries, or I-Bonds with face
                         value, coupon, and maturity — the ladder, yields, and maturity calendar are
                         computed from the account balances.
                     </p>
                     <div className="mt-4 flex justify-center">{addButton}</div>
-                </div>
+                </EmptyState>
                 <PositionModal isOpen={modalOpen} initial={modalInitial} onClose={() => setModalOpen(false)} onSaved={load} />
-            </div>
+            </InvestmentsPage>
         );
     }
 
     const { stats } = data;
 
     return (
-        <div className="space-y-6">
+        <InvestmentsPage>
             <PageHeader
                 title="Fixed Income Ladder"
                 subtitle="Bonds, CDs, treasuries, and I-Bonds by maturity"
                 actions={addButton}
             />
 
-            {/* Stat cards */}
-            <StatGrid cols={4}>
-                <StatCard
+            {/* Stat cards — each opens the section behind the number */}
+            <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+                <KpiCard
                     label="Total Face Value"
                     value={formatCurrency(stats.totalFace)}
                     sub={`${stats.activeCount} active position${stats.activeCount === 1 ? '' : 's'}${stats.maturedCount ? ` · ${stats.maturedCount} matured` : ''}`}
+                    href="#positions"
+                    cta="Positions"
                 />
-                <StatCard
+                <KpiCard
                     label="Current Value"
                     value={formatCurrency(stats.totalCurrentValue)}
                     sub="from account balances"
+                    href="#positions"
+                    cta="Value by position"
                 />
-                <StatCard
+                <KpiCard
                     label="Weighted Avg Maturity"
                     value={stats.weightedAvgMaturityYears != null ? `${stats.weightedAvgMaturityYears.toFixed(1)} yrs` : '—'}
                     sub="value-weighted"
+                    href="#ladder"
+                    cta="Maturity ladder"
                 />
-                <StatCard
-                    label="Weighted Avg YTM"
+                <KpiCard
+                    label={<>Weighted Avg <Abbr term="YTM" /></>}
                     value={formatPct(stats.weightedAvgYtm)}
                     sub={`~${formatCurrency(stats.couponIncomeNext12mo)} coupons next 12mo`}
                     tone="positive"
+                    href="#coupons"
+                    cta="Coupon schedule"
                 />
-            </StatGrid>
-
-            {/* Ladder chart */}
-            <div className="bg-surface border border-border rounded-lg p-4 sm:p-6">
-                <h2 className="text-sm font-semibold text-foreground mb-1">Maturity Ladder</h2>
-                <p className="text-xs text-foreground-muted mb-4">Face value maturing per calendar year.</p>
-                <LadderChart ladder={data.ladder} />
             </div>
 
+            {/* Ladder chart */}
+            <Panel id="ladder" title="Maturity Ladder" subtitle="Face value maturing per calendar year">
+                <LadderChart ladder={data.ladder} />
+            </Panel>
+
             {/* Positions table */}
-            <div className="bg-surface border border-border rounded-lg overflow-hidden">
-                <div className="px-4 py-2.5 border-b border-border bg-background-secondary">
-                    <h2 className="text-sm font-semibold text-foreground">Positions</h2>
-                </div>
+            <Panel id="positions" title="Positions" subtitle={`${data.positions.length} position${data.positions.length === 1 ? '' : 's'}`} flush>
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm min-w-[820px]">
                         <thead>
-                            <tr className="text-left text-[11px] uppercase tracking-wider text-foreground-muted border-b border-border">
+                            <tr className="text-left text-[11px] uppercase tracking-wider text-foreground-muted border-b border-border bg-background-secondary/60">
                                 <th className="px-4 py-2 font-medium">Account</th>
                                 <th className="px-4 py-2 font-medium">Kind</th>
                                 <th className="px-4 py-2 font-medium text-right">Face</th>
@@ -518,7 +521,7 @@ export default function FixedIncomePage() {
                         </thead>
                         <tbody>
                             {data.positions.map(p => (
-                                <tr key={p.accountGuid} className={`border-b border-border last:border-b-0 ${p.matured ? 'opacity-50' : ''}`}>
+                                <tr key={p.accountGuid} className={`border-b border-border/70 last:border-b-0 transition-colors hover:bg-surface-hover/40 ${p.matured ? 'opacity-50' : ''}`}>
                                     <td className="px-4 py-2">
                                         <div className="text-foreground font-medium whitespace-nowrap">{p.accountName}</div>
                                         <div className="text-xs text-foreground-muted whitespace-nowrap">{p.accountPath}</div>
@@ -562,18 +565,15 @@ export default function FixedIncomePage() {
                         </tbody>
                     </table>
                 </div>
-            </div>
+            </Panel>
 
             {/* Maturity calendar + coupons */}
-            <div className="grid gap-6 lg:grid-cols-2">
-                <div className="bg-surface border border-border rounded-lg overflow-hidden">
-                    <div className="px-4 py-2.5 border-b border-border bg-background-secondary">
-                        <h2 className="text-sm font-semibold text-foreground">Maturing in the Next 12 Months</h2>
-                    </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+                <Panel id="maturities" title="Maturing in the Next 12 Months" flush>
                     {data.upcomingMaturities.length === 0 ? (
                         <p className="p-6 text-sm text-foreground-muted">Nothing matures in the next 12 months.</p>
                     ) : (
-                        <ul className="divide-y divide-border">
+                        <ul className="divide-y divide-border/70">
                             {data.upcomingMaturities.map(m => (
                                 <li key={m.accountGuid} className="px-4 py-3 flex items-center justify-between gap-3">
                                     <div className="min-w-0">
@@ -600,18 +600,15 @@ export default function FixedIncomePage() {
                             ))}
                         </ul>
                     )}
-                </div>
+                </Panel>
 
-                <div className="bg-surface border border-border rounded-lg overflow-hidden">
-                    <div className="px-4 py-2.5 border-b border-border bg-background-secondary">
-                        <h2 className="text-sm font-semibold text-foreground">Estimated Coupon Payments (next 12 months)</h2>
-                    </div>
+                <Panel id="coupons" title="Estimated Coupon Payments" subtitle="Next 12 months" flush>
                     {data.couponPayments.length === 0 ? (
                         <p className="p-6 text-sm text-foreground-muted">
                             No coupon payments expected (zero-coupon positions and I-Bonds compound instead of paying out).
                         </p>
                     ) : (
-                        <ul className="divide-y divide-border max-h-[420px] overflow-y-auto">
+                        <ul className="divide-y divide-border/70 max-h-[420px] overflow-y-auto">
                             {data.couponPayments.map((c, i) => (
                                 <li key={`${c.accountGuid}-${c.date}-${i}`} className="px-4 py-2.5 flex items-center justify-between gap-3">
                                     <div className="min-w-0 flex items-center gap-2">
@@ -625,7 +622,7 @@ export default function FixedIncomePage() {
                             ))}
                         </ul>
                     )}
-                </div>
+                </Panel>
             </div>
 
             <p className="text-xs text-foreground-muted">
@@ -635,6 +632,6 @@ export default function FixedIncomePage() {
             </p>
 
             <PositionModal isOpen={modalOpen} initial={modalInitial} onClose={() => setModalOpen(false)} onSaved={load} />
-        </div>
+        </InvestmentsPage>
     );
 }

@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { useToast } from '@/contexts/ToastContext';
+import { LABEL, SELECT, inputClass } from '@/components/ui/form';
+import { EmptyState, InvestmentsPage, KpiCard, Panel } from '@/components/investments/ui';
 
 interface PriceAlert {
     id: number;
@@ -138,31 +140,70 @@ export default function PriceAlertsPage() {
 
     if (loading) {
         return (
-            <div className="space-y-6">
+            <InvestmentsPage>
                 <div className="h-8 bg-background-tertiary rounded animate-pulse w-48" />
-                <div className="h-64 bg-background-tertiary rounded-lg animate-pulse" />
-            </div>
+                <div className="h-64 rounded-lg border border-border bg-surface animate-pulse" />
+            </InvestmentsPage>
         );
     }
 
+    const activeCount = alerts.filter(a => a.enabled).length;
+    const lastTriggered = alerts
+        .filter(a => a.lastTriggeredAt)
+        .sort((x, y) => (y.lastTriggeredAt ?? '').localeCompare(x.lastTriggeredAt ?? ''))[0];
+
     return (
-        <div className="space-y-6">
+        <InvestmentsPage>
             <PageHeader
                 title="Price Alerts"
                 subtitle="Get notified when a security crosses a price threshold"
             />
 
+            {alerts.length > 0 && (
+                <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
+                    <KpiCard
+                        label="Active Alerts"
+                        value={`${activeCount} of ${alerts.length}`}
+                        sub={`${new Set(alerts.map(a => a.commodityGuid)).size} securities watched`}
+                        href="#alerts"
+                        cta="All alerts"
+                    />
+                    <KpiCard
+                        label="Last Triggered"
+                        value={lastTriggered ? lastTriggered.mnemonic : '—'}
+                        sub={
+                            lastTriggered
+                                ? `${lastTriggered.direction === 'above' ? 'Rose above' : 'Fell below'} ${formatThreshold(lastTriggered.threshold)} · ${new Date(lastTriggered.lastTriggeredAt as string).toLocaleDateString()}`
+                                : 'No alert has fired yet'
+                        }
+                        href={lastTriggered ? `/reports/price_history?commodityGuid=${lastTriggered.commodityGuid}` : '#alerts'}
+                        cta={lastTriggered ? 'Price history' : 'All alerts'}
+                    />
+                    <KpiCard
+                        className="col-span-2 lg:col-span-1"
+                        label="Alertable Securities"
+                        value={String(alertableCommodities.length)}
+                        sub="Securities with a price feed"
+                        href="#new-alert"
+                        cta="Add an alert"
+                    />
+                </div>
+            )}
+
             {/* Add form */}
-            <div className="bg-surface border border-border rounded-lg p-4">
-                <h2 className="text-sm font-semibold text-foreground mb-3">New alert</h2>
+            <Panel
+                id="new-alert"
+                title="New alert"
+                subtitle="Checked after each price refresh; re-notifies at most once every 24 hours"
+            >
                 <div className="flex flex-wrap items-end gap-3">
-                    <label className="block space-y-1">
-                        <span className="text-xs text-foreground-muted">Commodity</span>
+                    <label className="block w-full sm:w-72">
+                        <span className={LABEL}>Commodity</span>
                         <select
                             value={commodityGuid}
                             onChange={e => setCommodityGuid(e.target.value)}
                             disabled={busy}
-                            className="block w-56 bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground"
+                            className={SELECT}
                         >
                             <option value="">Select…</option>
                             {alertableCommodities.map(c => (
@@ -172,20 +213,20 @@ export default function PriceAlertsPage() {
                             ))}
                         </select>
                     </label>
-                    <label className="block space-y-1">
-                        <span className="text-xs text-foreground-muted">Direction</span>
+                    <label className="block w-full sm:w-44">
+                        <span className={LABEL}>Direction</span>
                         <select
                             value={direction}
                             onChange={e => setDirection(e.target.value as 'above' | 'below')}
                             disabled={busy}
-                            className="block bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground"
+                            className={SELECT}
                         >
                             <option value="above">Rises above</option>
                             <option value="below">Falls below</option>
                         </select>
                     </label>
-                    <label className="block space-y-1">
-                        <span className="text-xs text-foreground-muted">Threshold price</span>
+                    <label className="block w-full sm:w-40">
+                        <span className={LABEL}>Threshold price</span>
                         <input
                             type="number"
                             min="0"
@@ -194,101 +235,98 @@ export default function PriceAlertsPage() {
                             onChange={e => setThreshold(e.target.value)}
                             disabled={busy}
                             placeholder="e.g. 250.00"
-                            className="block w-36 bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground font-mono"
+                            className={inputClass({ extra: 'text-right font-mono tabular-nums' })}
                         />
                     </label>
                     <button
                         type="button"
                         onClick={() => void addAlert()}
                         disabled={busy || !commodityGuid || !threshold}
-                        className="px-4 py-2 text-sm rounded-lg bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                        className="h-[42px] rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         Add alert
                     </button>
                 </div>
-                <p className="text-xs text-foreground-muted mt-3">
-                    Alerts are checked after each price refresh and re-notify at most once every 24 hours.
-                </p>
-            </div>
+            </Panel>
 
             {/* Alerts table */}
             {alerts.length === 0 ? (
-                <div className="bg-surface border border-border rounded-lg p-8 text-center">
-                    <p className="text-foreground-secondary text-lg mb-2">No price alerts yet</p>
-                    <p className="text-foreground-muted text-sm">
-                        Add an alert above to get a notification when a security crosses your threshold.
-                    </p>
-                </div>
+                <EmptyState title="No price alerts yet">
+                    Add an alert above to get a notification when a security crosses your threshold.
+                </EmptyState>
             ) : (
-                <div className="bg-surface border border-border rounded-lg overflow-x-auto">
-                    <table className="w-full text-sm">
-                        <thead>
-                            <tr className="text-left text-xs text-foreground-muted border-b border-border">
-                                <th className="px-4 py-2.5 font-medium">Commodity</th>
-                                <th className="px-4 py-2.5 font-medium">Condition</th>
-                                <th className="px-4 py-2.5 font-medium text-right">Threshold</th>
-                                <th className="px-4 py-2.5 font-medium">Last triggered</th>
-                                <th className="px-4 py-2.5 font-medium">Enabled</th>
-                                <th className="px-4 py-2.5 font-medium" />
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {alerts.map(a => (
-                                <tr key={a.id} className="border-b border-border last:border-0">
-                                    <td className="px-4 py-2.5">
-                                        <Link
-                                            href={`/reports/price_history?commodityGuid=${a.commodityGuid}`}
-                                            className="text-primary hover:underline font-medium"
-                                        >
-                                            {a.mnemonic}
-                                        </Link>
-                                        {a.fullname && (
-                                            <span className="text-foreground-muted ml-2 text-xs">{a.fullname}</span>
-                                        )}
-                                    </td>
-                                    <td className="px-4 py-2.5 text-foreground-secondary">
-                                        {a.direction === 'above' ? 'Rises above' : 'Falls below'}
-                                    </td>
-                                    <td className="px-4 py-2.5 text-right font-mono text-foreground">
-                                        {formatThreshold(a.threshold)}
-                                    </td>
-                                    <td className="px-4 py-2.5 text-foreground-secondary font-mono text-xs">
-                                        {a.lastTriggeredAt ? new Date(a.lastTriggeredAt).toLocaleString() : '—'}
-                                    </td>
-                                    <td className="px-4 py-2.5">
-                                        <button
-                                            type="button"
-                                            role="switch"
-                                            aria-checked={a.enabled}
-                                            disabled={busy}
-                                            onClick={() => void toggleEnabled(a)}
-                                            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
-                                                a.enabled ? 'bg-primary' : 'bg-surface-hover border border-border'
-                                            }`}
-                                        >
-                                            <span
-                                                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-primary-foreground transition-transform ${
-                                                    a.enabled ? 'translate-x-5' : 'translate-x-1'
-                                                }`}
-                                            />
-                                        </button>
-                                    </td>
-                                    <td className="px-4 py-2.5 text-right">
-                                        <button
-                                            type="button"
-                                            onClick={() => void remove(a)}
-                                            disabled={busy}
-                                            className="text-xs text-error hover:underline disabled:opacity-50"
-                                        >
-                                            Delete
-                                        </button>
-                                    </td>
+                <Panel id="alerts" title="Alerts" subtitle={`${alerts.length} ${alerts.length === 1 ? 'alert' : 'alerts'}`} flush>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead className="border-b border-border bg-background-secondary/60">
+                                <tr className="text-left text-[11px] uppercase tracking-wider text-foreground-muted">
+                                    <th className="px-4 py-2.5 font-medium sm:px-5">Commodity</th>
+                                    <th className="px-4 py-2.5 font-medium">Condition</th>
+                                    <th className="px-4 py-2.5 font-medium text-right">Threshold</th>
+                                    <th className="px-4 py-2.5 font-medium">Last triggered</th>
+                                    <th className="px-4 py-2.5 font-medium">Enabled</th>
+                                    <th className="px-4 py-2.5 font-medium"><span className="sr-only">Actions</span></th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+                            </thead>
+                            <tbody className="divide-y divide-border/70">
+                                {alerts.map(a => (
+                                    <tr key={a.id} className="transition-colors hover:bg-surface-hover/40">
+                                        <td className="px-4 py-3 sm:px-5">
+                                            <Link
+                                                href={`/reports/price_history?commodityGuid=${a.commodityGuid}`}
+                                                className="font-semibold text-foreground hover:text-primary"
+                                            >
+                                                {a.mnemonic}
+                                            </Link>
+                                            {a.fullname && (
+                                                <span className="text-foreground-muted ml-2 text-xs">{a.fullname}</span>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-3 text-foreground-secondary">
+                                            {a.direction === 'above' ? 'Rises above' : 'Falls below'}
+                                        </td>
+                                        <td className="px-4 py-3 text-right font-mono text-foreground" style={{ fontFeatureSettings: "'tnum'" }}>
+                                            {formatThreshold(a.threshold)}
+                                        </td>
+                                        <td className="px-4 py-3 text-foreground-secondary font-mono text-xs">
+                                            {a.lastTriggeredAt ? new Date(a.lastTriggeredAt).toLocaleString() : '—'}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <button
+                                                type="button"
+                                                role="switch"
+                                                aria-checked={a.enabled}
+                                                aria-label={`${a.mnemonic} alert enabled`}
+                                                disabled={busy}
+                                                onClick={() => void toggleEnabled(a)}
+                                                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                                                    a.enabled ? 'bg-primary' : 'bg-surface-hover border border-border'
+                                                }`}
+                                            >
+                                                <span
+                                                    className={`inline-block h-3.5 w-3.5 transform rounded-full bg-primary-foreground transition-transform ${
+                                                        a.enabled ? 'translate-x-5' : 'translate-x-1'
+                                                    }`}
+                                                />
+                                            </button>
+                                        </td>
+                                        <td className="px-4 py-3 text-right">
+                                            <button
+                                                type="button"
+                                                onClick={() => void remove(a)}
+                                                disabled={busy}
+                                                className="rounded-md px-2 py-1 text-xs text-error transition-colors hover:bg-error/10 disabled:opacity-50"
+                                            >
+                                                Delete
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </Panel>
             )}
-        </div>
+        </InvestmentsPage>
     );
 }

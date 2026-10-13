@@ -26,7 +26,7 @@ export function DriftBars({ rows, bandPct, keyWidthClass = 'w-16' }: DriftBarsPr
     }
 
     return (
-        <div className="bg-background-secondary rounded-lg border border-border p-4">
+        <div className="bg-surface rounded-lg border border-border p-4">
             <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-foreground">Current vs Target</h3>
                 <span className="text-xs text-foreground-muted">
@@ -91,7 +91,7 @@ export function DriftBars({ rows, bandPct, keyWidthClass = 'w-16' }: DriftBarsPr
                 })}
             </div>
 
-            <div className="flex items-center gap-4 mt-4 pt-3 border-t border-border text-xs text-foreground-muted">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-4 pt-3 border-t border-border text-xs text-foreground-muted">
                 <span className="inline-flex items-center gap-1.5">
                     <span className="inline-block w-3 h-2 rounded-sm bg-foreground-muted/50" /> Within band
                 </span>

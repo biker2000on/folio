@@ -2,6 +2,7 @@
 
 import type { RebalanceRow } from '@/lib/rebalancing';
 import { formatCurrency } from '@/lib/format';
+import { inputClass } from '@/components/ui/form';
 
 interface TargetEditorProps {
     rows: RebalanceRow[];
@@ -26,7 +27,7 @@ export function TargetEditor({ rows, targetInputs, onTargetChange, keyHeader = '
     const totalOk = Math.abs(totalPct - 100) <= 0.01;
 
     return (
-        <div className="bg-background-secondary rounded-lg border border-border overflow-hidden">
+        <div className="bg-surface rounded-lg border border-border overflow-hidden">
             <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
                 <h3 className="text-sm font-semibold text-foreground">Target Allocation</h3>
                 <span
@@ -47,8 +48,8 @@ export function TargetEditor({ rows, targetInputs, onTargetChange, keyHeader = '
 
             <div className="overflow-x-auto">
                 <table className="w-full min-w-[560px] text-sm">
-                    <thead className="bg-background-tertiary/50">
-                        <tr className="text-left text-xs text-foreground-secondary">
+                    <thead className="border-b border-border bg-background-secondary/60">
+                        <tr className="text-left text-[11px] uppercase tracking-wider text-foreground-muted">
                             <th className="px-4 py-2 font-medium">{keyHeader}</th>
                             <th className="px-4 py-2 font-medium text-right">Value</th>
                             <th className="px-4 py-2 font-medium text-right">Current %</th>
@@ -57,7 +58,7 @@ export function TargetEditor({ rows, targetInputs, onTargetChange, keyHeader = '
                             <th className="px-4 py-2 font-medium text-right">$ to Target</th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-border">
+                    <tbody className="divide-y divide-border/70">
                         {rows.map(row => (
                             <tr key={row.key} className="hover:bg-surface-hover/40">
                                 <td className="px-4 py-2">
@@ -89,7 +90,7 @@ export function TargetEditor({ rows, targetInputs, onTargetChange, keyHeader = '
                                             placeholder="0"
                                             onChange={e => onTargetChange(row.key, e.target.value)}
                                             aria-label={`Target percent for ${row.key}`}
-                                            className="w-20 bg-input-bg border border-border rounded px-2 py-1 text-right font-mono tabular-nums text-sm text-foreground focus:outline-none focus:border-primary/50"
+                                            className={inputClass({ extra: 'w-20! px-2! py-1! text-right font-mono tabular-nums' })}
                                         />
                                         <span className="text-foreground-muted text-xs">%</span>
                                     </div>

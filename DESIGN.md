@@ -161,6 +161,17 @@ contract is restated next to the tokens in `src/app/globals.css`.
 - **Tooltip styling:** `--surface-elevated` panel, 1px `--border`, radius md (6px), 13px body, expansion in `--foreground` (500), gloss in `--foreground-secondary`. Works in both themes via semantic tokens only.
 - A lint-style test (`src/__tests__/abbr-coverage.test.ts`) sweeps `src/components/` and `src/app/(main)/` for known glossary terms rendered as bare JSX text; new surfaces must use `<Abbr>` or the test fails. Do not grow its allowlist for new code.
 
+## KPI cards and section primitives
+- **Every KPI card is a way in.** A headline number links to the view that explains it (a filtered table,
+  a report, a chart section). A KPI that leads nowhere is a dead end; if no such view exists, it is a
+  stat, not a KPI. The whole card is the hit target (stretched link), with a visible "what opens" label.
+- The Investments section (`src/components/investments/ui.tsx`) is the reference implementation:
+  `KpiCard` (linked headline number), `Segmented` (one in-place switch style, `--primary-light` +
+  `--primary` when selected), `SectionTabs` (route-level underline tabs), `Panel` / `ChartPanel`
+  (card with a title row, controls on the right), `CHART_THEME` (recharts on tokens, never raw hex).
+- Section pages own their width with `max-w-[1400px]` (the Max content width above) and use a 12-column
+  grid at `xl`: the chart that matters most leads at 7 columns, its companion takes 5.
+
 ## Decisions Log
 | Date | Decision | Rationale |
 |------|----------|-----------|
@@ -174,3 +185,4 @@ contract is restated next to the tokens in `src/app/globals.css`.
 | 2026-08-19 | One input recipe (`INPUT`/`SELECT`/`TEXTAREA` in `ui/form.tsx`) | Three forms had three different recipes; a shared constant is the only thing that keeps radius, padding and focus consistent |
 | 2026-08-19 | `--negative` is money-only; `--error` is system state | Same hex today, different roles; writing the split down is what lets either pair be re-tuned later |
 | 2026-08-19 | Native `title=` banned app-wide, replaced by `Tip` | The 2026-08-04 rule only covered abbreviations; ~350 other sites kept an untouchable, unstyleable, touch-invisible hint |
+| 2026-10-13 | KPI cards always drill down; Investments section primitives | Owner feedback: the section looked amateur and its KPI cards were dead ends. One control vocabulary per section, and every headline number opens its explanation |

@@ -36,8 +36,8 @@ export function DividendCalendar({ calendar }: DividendCalendarProps) {
 
     if (payments.length === 0) {
         return (
-            <div className="bg-surface border border-border rounded-lg p-8 text-center">
-                <p className="text-foreground-secondary">
+            <div className="rounded-lg border border-dashed border-border bg-surface px-6 py-10 text-center">
+                <p className="text-sm font-medium text-foreground">
                     No upcoming dividends could be projected.
                 </p>
                 <p className="text-foreground-muted text-sm mt-1">
@@ -49,18 +49,18 @@ export function DividendCalendar({ calendar }: DividendCalendarProps) {
 
     return (
         <div className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
                 {months.map(([month, items]) => {
                     const monthTotal = items.reduce((s, i) => s + i.estimatedAmount, 0);
                     return (
                         <div key={month} className="bg-surface border border-border rounded-lg overflow-hidden">
-                            <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border bg-background-secondary">
+                            <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border">
                                 <span className="text-sm font-semibold text-foreground">{monthLabel(month)}</span>
                                 <span className="text-sm font-mono text-primary" style={mono}>
                                     {formatCurrency(monthTotal)}
                                 </span>
                             </div>
-                            <ul className="divide-y divide-border/40">
+                            <ul className="divide-y divide-border/70">
                                 {items.map((item, i) => (
                                     <li
                                         key={`${item.ticker}-${item.date}-${i}`}

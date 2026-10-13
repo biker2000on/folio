@@ -36,7 +36,7 @@ export function SplitPreviewTable({
             <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                     <thead>
-                        <tr className="bg-background-tertiary text-xs text-foreground-muted uppercase tracking-wider">
+                        <tr className="border-b border-border bg-background-secondary/60 text-[11px] text-foreground-muted uppercase tracking-wider">
                             <th className="text-left font-semibold px-3 py-2">Account</th>
                             <th className="text-right font-semibold px-3 py-2">Shares</th>
                             <th className="text-right font-semibold px-3 py-2">Debit</th>
