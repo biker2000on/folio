@@ -8,6 +8,8 @@ import { ConfirmationDialog } from '@/components/ui/ConfirmationDialog';
 import { useIsMobile } from '@/lib/hooks/useIsMobile';
 import { MobileCard } from '@/components/ui/MobileCard';
 import { PaymentConnectionCard } from '@/components/business/PaymentConnectionCard';
+import { useAccounts } from '@/lib/hooks/useAccounts';
+import { formatAccountPath } from '@/lib/account-utils';
 
 interface SimpleFinAccount {
   id: string;
@@ -41,7 +43,21 @@ interface SyncResult {
   warnings?: { account: string; warning: string }[];
 }
 
+/** Full path of the linked book account under the narrow mobile picker, which truncates it. */
+function LinkedAccountPath({ path }: { path: string | null }) {
+  if (!path) return null;
+  return (
+    <p className="mt-1 break-words text-xs text-foreground-secondary">
+      <span className="text-foreground-muted">→ </span>
+      {path}
+    </p>
+  );
+}
+
 export default function ConnectionsPage() {
+  const { data: bookAccounts = [] } = useAccounts({ flat: true });
+  const accountPaths = new Map(bookAccounts.map((a) => [a.guid, formatAccountPath(a.fullname, a.name)]));
+  const pathFor = (guid: string | null) => (guid ? accountPaths.get(guid) ?? null : null);
   const { success, error: showError } = useToast();
   const { trackJob, connect: connectJobStream } = useJobProgress();
   const [sfLiveProgress, setSfLiveProgress] = useState<string | null>(null);
@@ -315,7 +331,7 @@ export default function ConnectionsPage() {
 
   if (loading) {
     return (
-      <div className="max-w-3xl mx-auto">
+      <div className="max-w-5xl mx-auto">
         <div className="flex items-center gap-3">
           <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
           <span className="text-foreground-secondary">Loading connections...</span>
@@ -325,7 +341,7 @@ export default function ConnectionsPage() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6">
       <h1 className="text-2xl font-bold text-foreground">Connections</h1>
 
       <PaymentConnectionCard />
@@ -537,6 +553,7 @@ export default function ConnectionsPage() {
                             placeholder="Select account..."
                             className="w-full"
                           />
+                          <LinkedAccountPath path={pathFor(account.gnucashAccountGuid)} />
                           {account.isMapped && (
                             <label className="flex items-center gap-1.5 cursor-pointer">
                               <input
@@ -555,19 +572,19 @@ export default function ConnectionsPage() {
                     ))}
                   </div>
                 ) : (
-                <table className="w-full text-left">
+                <table className="w-full table-fixed text-left">
                   <thead>
                     <tr className="text-[10px] uppercase tracking-[0.2em] text-foreground-muted font-bold">
-                      <th className="px-4 py-2">Bank Account</th>
+                      <th className="px-4 py-2 w-[36%]">Bank Account</th>
                       <th className="px-4 py-2">Book Account</th>
-                      <th className="px-4 py-2 w-20">Status</th>
+                      <th className="px-4 py-2 w-28">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/30">
                     {sfAccounts.map(account => (
                       <tr key={account.id} className="hover:bg-surface-hover">
-                        <td className="px-4 py-2">
-                          <div className="text-sm text-foreground">{account.name}</div>
+                        <td className="px-4 py-2 align-top">
+                          <div className="break-words text-sm text-foreground">{account.name}</div>
                           <div className="text-xs text-foreground-muted">
                             {account.institution && <span>{account.institution} | </span>}
                             {account.currency || 'Last known'}
@@ -585,7 +602,7 @@ export default function ConnectionsPage() {
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-2">
+                        <td className="px-4 py-2 align-top">
                           <AccountSelector
                             value={account.gnucashAccountGuid || ''}
                             onChange={(guid) => handleSfMapAccount(account.id, guid, account)}
