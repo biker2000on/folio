@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   useReactTable,
   getCoreRowModel,
@@ -12,7 +12,8 @@ import {
   type RowSelectionState,
   type ColumnFiltersState,
 } from '@tanstack/react-table';
-import PayslipUploadZone from '@/components/payslips/PayslipUploadZone';
+import PayslipUploadZone, { PayslipUploadProgress, usePayslipUpload } from '@/components/payslips/PayslipUploadZone';
+import { DATA_CHANGE_EVENT } from '@/components/DataEventsProvider';
 import PayslipDetailPanel from '@/components/payslips/PayslipDetailPanel';
 import { ConfirmationDialog } from '@/components/ui/ConfirmationDialog';
 import { AccountSelector } from '@/components/ui/AccountSelector';
@@ -201,6 +202,70 @@ export default function PayslipsPage() {
     fetchPayslips();
     setShowUpload(false);
   }, [fetchPayslips]);
+  const { uploads, uploadFiles } = usePayslipUpload(handleUploadComplete);
+
+  // Extraction runs in the worker. It publishes a `payslips` data-change
+  // when a payslip leaves Processing (relayed by DataEventsProvider), so the
+  // row updates without a refresh.
+  useEffect(() => {
+    const onDataChange = (e: Event) => {
+      if (document.visibilityState !== 'visible') return;
+      const detail = (e as CustomEvent).detail as { entity?: string } | undefined;
+      if (detail?.entity === 'payslips') void fetchPayslips();
+    };
+    window.addEventListener(DATA_CHANGE_EVENT, onDataChange);
+    return () => window.removeEventListener(DATA_CHANGE_EVENT, onDataChange);
+  }, [fetchPayslips]);
+
+  // Fallback when the event stream is unavailable (no Redis, dropped SSE):
+  // poll while anything is still processing.
+  const anyProcessing = payslips.some(p => p.status === 'processing');
+  useEffect(() => {
+    if (!anyProcessing) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void fetchPayslips();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [anyProcessing, fetchPayslips]);
+
+  // Drop PDFs anywhere on the page, no need to open the upload panel first.
+  const [pageDragging, setPageDragging] = useState(false);
+  const dragDepth = useRef(0);
+  useEffect(() => {
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+    const onEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      dragDepth.current += 1;
+      setPageDragging(true);
+    };
+    const onOver = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    };
+    const onLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setPageDragging(false);
+    };
+    const onDrop = (e: DragEvent) => {
+      dragDepth.current = 0;
+      setPageDragging(false);
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer?.files.length) void uploadFiles(e.dataTransfer.files);
+    };
+    window.addEventListener('dragenter', onEnter);
+    window.addEventListener('dragover', onOver);
+    window.addEventListener('dragleave', onLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragenter', onEnter);
+      window.removeEventListener('dragover', onOver);
+      window.removeEventListener('dragleave', onLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [uploadFiles]);
 
   const table = useReactTable({
     data: payslips,
@@ -329,7 +394,20 @@ export default function PayslipsPage() {
       {/* Upload zone */}
       {showUpload && (
         <div className="bg-surface/30 backdrop-blur-xl rounded-lg border border-border p-6">
-          <PayslipUploadZone onUploadComplete={handleUploadComplete} />
+          <PayslipUploadZone onFiles={uploadFiles} />
+        </div>
+      )}
+      {uploads.length > 0 && <PayslipUploadProgress uploads={uploads} />}
+
+      {pageDragging && (
+        <div
+          data-feedback-ignore
+          className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-6 backdrop-blur-sm"
+        >
+          <div className="rounded-lg border-2 border-dashed border-primary bg-primary-light px-10 py-8 text-center">
+            <p className="text-base font-semibold text-primary">Drop payslip PDFs to upload</p>
+            <p className="mt-1 text-xs text-foreground-secondary">They are extracted in the background and appear below</p>
+          </div>
         </div>
       )}
 

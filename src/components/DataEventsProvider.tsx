@@ -38,6 +38,7 @@ export type DataChangeEntity =
   | 'reconciliation'
   | 'prices'
   | 'business'
+  | 'payslips'
   | 'book';
 
 export interface DataChangeEventPayload {

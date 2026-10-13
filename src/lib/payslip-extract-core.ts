@@ -250,5 +250,16 @@ export async function runPayslipExtraction(
       } catch { /* syncPayslipDocument is best effort */ }
     }
     throw err;
+  } finally {
+    // Every exit (ready, needs_mapping, error) changed the row: tell open
+    // payslip pages so a processing row resolves without a refresh.
+    if (resolvedBookGuid) {
+      const bookGuid = resolvedBookGuid;
+      void import('@/lib/data-events')
+        .then(({ publishDataChange }) =>
+          publishDataChange(bookGuid, 'payslips', { guid: String(payslipId), action: 'update' }),
+        )
+        .catch(() => {});
+    }
   }
 }
