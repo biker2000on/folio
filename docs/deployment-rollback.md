@@ -3,9 +3,15 @@
 Production images are published with the full Git commit SHA. The TrueNAS
 Dockhand stack reads `IMAGE_REPOSITORY` and `IMAGE_TAG` from its regular
 environment and applies the same image to the web and worker services. New
-releases use `ghcr.io/biker2000on/gnucash-web-app`; releases predating the
-2026-08-05 package-access migration remain in the legacy
-`ghcr.io/biker2000on/gnucash-web` package.
+releases use `ghcr.io/biker2000on/folio` (the repository was renamed from
+`gnucash-web` to `folio` on 2026-10-15). Older releases remain in the earlier
+packages:
+
+| Released | Package |
+|----------|---------|
+| 2026-10-15 onward | `ghcr.io/biker2000on/folio` |
+| 2026-08-05 to 2026-10-15 | `ghcr.io/biker2000on/gnucash-web-app` |
+| Before 2026-08-05 | `ghcr.io/biker2000on/gnucash-web` |
 
 ## How a deploy reaches production
 
@@ -49,9 +55,10 @@ cd /mnt/docker/volumes/dockhand/stacks/Truenas/gnucash-web-prod && docker compos
 
 1. In Dockhand, open the GnuCash Web stack and set `IMAGE_TAG` to the full
    previously healthy commit SHA. Do not use `latest` during a rollback. When
-   rolling back to a release older than the 2026-08-05 package migration, also
-   set `IMAGE_REPOSITORY=ghcr.io/biker2000on/gnucash-web`; otherwise leave it
-   unset so the compose default selects the repository-owned package.
+   rolling back to a release published before 2026-10-15, also set
+   `IMAGE_REPOSITORY` to that release's package from the table above; otherwise
+   leave it unset so the compose default selects `ghcr.io/biker2000on/folio`.
+   Clear `IMAGE_REPOSITORY` again when rolling forward.
 2. Deploy/recreate the stack and wait for both the web and worker containers to
    report healthy.
 3. Verify `/api/health`, login, account loading, and the worker health endpoint.

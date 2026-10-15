@@ -28,7 +28,7 @@
 
 services:
   app:
-    image: ${IMAGE_REPOSITORY:-ghcr.io/biker2000on/gnucash-web-app}:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPOSITORY:-ghcr.io/biker2000on/folio}:${IMAGE_TAG:-latest}
     pull_policy: always
     ports:
       - "${APP_PORT:-3000}:3000"
@@ -104,7 +104,7 @@ services:
       - "traefik.http.middlewares.cash-to-folio.redirectregex.permanent=true"
 
   worker:
-    image: ${IMAGE_REPOSITORY:-ghcr.io/biker2000on/gnucash-web-app}:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPOSITORY:-ghcr.io/biker2000on/folio}:${IMAGE_TAG:-latest}
     pull_policy: always
     command: ["node", "worker.js"]
     environment:
