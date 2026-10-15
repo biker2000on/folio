@@ -1,0 +1,373 @@
+/*
+ * Marketing surface world: the Folio desk instrument.
+ * Scoped to `.bench` so the app's navy/teal tokens never leak in (or out).
+ * Material textures (knurling, LCD scanlines, chassis grain) are the only
+ * patterned fills on the site; see DESIGN.md "Marketing surface".
+ *
+ * Everything sits in Tailwind's `components` layer so utility classes on the
+ * same element (flex-row, rounded-*, padding) still win.
+ */
+
+@layer components {
+
+.bench {
+    --bench-ground: #171a1e;
+    --bench-chassis: #24282d;
+    --bench-chassis-raised: #2c3137;
+    --bench-gunmetal: #3d4248;
+    --bench-seam: #0e1013;
+    --bench-text: #e6e2d9;
+    --bench-text-2: #b4b0a6;
+    --bench-text-3: #8c897f;
+    --bench-bone: #e6e2d9;
+    --bench-putty: #c6c2b8;
+    --bench-skirt-bone: #a29d92;
+    --bench-skirt-putty: #8e8a80;
+    --bench-legend: #22252a;
+    --bench-orange: #ff6a00;
+    --bench-orange-skirt: #b84a00;
+    --bench-amber: #ffc24d;
+    --bench-amber-dim: #a67a26;
+    --bench-lcd: #231804;
+    --bench-lcd-edge: #0b0a07;
+    --bench-focus: #ffc24d;
+
+    background-color: var(--bench-ground);
+    color: var(--bench-text);
+    font-family: var(--font-bench-body), system-ui, sans-serif;
+    color-scheme: dark;
+}
+
+.bench ::selection {
+    background: var(--bench-amber);
+    color: var(--bench-lcd);
+}
+
+.bench :focus-visible {
+    outline: 2px solid var(--bench-focus);
+    outline-offset: 3px;
+}
+
+.bench-display {
+    font-family: var(--font-bench-display), ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    font-weight: 500;
+    line-height: 0.98;
+    text-wrap: balance;
+}
+
+.bench-legend {
+    font-family: var(--font-bench-display), ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.bench-figure {
+    font-family: var(--font-bench-display), ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Silkscreened panel label: a hairline that runs out from the text. */
+.bench-silk {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--bench-text-3);
+}
+.bench-silk::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--bench-gunmetal);
+}
+
+/* Chassis: anodized panel with a seam and a soft cast shadow. */
+.bench-chassis {
+    background-color: var(--bench-chassis);
+    border: 1px solid var(--bench-gunmetal);
+    border-radius: 10px;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.06),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+        0 24px 48px -12px rgba(0, 0, 0, 0.6),
+        0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.bench-well {
+    background-color: var(--bench-seam);
+    border-radius: 6px;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6);
+}
+
+/* ---------- Keycaps ---------- */
+
+.bench-key {
+    --key-face: var(--bench-bone);
+    --key-skirt: var(--bench-skirt-bone);
+    --key-ink: var(--bench-legend);
+    position: relative;
+    display: inline-flex;
+    flex-direction: column;
+    justify-content: space-between;
+    background-color: var(--key-face);
+    color: var(--key-ink);
+    border-radius: 6px;
+    text-decoration: none;
+    cursor: pointer;
+    user-select: none;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.55),
+        inset 0 -3px 0 rgba(0, 0, 0, 0.12),
+        0 3px 0 var(--key-skirt),
+        0 8px 14px -2px rgba(0, 0, 0, 0.55);
+    transform: translateY(0);
+    transition:
+        transform 70ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        box-shadow 70ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        background-color 150ms ease-out;
+}
+.bench-key:hover {
+    --key-face: #f0ece3;
+}
+.bench-key:active,
+.bench-key[aria-pressed="true"],
+.bench-key[aria-current="page"],
+.bench-key[data-pressed="true"] {
+    transform: translateY(2px);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.4),
+        inset 0 -2px 0 rgba(0, 0, 0, 0.12),
+        0 1px 0 var(--key-skirt),
+        0 3px 6px -1px rgba(0, 0, 0, 0.5);
+}
+.bench-key--putty {
+    --key-face: var(--bench-putty);
+    --key-skirt: var(--bench-skirt-putty);
+}
+.bench-key--putty:hover {
+    --key-face: #d2cec4;
+}
+.bench-key--orange {
+    --key-face: var(--bench-orange);
+    --key-skirt: var(--bench-orange-skirt);
+    --key-ink: #1a0d02;
+}
+.bench-key--orange:hover {
+    --key-face: #ff7d22;
+}
+.bench-key--dark {
+    --key-face: var(--bench-chassis-raised);
+    --key-skirt: var(--bench-seam);
+    --key-ink: var(--bench-text);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.08),
+        0 3px 0 var(--key-skirt),
+        0 8px 14px -2px rgba(0, 0, 0, 0.55);
+}
+.bench-key--dark:hover {
+    --key-face: #353a41;
+}
+
+/* The lit indicator on a selected function key. */
+.bench-led {
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background-color: rgba(34, 37, 42, 0.25);
+    transition: background-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+[aria-pressed="true"] > .bench-led,
+[aria-pressed="true"] .bench-led,
+[aria-current="page"] .bench-led,
+[data-pressed="true"] .bench-led {
+    background-color: var(--bench-amber);
+    box-shadow: 0 0 6px 1px rgba(255, 194, 77, 0.55);
+}
+
+/* ---------- Amber LCD ---------- */
+
+.bench-lcd {
+    position: relative;
+    background-color: var(--bench-lcd);
+    color: var(--bench-amber);
+    border-radius: 4px;
+    font-family: var(--font-bench-display), ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 194, 77, 0.12),
+        inset 0 6px 18px rgba(0, 0, 0, 0.55);
+    text-shadow: 0 0 6px rgba(255, 194, 77, 0.35);
+    overflow: hidden;
+}
+.bench-lcd::after {
+    /* Pixel rows of the backlit glass. */
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0.18) 0 1px,
+        transparent 1px 3px
+    );
+}
+.bench-lcd-dim {
+    color: var(--bench-amber-dim);
+    text-shadow: none;
+}
+.bench-lcd-bezel {
+    background-color: var(--bench-lcd-edge);
+    border-radius: 6px;
+    padding: 10px;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.8), 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.bench-lcd-redraw {
+    animation: bench-redraw 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes bench-redraw {
+    from {
+        clip-path: inset(0 0 100% 0);
+        filter: brightness(1.8);
+    }
+    to {
+        clip-path: inset(0 0 0 0);
+        filter: brightness(1);
+    }
+}
+
+.bench-caret {
+    display: inline-block;
+    width: 0.6em;
+    height: 1em;
+    vertical-align: -0.12em;
+    background-color: var(--bench-amber);
+    animation: bench-blink 1.1s steps(1) infinite;
+}
+@keyframes bench-blink {
+    50% {
+        opacity: 0;
+    }
+}
+
+/* ---------- Knurled knob ---------- */
+
+.bench-knob {
+    position: relative;
+    border-radius: 9999px;
+    /* Knurled aluminium skirt: fine alternating ridges of lit and shaded metal. */
+    background-color: #8d939a;
+    background-image: repeating-conic-gradient(
+        from 0deg,
+        #c3c8cd 0deg 2.5deg,
+        #6d737a 2.5deg 5deg
+    );
+    box-shadow:
+        inset 0 2px 2px rgba(255, 255, 255, 0.35),
+        inset 0 -3px 4px rgba(0, 0, 0, 0.35),
+        0 10px 18px -4px rgba(0, 0, 0, 0.7),
+        0 0 0 4px var(--bench-seam);
+    cursor: grab;
+    touch-action: none;
+    transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.bench-knob:active {
+    cursor: grabbing;
+}
+.bench-knob-cap {
+    position: absolute;
+    inset: 18%;
+    border-radius: 9999px;
+    /* Brushed cap: a radial sweep of light across the machined face. */
+    background-color: #b8bdc3;
+    background-image: conic-gradient(
+        from 30deg,
+        #e3e6e9,
+        #a3a9b0 25%,
+        #d6dade 45%,
+        #9aa1a8 70%,
+        #e3e6e9
+    );
+    box-shadow:
+        inset 0 1px 1px rgba(255, 255, 255, 0.6),
+        inset 0 -1px 2px rgba(0, 0, 0, 0.25),
+        0 2px 4px rgba(0, 0, 0, 0.55);
+}
+.bench-knob-cap::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 8%;
+    width: 3px;
+    height: 26%;
+    margin-left: -1.5px;
+    border-radius: 2px;
+    background-color: var(--bench-legend);
+}
+
+/* Screw heads at panel corners. */
+.bench-screw {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 9999px;
+    background-color: #4a5058;
+    box-shadow: inset 0 -1px 1px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.bench-screw::after {
+    content: "";
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    top: 4px;
+    height: 2px;
+    background-color: #24282d;
+    transform: rotate(-30deg);
+}
+
+/* Patch cable draw-in on the rear panel. */
+.bench-cable {
+    stroke-dasharray: var(--cable-len, 600);
+    stroke-dashoffset: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+    .bench-rear[data-live="true"] .bench-cable {
+        animation: bench-cable 1.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+        animation-delay: var(--cable-delay, 0ms);
+    }
+}
+@keyframes bench-cable {
+    from {
+        stroke-dashoffset: var(--cable-len, 600);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bench-key,
+    .bench-knob {
+        transition: none;
+    }
+    .bench-lcd-redraw {
+        animation: none;
+    }
+    .bench-caret {
+        animation: none;
+    }
+}
+
+.bench-scroll::-webkit-scrollbar {
+    height: 8px;
+    width: 8px;
+}
+.bench-scroll::-webkit-scrollbar-thumb {
+    background-color: var(--bench-gunmetal);
+    border-radius: 4px;
+}
+.bench-scroll {
+    scrollbar-color: var(--bench-gunmetal) transparent;
+}
+
+}

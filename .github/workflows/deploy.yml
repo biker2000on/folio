@@ -32,7 +32,10 @@ env:
   REGISTRY: ghcr.io
   # This repository-owned package is intentionally distinct from the legacy
   # PAT-published package so GITHUB_TOKEN receives package admin on creation.
-  IMAGE_NAME: ${{ github.repository }}-app
+  # Pinned rather than derived from github.repository: the repo was renamed
+  # gnucash-web -> folio, and prod's docker-compose.prod.yml pulls this exact
+  # package. Changing it means migrating prod's IMAGE_REPOSITORY in lockstep.
+  IMAGE_NAME: biker2000on/gnucash-web-app
 
 # The gate is split into parallel jobs, and the image builds alongside them;
 # only `deploy` waits for all of it. Standard runners are free for this public

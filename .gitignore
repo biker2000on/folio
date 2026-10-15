@@ -72,3 +72,10 @@ scripts/*
 # including its TAX_EXEMPT-aware report.
 !scripts/repair-transfer-lot-gains.mjs
 .polly/
+
+# Impeccable design-session scratch (decision boards, review captures, reference art)
+.impeccable/mocks/
+.impeccable/review/
+.impeccable/ref/
+.impeccable/questions/
+.impeccable/decision-payload*.json

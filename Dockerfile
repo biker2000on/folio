@@ -88,8 +88,8 @@ RUN rm -rf .next/standalone/node_modules/typescript \
 FROM alpine:3.22 AS runner
 WORKDIR /app
 
-LABEL org.opencontainers.image.source="https://github.com/biker2000on/gnucash-web"
-LABEL org.opencontainers.image.description="GnuCash Web - Progressive Web App for viewing GnuCash financial data"
+LABEL org.opencontainers.image.source="https://github.com/biker2000on/folio"
+LABEL org.opencontainers.image.description="Folio - self-hosted personal and small-business finance platform"
 LABEL org.opencontainers.image.licenses="MIT"
 
 ENV NODE_ENV production

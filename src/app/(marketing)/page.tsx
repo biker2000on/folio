@@ -1,19 +1,21 @@
 import Link from 'next/link';
-import Image from 'next/image';
 import { redirect } from 'next/navigation';
 import { getSession } from '@/lib/auth';
 import { getPreference } from '@/lib/user-preferences';
-import { PILLARS, LANDING_STATS } from '@/lib/marketing-content';
+import { FEATURE_PAGES, LANDING_STATS } from '@/lib/marketing-content';
 import { product } from '@/lib/product';
+import { BenchInstrument, type InstrumentSystem } from '@/components/marketing/BenchInstrument';
+import { RearPanel } from '@/components/marketing/RearPanel';
+import { IconArrow, IconPower, IconSource } from '@/components/marketing/BenchIcons';
+import type { SystemSlug } from '@/components/marketing/LcdScreen';
 
-const TNUM = { fontFeatureSettings: "'tnum'" } as const;
+const GITHUB = 'https://github.com/biker2000on/folio';
 
-const DEMO_ROWS = [
-    { date: '07/10/2026', desc: 'Paycheck — Acme Corp', account: 'Income:Salary', amount: '+4,832.17', positive: true },
-    { date: '07/09/2026', desc: 'Buy 12.402 VTSAX @ 121.44', account: 'Assets:Brokerage:VTSAX', amount: '1,506.10', positive: false },
-    { date: '07/08/2026', desc: 'Mortgage — principal + interest', account: 'Liabilities:Mortgage', amount: '-2,214.90', positive: false },
-    { date: '07/07/2026', desc: 'Realized Gain — Lot 7f3a21c9', account: 'Income:Capital Gains:Long Term', amount: '+139.49', positive: true },
-];
+const SYSTEMS: InstrumentSystem[] = FEATURE_PAGES.map(page => ({
+    slug: page.slug as SystemSlug,
+    label: page.navLabel,
+    title: page.title,
+}));
 
 export default async function LandingPage() {
     const session = await getSession();
@@ -24,230 +26,236 @@ export default async function LandingPage() {
 
     return (
         <>
-            {/* Hero */}
-            <section className="relative overflow-hidden border-b border-border">
-                <Image
-                    src="/marketing/hero-terminal.jpg"
-                    alt=""
-                    fill
-                    priority
-                    className="object-cover"
-                    sizes="100vw"
-                />
-                <div className="absolute inset-0 bg-background/85" aria-hidden />
-                <div className="relative max-w-7xl mx-auto px-6 pt-24 pb-20 lg:pt-32 lg:pb-28">
-                    <p className="text-xs uppercase tracking-[0.2em] text-primary font-semibold mb-5">
-                        Self-hosted · Double-entry · Your data
-                    </p>
-                    <h1 className="max-w-3xl text-4xl lg:text-6xl font-bold text-foreground leading-[1.08] tracking-tight">
-                        Your entire financial life, on a ledger you own.
+            {/* First viewport: the copy on the left, the instrument doing its job on the right. */}
+            <section className="mx-auto grid max-w-[1400px] gap-10 px-4 pt-10 pb-14 sm:px-6 lg:grid-cols-12 lg:gap-12 lg:pt-16 lg:pb-20">
+                <div className="flex min-w-0 flex-col justify-center lg:col-span-5">
+                    <h1 className="bench-display text-[clamp(2.6rem,5.2vw,5rem)]">
+                        Your ledger.
+                        <br />
+                        Your hardware.
                     </h1>
-                    <p className="max-w-2xl mt-6 text-lg text-foreground-secondary leading-relaxed">
-                        {product.name} turns your ledger into an evidence-backed financial operating system:
-                        daily accounting, decisions, long-range planning, family-office consolidation,
-                        investments, taxes, and business operations—running on infrastructure you control.
+                    <p className="mt-7 max-w-[34rem] text-lg leading-relaxed text-[var(--bench-text-2)]">
+                        {product.name} is double-entry accounting you run yourself: one Docker image against your own
+                        PostgreSQL, with every amount stored as an exact fraction. No vendor holds your books.
                     </p>
-                    <div className="mt-9 flex flex-wrap gap-3">
-                        <Link
-                            href="/login"
-                            className="px-6 py-3 text-sm font-semibold bg-primary hover:bg-primary-hover text-primary-foreground rounded-md transition-colors duration-150"
-                        >
-                            Open your books
-                        </Link>
-                        <Link
-                            href="/features/platform"
-                            className="px-6 py-3 text-sm font-semibold border border-border hover:border-border-hover text-foreground rounded-md transition-colors duration-150 bg-background/60"
-                        >
-                            Explore the platform
-                        </Link>
+                    <div className="mt-9 flex flex-wrap gap-4">
                         <Link
                             href="/docs/getting-started"
-                            className="px-6 py-3 text-sm font-semibold text-foreground-secondary hover:text-foreground transition-colors duration-150"
+                            className="bench-key bench-key--orange h-14 min-w-[13rem] flex-row items-center justify-between gap-6 px-5"
                         >
-                            Read the getting-started guide
+                            <span className="bench-legend text-[12px]">Deploy {product.name}</span>
+                            <IconPower size={18} />
                         </Link>
+                        <a
+                            href={GITHUB}
+                            className="bench-key bench-key--putty h-14 min-w-[13rem] flex-row items-center justify-between gap-6 px-5"
+                        >
+                            <span className="bench-legend text-[12px]">View source</span>
+                            <IconSource size={18} />
+                        </a>
                     </div>
-                </div>
-            </section>
-
-            {/* Stats band */}
-            <section className="border-b border-border bg-background-secondary">
-                <div className="max-w-7xl mx-auto px-6 py-8 grid grid-cols-2 lg:grid-cols-4 gap-6">
-                    {LANDING_STATS.map(stat => (
-                        <div key={stat.label} className="flex items-baseline gap-3">
-                            <span className="text-3xl font-bold text-foreground font-mono" style={TNUM}>
-                                {stat.value}
-                            </span>
-                            <span className="text-sm text-foreground-muted">{stat.label}</span>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
-            {/* Operating system */}
-            <section className="border-b border-border bg-background-secondary">
-                <div className="max-w-7xl mx-auto px-6 py-20">
-                    <div className="max-w-3xl">
-                        <p className="text-[11px] uppercase tracking-wider text-primary font-semibold">The control plane</p>
-                        <h2 className="mt-3 text-3xl font-bold text-foreground tracking-tight">
-                            From “what needs attention?” to “why does this number exist?”
-                        </h2>
-                        <p className="mt-4 text-foreground-secondary leading-relaxed">
-                            Most finance software stops at dashboards. {product.name} connects action, planning,
-                            authorization, and evidence so the answer remains inspectable all the way back to the ledger.
-                        </p>
-                    </div>
-                    <div className="mt-10 grid gap-px overflow-hidden rounded-lg border border-border bg-border md:grid-cols-2 lg:grid-cols-4">
-                        {[
-                            ['Action Center', 'One ranked Fix / Decide / Do inbox for close work, opportunities, evidence, deadlines, and approved actions.'],
-                            ['Living Plan + Timeline', 'Adopt decisions into a versioned plan and see their cash, milestone, and conflict windows alongside real obligations.'],
-                            ['Family Office', 'Consolidate only authorized books with ownership look-through, explicit eliminations, and honest currency exclusions.'],
-                            ['Provenance + Operator', 'Explain calculations, preview balanced commands, require approval, preserve the audit trail, and undo supported actions.'],
-                        ].map(([title, description]) => (
-                            <div key={title} className="bg-surface p-6">
-                                <h3 className="font-semibold text-foreground">{title}</h3>
-                                <p className="mt-2 text-sm leading-relaxed text-foreground-muted">{description}</p>
-                            </div>
-                        ))}
-                    </div>
-                    <div className="mt-6 flex flex-wrap gap-4">
-                        <Link href="/features/platform" className="text-sm font-medium text-primary hover:text-primary-hover transition-colors duration-150">
-                            Explore the financial operating system
+                    <p className="mt-6 text-sm text-[var(--bench-text-3)]">
+                        Already running it?{' '}
+                        <Link href="/login" className="text-[var(--bench-text-2)] underline decoration-[var(--bench-gunmetal)] underline-offset-4 hover:text-[var(--bench-text)]">
+                            Sign in to your instance
                         </Link>
-                        <Link href="/features" className="text-sm font-medium text-foreground-secondary hover:text-foreground transition-colors duration-150">
-                            Browse every feature
-                        </Link>
-                    </div>
-                </div>
-            </section>
-
-            {/* Pillars */}
-            <section className="max-w-7xl mx-auto px-6 py-20">
-                <div className="max-w-2xl mb-12">
-                    <h2 className="text-3xl font-bold text-foreground tracking-tight">One ledger. Six connected systems.</h2>
-                    <p className="mt-3 text-foreground-secondary leading-relaxed">
-                        Everything reads and writes the same double-entry ledger — so your net worth, your tax
-                        estimate, and your invoice aging never disagree with each other.
                     </p>
                 </div>
-                <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                    {PILLARS.map(pillar => (
-                        <Link
-                            key={pillar.slug}
-                            href={`/features/${pillar.slug}`}
-                            className="group bg-surface border border-border rounded-lg overflow-hidden hover:border-primary/60 transition-colors duration-150"
-                        >
-                            <div className="relative h-44">
-                                <Image
-                                    src={pillar.image}
-                                    alt={pillar.alt}
-                                    fill
-                                    className="object-cover"
-                                    sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 33vw"
-                                />
-                                <div className="absolute inset-0 bg-background/35" aria-hidden />
-                            </div>
-                            <div className="p-6">
-                                <div className="text-[11px] uppercase tracking-wider text-primary font-semibold mb-2">
-                                    {pillar.label}
-                                </div>
-                                <h3 className="text-lg font-semibold text-foreground leading-snug">{pillar.title}</h3>
-                                <p className="mt-2 text-sm text-foreground-muted leading-relaxed line-clamp-2">{pillar.tagline}</p>
-                                <span className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-primary">
-                                    Explore
-                                    <svg className="w-4 h-4 transition-transform duration-150 group-hover:translate-x-0.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12l-7.5 7.5M21 12H3" />
-                                    </svg>
-                                </span>
-                            </div>
-                        </Link>
+
+                <div className="min-w-0 lg:col-span-7">
+                    <BenchInstrument systems={SYSTEMS} />
+                </div>
+            </section>
+
+            {/* Rating plate: the facts printed on the underside of the unit. */}
+            <section aria-label="Specification" className="mx-auto max-w-[1400px] px-4 pb-20 sm:px-6">
+                <dl className="bench-well grid grid-cols-2 gap-px overflow-hidden sm:grid-cols-3 lg:grid-cols-6">
+                    {[
+                        { label: 'Model', value: `${product.name}` },
+                        ...LANDING_STATS.slice(0, 3).map(s => ({ label: s.label, value: s.value })),
+                        { label: 'Storage', value: 'PostgreSQL' },
+                        { label: 'Cloud stores required', value: '0' },
+                    ].map(cell => (
+                        <div key={cell.label} className="bg-[var(--bench-chassis)] px-5 py-4">
+                            <dt className="bench-legend text-[10px] text-[var(--bench-text-3)]">{cell.label}</dt>
+                            <dd className="bench-figure mt-1.5 text-xl text-[var(--bench-text)]">{cell.value}</dd>
+                        </div>
                     ))}
+                </dl>
+            </section>
 
-                    {/* Precision panel fills the sixth grid cell */}
-                    <div className="bg-surface border border-border rounded-lg p-6 flex flex-col">
-                        <div className="text-[11px] uppercase tracking-wider text-foreground-muted font-semibold mb-2">
-                            Precision first
-                        </div>
-                        <h3 className="text-lg font-semibold text-foreground leading-snug">
-                            Every cent is a fraction, not a float.
-                        </h3>
-                        <div className="mt-4 flex-1 border border-border rounded-md overflow-hidden">
-                            <table className="w-full text-xs font-mono" style={TNUM}>
-                                <tbody>
-                                    {DEMO_ROWS.map(row => (
-                                        <tr key={row.desc} className="border-b border-border last:border-0">
-                                            <td className="px-3 py-2 text-foreground-muted whitespace-nowrap">{row.date}</td>
-                                            <td className="px-3 py-2 text-foreground-secondary max-w-0 w-full truncate">{row.desc}</td>
-                                            <td className={`px-3 py-2 text-right whitespace-nowrap ${row.positive ? 'text-positive' : 'text-foreground-secondary'}`}>
-                                                {row.amount}
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                        <p className="mt-3 text-xs text-foreground-muted leading-relaxed">
-                            Amounts are stored as exact numerator/denominator pairs — never floating
-                            point — so balances never drift by a cent.
+            {/* Rear panel: the ownership claim, drawn as the actual topology. */}
+            <section className="border-y border-[var(--bench-seam)] bg-[var(--bench-chassis)]">
+                <div className="mx-auto grid max-w-[1400px] gap-12 px-4 py-20 sm:px-6 lg:grid-cols-12 lg:py-28">
+                    <div className="min-w-0 lg:col-span-4">
+                        <h2 className="bench-display text-[clamp(1.9rem,3vw,2.75rem)]">Every cable lands on hardware you own.</h2>
+                        <p className="mt-6 leading-relaxed text-[var(--bench-text-2)]">
+                            {product.name} is one image plus a background worker. Its only required connection is your
+                            PostgreSQL. Receipts and backups go to your disk or S3 bucket. Bank feeds, single sign-on and
+                            AI are separate ports, and each stays off until you connect it.
                         </p>
+                        <p className="mt-4 leading-relaxed text-[var(--bench-text-2)]">
+                            Import your GnuCash file or start from a standard chart of accounts; scheduled XML exports
+                            keep a portable copy of every book. Plug in single sign-on and give your partner edit access
+                            and your accountant a read-only view, book by book.
+                        </p>
+                    </div>
+                    <div className="min-w-0 lg:col-span-8">
+                        <RearPanel />
                     </div>
                 </div>
             </section>
 
-            {/* Ownership strip */}
-            <section className="border-y border-border bg-background-secondary">
-                <div className="max-w-7xl mx-auto px-6 py-16 grid gap-10 md:grid-cols-3">
-                    <div>
-                        <h3 className="text-base font-semibold text-foreground mb-2">Yours, verifiably</h3>
-                        <p className="text-sm text-foreground-secondary leading-relaxed">
-                            One Docker image against your PostgreSQL. Receipts and backups stay on your
-                            filesystem or S3. Optional connectors and AI providers are explicit; your
-                            self-hosted ledger remains the system of record.
-                        </p>
+            {/* Precision: why the screen shows fractions. */}
+            <section className="mx-auto grid max-w-[1400px] gap-12 px-4 py-20 sm:px-6 lg:grid-cols-12 lg:py-28">
+                <div className="min-w-0 lg:col-span-5">
+                    <h2 className="bench-display text-[clamp(1.9rem,3vw,2.75rem)]">Every cent is a fraction.</h2>
+                    <p className="mt-6 max-w-[34rem] leading-relaxed text-[var(--bench-text-2)]">
+                        Floating-point maths can&apos;t represent a dime exactly. {product.name} stores every amount
+                        as an integer numerator over a denominator, so balances can&apos;t drift by a cent
+                        however many transactions you post.
+                    </p>
+                </div>
+                <div className="grid min-w-0 gap-4 sm:grid-cols-2 lg:col-span-7">
+                    <div className="bench-lcd-bezel">
+                        <div className="bench-lcd p-5">
+                            <div className="bench-lcd-dim text-[10px] tracking-[0.2em]">FLOAT · MOST APPS</div>
+                            <div className="mt-4 text-[15px]">0.10 + 0.20 =</div>
+                            <div className="mt-1 text-[clamp(1rem,1.5vw,1.2rem)] break-all leading-tight">0.30000000000000004</div>
+                            <div className="bench-lcd-dim mt-4 text-[11px] tracking-[0.12em]">DRIFT: 4 × 10⁻¹⁷</div>
+                        </div>
                     </div>
-                    <div>
-                        <h3 className="text-base font-semibold text-foreground mb-2">Desktop round-trip</h3>
-                        <p className="text-sm text-foreground-secondary leading-relaxed">
-                            The core ledger remains GnuCash-compatible while web-only capabilities use
-                            separate extension tables. Export scheduled desktop-readable XML backups and
-                            retain control of the complete data set.
-                        </p>
-                    </div>
-                    <div>
-                        <h3 className="text-base font-semibold text-foreground mb-2">Built for households</h3>
-                        <p className="text-sm text-foreground-secondary leading-relaxed">
-                            Multiple books, OIDC single sign-on, and per-book readonly/edit/admin roles. Give
-                            your partner edit access and your accountant a read-only view.
-                        </p>
+                    <div className="bench-lcd-bezel">
+                        <div className="bench-lcd p-5">
+                            <div className="bench-lcd-dim text-[10px] tracking-[0.2em]">{product.name.toUpperCase()} · VALUE_NUM / VALUE_DENOM</div>
+                            <div className="mt-4 text-[15px]">10/100 + 20/100 =</div>
+                            <div className="mt-1 text-[clamp(1rem,1.5vw,1.2rem)] leading-tight">30/100 = 0.30</div>
+                            <div className="bench-lcd-dim mt-4 text-[11px] tracking-[0.12em]">DRIFT: 0</div>
+                        </div>
                     </div>
                 </div>
             </section>
 
-            {/* CTA */}
-            <section className="max-w-7xl mx-auto px-6 py-20">
-                <div className="bg-surface border border-border rounded-lg px-8 py-12 lg:px-14 lg:py-14 flex flex-col lg:flex-row lg:items-center gap-8">
-                    <div className="flex-1">
-                        <h2 className="text-2xl lg:text-3xl font-bold text-foreground tracking-tight">
-                            Ready when your ledger is.
-                        </h2>
-                        <p className="mt-3 text-foreground-secondary leading-relaxed max-w-xl">
-                            Import a GnuCash XML file or start from a standard chart of accounts. Bank sync,
-                            price quotes, and the background worker take it from there.
+            {/* The six systems, each a key you can press through to its sheet. */}
+            <section className="border-t border-[var(--bench-seam)]">
+                <div className="mx-auto max-w-[1400px] px-4 py-20 sm:px-6 lg:py-28">
+                    <div className="flex flex-wrap items-end justify-between gap-6">
+                        <h2 className="bench-display max-w-3xl text-[clamp(1.9rem,3vw,2.75rem)]">Six systems. One ledger.</h2>
+                        <Link
+                            href="/features"
+                            className="bench-legend inline-flex items-center gap-2 text-[11px] text-[var(--bench-text-2)] hover:text-[var(--bench-text)] transition-colors duration-150"
+                        >
+                            Browse all {LANDING_STATS[0].value} capabilities <IconArrow size={14} />
+                        </Link>
+                    </div>
+                    <p className="mt-5 max-w-2xl leading-relaxed text-[var(--bench-text-2)]">
+                        Each one reads and writes the same double-entry books, so your net worth, your tax estimate and
+                        your invoice aging can&apos;t disagree with each other.
+                    </p>
+                    {/* The key legend printed under the instrument: number, then the sheet that key opens. */}
+                    <ol className="mt-12 border-b border-[var(--bench-gunmetal)]">
+                        {FEATURE_PAGES.map((page, i) => (
+                            <li key={page.slug} className="border-t border-[var(--bench-gunmetal)]">
+                                <Link
+                                    href={`/features/${page.slug}`}
+                                    className="group grid gap-x-8 gap-y-1 py-5 md:grid-cols-[3rem_minmax(0,22rem)_minmax(0,1fr)_auto] md:items-baseline"
+                                >
+                                    <span className="bench-figure hidden text-sm text-[var(--bench-text-3)] md:block">{i + 1}</span>
+                                    <span className="text-lg font-medium leading-snug text-[var(--bench-text)] group-hover:text-[var(--bench-amber)] transition-colors duration-150">
+                                        {page.title}
+                                    </span>
+                                    <span className="text-sm leading-relaxed text-[var(--bench-text-2)]">{page.tagline}</span>
+                                    <IconArrow size={16} className="hidden text-[var(--bench-text-3)] group-hover:text-[var(--bench-text)] md:block" />
+                                </Link>
+                            </li>
+                        ))}
+                    </ol>
+                </div>
+            </section>
+
+            {/* Evidence: a number traced back to its sources, the way the app's "Explain this number" does. */}
+            <section className="border-t border-[var(--bench-seam)] bg-[var(--bench-chassis)]">
+                <div className="mx-auto grid max-w-[1400px] gap-12 px-4 py-20 sm:px-6 lg:grid-cols-12 lg:items-center lg:py-28">
+                    <div className="min-w-0 lg:order-2 lg:col-span-5 lg:col-start-8">
+                        <h2 className="bench-display text-[clamp(1.9rem,3vw,2.75rem)]">Every number explains itself.</h2>
+                        <p className="mt-6 leading-relaxed text-[var(--bench-text-2)]">
+                            Important figures trace back through their formula, their assumptions and the transactions
+                            underneath. Stale prices and missing exchange rates are flagged, not hidden. Automated
+                            changes are previewed, approved, audited and, where possible, undoable.
                         </p>
                     </div>
-                    <div className="flex gap-3 shrink-0">
-                        <Link
-                            href="/login"
-                            className="px-6 py-3 text-sm font-semibold bg-primary hover:bg-primary-hover text-primary-foreground rounded-md transition-colors duration-150"
-                        >
-                            Sign in
-                        </Link>
-                        <Link
-                            href="/docs"
-                            className="px-6 py-3 text-sm font-semibold border border-border hover:border-border-hover text-foreground rounded-md transition-colors duration-150"
-                        >
-                            Read the documentation
-                        </Link>
+                    <div className="bench-lcd-bezel min-w-0 lg:order-1 lg:col-span-7">
+                        <div className="bench-lcd p-5 text-[12px] leading-relaxed sm:p-6 sm:text-[13px]">
+                            <div className="flex justify-between text-[10px] tracking-[0.2em]">
+                                <span>EXPLAIN · NET WORTH</span>
+                                <span className="bench-lcd-dim">DEMO</span>
+                            </div>
+                            <div className="mt-4 text-[clamp(1.5rem,3vw,2.25rem)] leading-none">1,284,402.17</div>
+                            <div className="mt-5 space-y-1.5">
+                                <div className="grid grid-cols-[1fr_auto] gap-x-4">
+                                    <span>= Assets · 14 accounts</span>
+                                    <span>1,702,118.40</span>
+                                </div>
+                                <div className="grid grid-cols-[1fr_auto] gap-x-4">
+                                    <span>− Liabilities · 3 accounts</span>
+                                    <span>417,716.23</span>
+                                </div>
+                                <div className="bench-lcd-dim grid grid-cols-[1fr_auto] gap-x-4">
+                                    <span>Source · 3,211 splits</span>
+                                    <span>through 10/14</span>
+                                </div>
+                                <div className="grid grid-cols-[1fr_auto] gap-x-4">
+                                    <span>Warning · VXUS price</span>
+                                    <span>2 days old</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            {/* Power on. */}
+            <section className="mx-auto max-w-[1400px] px-4 py-20 sm:px-6 lg:py-28">
+                <div className="bench-chassis relative grid gap-10 p-6 sm:p-10 lg:grid-cols-12 lg:items-center">
+                    <span className="bench-screw left-3 top-3" aria-hidden />
+                    <span className="bench-screw right-3 top-3" aria-hidden />
+                    <span className="bench-screw left-3 bottom-3" aria-hidden />
+                    <span className="bench-screw right-3 bottom-3" aria-hidden />
+                    <div className="min-w-0 lg:col-span-5">
+                        <h2 className="bench-display text-[clamp(1.9rem,3vw,2.75rem)]">Power it on.</h2>
+                        <p className="mt-5 leading-relaxed text-[var(--bench-text-2)]">
+                            Point it at a PostgreSQL database, start the stack, and import your GnuCash file. Bank sync,
+                            price quotes and backups run from the worker after that.
+                        </p>
+                    </div>
+                    <div className="min-w-0 lg:col-span-7">
+                        <div className="bench-lcd-bezel">
+                            <pre className="bench-lcd bench-scroll overflow-x-auto p-5 text-[13px] leading-relaxed sm:text-[14px]">
+                                <code>
+                                    <span className="bench-lcd-dim">$ </span>docker compose -f docker-compose.prod.yml up -d
+                                    {'\n'}
+                                    <span className="bench-lcd-dim">✔ folio      started{'\n'}✔ worker     started{'\n'}</span>
+                                    <span className="bench-lcd-dim">$ </span>
+                                    <span className="bench-caret" aria-hidden />
+                                </code>
+                            </pre>
+                        </div>
+                        <div className="mt-6 flex flex-wrap gap-4">
+                            <Link
+                                href="/docs/getting-started"
+                                className="bench-key bench-key--orange h-14 min-w-[13rem] flex-row items-center justify-between gap-6 px-5"
+                            >
+                                <span className="bench-legend text-[12px]">Read the setup guide</span>
+                                <IconPower size={18} />
+                            </Link>
+                            <Link
+                                href="/docs"
+                                className="bench-key bench-key--dark h-14 min-w-[13rem] flex-row items-center justify-between gap-6 px-5"
+                            >
+                                <span className="bench-legend text-[12px]">All documentation</span>
+                                <IconArrow size={18} />
+                            </Link>
+                        </div>
                     </div>
                 </div>
             </section>

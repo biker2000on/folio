@@ -92,6 +92,7 @@ contract is restated next to the tokens in `src/app/globals.css`.
 
 ### Gradient Policy
 **No gradients. Ever.** All buttons, headings, backgrounds, and icons use solid colors. The emerald-to-cyan gradient pattern is explicitly banned. If visual hierarchy is needed, use borders, elevation (shadow), or background tint instead.
+The one carve-out is the marketing surface's *material textures* (knob knurling, brushed knob cap, LCD pixel rows), which are patterns standing in for physical material, never colour fades. See "Marketing surface".
 
 ## Spacing
 - **Base unit:** 4px
@@ -172,6 +173,46 @@ contract is restated next to the tokens in `src/app/globals.css`.
 - Section pages own their width with `max-w-[1400px]` (the Max content width above) and use a 12-column
   grid at `xl`: the chart that matters most leads at 7 columns, its companion takes 5.
 
+## Marketing surface (logged-out site)
+
+The public pages (`src/app/(marketing)/`, `src/components/marketing/`) are a **separate visual world**:
+Folio as a desk instrument you own. Everything above this section governs the app; this section governs
+only the marketing surface, scoped under the `.bench` class in `src/app/(marketing)/bench.css` so neither
+token set leaks into the other. The page is fixed dark (a self-hoster at a desk beside their homelab) and
+ignores the app's light/dark toggle. Strategy and copy rules live in PRODUCT.md and
+`.impeccable/surfaces/src-app-marketing-page-tsx.md`.
+
+### Tokens (`.bench`)
+| Token | Hex | Role |
+|-------|-----|------|
+| `--bench-ground` | `#171a1e` | Charcoal page ground |
+| `--bench-chassis` / `-raised` | `#24282d` / `#2c3137` | Anodized panels, alternating section bands, dark keys |
+| `--bench-gunmetal` | `#3d4248` | Hairlines, panel edges |
+| `--bench-seam` | `#0e1013` | Recessed wells, section seams |
+| `--bench-text` / `-2` / `-3` | `#e6e2d9` / `#b4b0a6` / `#8c897f` | Primary / body / silkscreen-muted text |
+| `--bench-bone` / `--bench-putty` | `#e6e2d9` / `#c6c2b8` | Keycap faces (secondary actions, system keys) |
+| `--bench-orange` | `#ff6a00` | **The commit key only.** One orange key per viewport (Deploy). Legend ink on it is `#1a0d02`. |
+| `--bench-amber` / `-dim` | `#ffc24d` / `#a67a26` | LCD readouts, live state, lit key LED, hover on titles |
+| `--bench-lcd` | `#231804` | LCD glass |
+
+### Type
+- **Display + legends:** Martian Mono 500, uppercase, `.bench-display` (tracking 0.02em, line-height 0.98) and `.bench-legend` (11px, tracking 0.14em). Loaded with `next/font` in the marketing layout only.
+- **Prose:** Geist 400/500, body 16–18px, measure ≤ 36rem.
+- **Figures:** `.bench-figure`, Martian Mono with tabular numerals.
+
+### Components
+- **Keycap** `.bench-key` (+ `--putty`, `--orange`, `--dark`): radius md (6px), layered skirt + soft cast shadow, 2px travel on `:active` / `aria-pressed` / `data-pressed`. Every primary/secondary action on the surface is a key; no flat buttons.
+- **LCD** `.bench-lcd` inside `.bench-lcd-bezel`: amber on glass with pixel rows. All screen figures are synthetic and must carry a visible DEMO label.
+- **Knob** `.bench-knob` (`role="slider"`): knurled aluminium skirt, brushed cap, detents via arrow keys or vertical drag.
+- **Chassis** `.bench-chassis` with `.bench-screw` corners; **well** `.bench-well` for recessed groups; **silk label** `.bench-silk` for panel labels inside the instrument (never as a kicker above a page heading).
+- **Rear panel** (`RearPanel.tsx`): the deployment topology. Solid cable = required and on hardware you own; dashed = optional connector, off until connected. On phones it becomes a vertical patch list.
+
+### Rules
+- No kickers/eyebrows above headings; no equal icon-card grids. Lists are ruled rows.
+- GnuCash is named only as an import source, with the trademark line in the footer (PRODUCT.md).
+- Motion: key-travel 70ms, LCD redraw 260ms clip-path wipe, knob detent 140ms, all `cubic-bezier(0.16, 1, 0.3, 1)`; signal pulses on required rear-panel cables. All disabled under `prefers-reduced-motion`. No scroll-entrance effects, no overshoot easing.
+- Drawn icons only (`BenchIcons.tsx`: 24px grid, 1.5 stroke, square caps).
+
 ## Decisions Log
 | Date | Decision | Rationale |
 |------|----------|-----------|
@@ -186,3 +227,4 @@ contract is restated next to the tokens in `src/app/globals.css`.
 | 2026-08-19 | `--negative` is money-only; `--error` is system state | Same hex today, different roles; writing the split down is what lets either pair be re-tuned later |
 | 2026-08-19 | Native `title=` banned app-wide, replaced by `Tip` | The 2026-08-04 rule only covered abbreviations; ~350 other sites kept an untouchable, unstyleable, touch-invisible hint |
 | 2026-10-13 | KPI cards always drill down; Investments section primitives | Owner feedback: the section looked amateur and its KPI cards were dead ends. One control vocabulary per section, and every headline number opens its explanation |
+| 2026-10-15 | Marketing site gets its own "desk instrument" world (`.bench`) | Owner chose the Hardware Bench direction for self-hoster evaluators; positioning is "you own the ledger", shown as an appliance whose every cable lands on your hardware. Stock photos removed. |

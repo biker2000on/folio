@@ -21,8 +21,6 @@ export interface FeaturePage {
     navLabel: string;
     title: string;
     tagline: string;
-    heroImage: string;
-    heroAlt: string;
     sections: FeatureSection[];
 }
 
@@ -33,8 +31,6 @@ export const FEATURE_PAGES: FeaturePage[] = [
         title: 'A financial operating system that can explain itself',
         tagline:
             'One evidence-backed control plane connects the work to fix now, the decisions that shape the future, and every source number underneath.',
-        heroImage: '/marketing/hero-terminal.jpg',
-        heroAlt: 'A precise financial workspace with ledgers and planning data',
         sections: [
             {
                 heading: 'Know what deserves attention',
@@ -79,9 +75,7 @@ export const FEATURE_PAGES: FeaturePage[] = [
         navLabel: 'Accounting',
         title: 'Real double-entry accounting, everywhere you are',
         tagline:
-            'Your complete financial book — accounts, splits, and lots — served as a fast web app. Nothing is reinterpreted, nothing is locked in: import from and export to GnuCash desktop any time.',
-        heroImage: '/marketing/accounting.jpg',
-        heroAlt: 'Tax forms and a calculator on a desk',
+            'Your complete financial book — accounts, splits, and lots — served as a fast web app. Nothing is reinterpreted, nothing is locked in: import your GnuCash file, export XML any time.',
         sections: [
             {
                 heading: 'The ledger, done right',
@@ -103,7 +97,7 @@ export const FEATURE_PAGES: FeaturePage[] = [
                     { name: 'Receipt management', description: 'Drag-and-drop or camera capture, OCR extraction, auto-matching to transactions, and a searchable gallery.' },
                     { name: 'Payslip import', description: 'PDF paystubs extracted into full split transactions — taxes, deductions, and retirement contributions itemized.' },
                     { name: 'Multiple books', description: 'Household, business, or organization books in one database with per-book roles and permissions.' },
-                    { name: 'Scheduled backups', description: 'Every book exported on your schedule to desktop-compatible GnuCash XML with retention, download, and restore.' },
+                    { name: 'Scheduled backups', description: 'Every book exported on your schedule to portable XML with retention, download, and restore.' },
                 ],
             },
             {
@@ -126,8 +120,6 @@ export const FEATURE_PAGES: FeaturePage[] = [
         title: 'Institutional-grade investment tracking',
         tagline:
             'Lot-level cost basis, realized gains that match the IRS forms, and portfolio analytics that answer real questions.',
-        heroImage: '/marketing/investments.jpg',
-        heroAlt: 'A trading terminal showing a candlestick chart',
         sections: [
             {
                 heading: 'Cost basis you can defend',
@@ -173,8 +165,6 @@ export const FEATURE_PAGES: FeaturePage[] = [
         title: 'Plan decades ahead with your real numbers',
         tagline:
             'Not a calculator with made-up inputs — every projection starts from the book you already keep.',
-        heroImage: '/marketing/planning.jpg',
-        heroAlt: 'Two people planning with notebooks and laptops',
         sections: [
             {
                 heading: 'Retirement, modeled properly',
@@ -232,8 +222,6 @@ export const FEATURE_PAGES: FeaturePage[] = [
         title: 'Run a small business on your own books',
         tagline:
             'Double-entry invoicing, receivables, and inventory — with the reports a sole proprietor actually files.',
-        heroImage: '/marketing/business.jpg',
-        heroAlt: 'A customer paying at a small business point of sale',
         sections: [
             {
                 heading: 'From invoice to payment',
@@ -291,8 +279,6 @@ export const FEATURE_PAGES: FeaturePage[] = [
         title: 'The bookkeeping does itself',
         tagline:
             'Bank sync, AI document extraction, and a watchful background worker — self-hosted, on your hardware, under your keys.',
-        heroImage: '/marketing/automation.jpg',
-        heroAlt: 'Server racks with network cables and status lights',
         sections: [
             {
                 heading: 'Data flows in on its own',
@@ -333,16 +319,6 @@ export const FEATURE_PAGES: FeaturePage[] = [
         ],
     },
 ];
-
-/** Landing-page pillar cards (one per feature page). */
-export const PILLARS = FEATURE_PAGES.map(p => ({
-    slug: p.slug,
-    label: p.navLabel,
-    title: p.title,
-    tagline: p.tagline,
-    image: p.heroImage,
-    alt: p.heroAlt,
-}));
 
 export const LANDING_STATS = [
     { value: String(FEATURES.length), label: 'registered capabilities' },
