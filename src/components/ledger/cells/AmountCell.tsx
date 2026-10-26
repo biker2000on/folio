@@ -14,10 +14,12 @@ interface AmountCellProps {
     onArrowDown?: () => void;
     onFocus?: () => void;
     onTab?: () => void;
+    /** `b`: balance the transaction with this split (journal row button's keyboard twin). */
+    onBalance?: () => void;
     onShiftTab?: () => void;
 }
 
-export function AmountCell({ value, onChange, autoFocus, onEnter, onArrowUp, onArrowDown, onFocus, onTab, onShiftTab }: AmountCellProps) {
+export function AmountCell({ value, onChange, autoFocus, onEnter, onArrowUp, onArrowDown, onFocus, onTab, onShiftTab, onBalance }: AmountCellProps) {
     const ref = useRef<HTMLInputElement>(null);
     const { defaultTaxRate } = useUserPreferences();
     const { success } = useToast();
@@ -42,6 +44,9 @@ export function AmountCell({ value, onChange, autoFocus, onEnter, onArrowUp, onA
         if ((e.key === 't' || e.key === 'T') && !e.ctrlKey && !e.metaKey && !e.altKey) {
             e.preventDefault();
             applyTax();
+        } else if ((e.key === 'b' || e.key === 'B') && !e.ctrlKey && !e.metaKey && !e.altKey && onBalance) {
+            e.preventDefault();
+            onBalance();
         } else if (e.key === 'Enter') {
             const result = evaluateMathExpression(value);
             if (result !== null) onChange(result.toFixed(2));

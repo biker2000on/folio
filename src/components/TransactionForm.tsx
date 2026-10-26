@@ -6,6 +6,7 @@ import { SplitRow } from './SplitRow';
 import { AccountSelector } from './ui/AccountSelector';
 import { DescriptionAutocomplete } from './ui/DescriptionAutocomplete';
 import { WeekdayHint } from './ui/WeekdayHint';
+import { useSplitGridNavigation, type RowMoveDirection } from '@/lib/hooks/useSplitGridNavigation';
 import { TransactionSuggestion } from '@/app/api/transactions/descriptions/route';
 import { useFormKeyboardShortcuts } from '@/lib/hooks/useFormKeyboardShortcuts';
 import { useKeyboardShortcut } from '@/lib/hooks/useKeyboardShortcut';
@@ -67,9 +68,9 @@ interface SimpleModeData {
     memo: string;
 }
 
-const createEmptySplit = (): SplitFormData => ({
+const createEmptySplit = (accountGuid = ''): SplitFormData => ({
     id: crypto.randomUUID(),
-    account_guid: '',
+    account_guid: accountGuid,
     account_name: '',
     debit: '',
     credit: '',
@@ -238,7 +239,11 @@ export function TransactionForm({
         description: '',
         num: '',
         currency_guid: defaultCurrencyGuid || '',
-        splits: [createEmptySplit(), createEmptySplit()],
+        // Advanced mode opens with the ledger's own account already on the
+        // first line (and the preset destination, if any, on the second),
+        // the same accounts Simple mode is seeded with. Part of the pristine
+        // baseline below, so the seed never reads as an edit.
+        splits: [createEmptySplit(defaultFromAccount), createEmptySplit(defaultToAccount)],
     });
     const [errors, setErrors] = useState<string[]>([]);
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -473,9 +478,32 @@ export function TransactionForm({
         }
     };
 
+    /**
+     * The id the trailing placeholder row renders under. When the placeholder
+     * is promoted to a real split it KEEPS this id, so React sees the same
+     * row (and the input the user is typing in keeps focus) while a fresh id
+     * is minted for the next placeholder.
+     */
+    const placeholderIdRef = useRef<string>(crypto.randomUUID());
+
     const handleSplitChange = (index: number, field: keyof SplitFormData, value: string) => {
         setFormData(prev => {
             const newSplits = [...prev.splits];
+            if (index >= newSplits.length) {
+                // First edit of the placeholder row: it becomes a real split.
+                // Picking an account carries the balancing amount in with it
+                // (GnuCash desktop's blank split line); typing an amount or
+                // memo starts the row from that field instead.
+                const balancing = field === 'account_guid' ? imbalanceAmounts(prev.splits) : { debit: '', credit: '' };
+                const promoted: SplitFormData = {
+                    ...createEmptySplit(),
+                    id: placeholderIdRef.current,
+                    ...balancing,
+                };
+                placeholderIdRef.current = crypto.randomUUID();
+                newSplits.push(promoted);
+                index = newSplits.length - 1;
+            }
             newSplits[index] = { ...newSplits[index], [field]: value };
             return { ...prev, splits: newSplits };
         });
@@ -591,46 +619,68 @@ export function TransactionForm({
         };
     };
 
-    const autoBalanceLastSplit = () => {
-        const { difference, submittedDifference, invalidAmountSplits } = calculateBalance();
-        // The difference is meaningless while any typed amount is unparseable.
-        if (invalidAmountSplits.length > 0) return;
-        // Nothing to do when the values that will be submitted already balance
-        // — otherwise an FX-rounding artefact would push a correct transaction
-        // out of balance. The adjustment itself uses the raw difference, which
-        // is what actually has to reach zero before rounding.
-        if (submittedDifference === 0) return;
+    /**
+     * The debit/credit (in the transaction currency) that would balance the
+     * given rows — what the placeholder row shows and what a promoted
+     * placeholder starts with. Blank while any typed amount is unparseable,
+     * since the difference means nothing then.
+     */
+    const imbalanceAmounts = (rows: SplitFormData[]): { debit: string; credit: string } => {
+        let difference = 0;
+        for (const split of rows) {
+            const rate = resolveSplitExchangeRate(split);
+            if (rate === null) continue;
+            const debit = parseSplitAmountField(split.debit);
+            const credit = parseSplitAmountField(split.credit);
+            if (debit === null || credit === null) return { debit: '', credit: '' };
+            difference += (debit - credit) * rate;
+        }
+        const needed = Math.round(-difference * 100) / 100;
+        return {
+            debit: needed > 0 ? needed.toFixed(2) : '',
+            credit: needed < 0 ? Math.abs(needed).toFixed(2) : '',
+        };
+    };
 
+    /**
+     * "Balance with this split": set row `index`'s amount so the transaction
+     * balances, replacing whatever the row held. The other rows' values (in
+     * the transaction currency) decide the amount; it is then converted into
+     * this row's account currency through its exchange rate.
+     */
+    const balanceSplitAt = (index: number) => {
         setFormData(prev => {
-            const newSplits = [...prev.splits];
-            const lastIndex = newSplits.length - 1;
-            const lastSplit = newSplits[lastIndex];
-            const rate = resolveSplitExchangeRate(lastSplit);
+            const target = prev.splits[index];
+            if (!target) return prev;
+            const rate = resolveSplitExchangeRate(target);
             if (rate === null) return prev;
-            const nativeDifference = Math.abs(difference) / rate;
-            // The last split's own box is user-typed too, so it is parsed
-            // strictly rather than prefix-parsed before being added to.
-            const existingDebit = parseSplitAmountField(lastSplit.debit);
-            const existingCredit = parseSplitAmountField(lastSplit.credit);
-            if (existingDebit === null || existingCredit === null) return prev;
-
-            if (difference > 0) {
-                // Need more credit
-                newSplits[lastIndex] = {
-                    ...lastSplit,
-                    credit: (existingCredit + nativeDifference).toFixed(2),
-                    debit: '',
-                };
-            } else {
-                // Need more debit
-                newSplits[lastIndex] = {
-                    ...lastSplit,
-                    debit: (existingDebit + nativeDifference).toFixed(2),
-                    credit: '',
-                };
+            let others = 0;
+            for (const [i, split] of prev.splits.entries()) {
+                if (i === index) continue;
+                const splitRate = resolveSplitExchangeRate(split);
+                if (splitRate === null) continue;
+                const debit = parseSplitAmountField(split.debit);
+                const credit = parseSplitAmountField(split.credit);
+                // A malformed amount elsewhere makes the balance meaningless.
+                if (debit === null || credit === null) return prev;
+                others += (debit - credit) * splitRate;
             }
+            const needed = Math.round((-others / rate) * 100) / 100;
+            const newSplits = [...prev.splits];
+            newSplits[index] = {
+                ...target,
+                debit: needed > 0 ? needed.toFixed(2) : '',
+                credit: needed < 0 ? Math.abs(needed).toFixed(2) : '',
+            };
             return { ...prev, splits: newSplits };
         });
+    };
+
+    // ArrowUp/ArrowDown between split rows (modal grid); the journal's inline
+    // editor shares the same row-move rule through the hook's pure resolver.
+    const { gridRef: splitGridRef, moveFrom: moveSplitFocus } = useSplitGridNavigation();
+    const handleSplitNavigate = (row: number) => (direction: RowMoveDirection, col: string) => {
+        moveSplitFocus(direction, row, col);
     };
 
     const switchToAdvanced = () => {
@@ -645,6 +695,30 @@ export function TransactionForm({
                     prev.splits,
                 ),
             }));
+        } else {
+            // A partial Simple entry still carries over: whichever of the
+            // from/to accounts and the amount are filled land on the first
+            // two rows, so nothing typed is lost by switching. With nothing
+            // typed this leaves the seeded rows exactly as they were (and so
+            // does not count as an edit).
+            const amount = simpleData.amount.trim() ? parseAmountField(simpleData.amount) : null;
+            setFormData(prev => {
+                const rows = [...prev.splits];
+                while (rows.length < 2) rows.push(createEmptySplit());
+                const carry = (row: number, accountGuid: string, side: 'from' | 'to') => {
+                    const current = rows[row];
+                    const next = { ...current };
+                    if (accountGuid && !current.account_guid) next.account_guid = accountGuid;
+                    if (amount !== null && !current.debit && !current.credit) {
+                        if (side === 'from') next.credit = amount.toFixed(2);
+                        else next.debit = amount.toFixed(2);
+                    }
+                    rows[row] = next;
+                };
+                carry(0, simpleData.fromAccountGuid, 'from');
+                carry(1, simpleData.toAccountGuid, 'to');
+                return { ...prev, splits: rows };
+            });
         }
         setIsSimpleMode(false);
     };
@@ -1057,6 +1131,16 @@ export function TransactionForm({
     useImperativeHandle(ref, () => ({ isDirty }), [isDirty]);
 
     const { totalDebit, totalCredit, submittedDifference } = calculateBalance();
+    // The trailing placeholder row: shown only while the rows do not balance,
+    // carrying the amount still needed. Tab from the last real row lands on
+    // it, and picking an account there adds the balancing split.
+    const placeholderAmounts = isSimpleMode ? { debit: '', credit: '' } : imbalanceAmounts(formData.splits);
+    const showPlaceholder = !isSimpleMode && Boolean(placeholderAmounts.debit || placeholderAmounts.credit);
+    const placeholderSplit: SplitFormData = {
+        ...createEmptySplit(),
+        id: placeholderIdRef.current,
+        ...placeholderAmounts,
+    };
 
     // Setup keyboard shortcut (Ctrl+Enter for save)
     useFormKeyboardShortcuts(formRef, () => handleSubmit(), {
@@ -1349,19 +1433,18 @@ export function TransactionForm({
                 </div>
             ) : (
                 /*
-                 * TODO(advanced-splits): make the Advanced (multiple splits)
-                 * mode friendlier. Today it is a raw grid of Account /
-                 * Debit / Credit / Memo rows that the user has to balance by
-                 * hand. Worth doing, roughly in order:
-                 *   - a live "remaining to balance" figure next to the totals
-                 *     with a one-click "put it here" on the last row, instead
-                 *     of a separate Auto-balance link;
+                 * Advanced (multiple splits) mode. The grid follows GnuCash
+                 * desktop's register: the ledger's own account is seeded on
+                 * the first line, a greyed placeholder row carries whatever
+                 * is still needed to balance (Tab from the last row lands on
+                 * it, picking an account there adds the balancing split),
+                 * each row has a "balance with this split" button (and `b`
+                 * in an amount field), and ArrowUp/ArrowDown walk a column.
+                 *
+                 * TODO(advanced-splits): still worth doing —
                  *   - a single signed Amount column (debit/credit inferred
                  *     from sign and account type) with the two-column view as
                  *     an option, so entering a split is one field, not two;
-                 *   - keyboard flow: Enter on the last row adds a split, Tab
-                 *     order Account → Amount → Memo, Delete on an empty row
-                 *     removes it;
                  *   - the account picker remembering the last accounts used
                  *     with this payee (the description auto-match already
                  *     knows them);
@@ -1383,13 +1466,6 @@ export function TransactionForm({
                             </button>
                             <button
                                 type="button"
-                                onClick={autoBalanceLastSplit}
-                                className="text-xs text-primary hover:text-primary-hover transition-colors"
-                            >
-                                Auto-balance
-                            </button>
-                            <button
-                                type="button"
                                 onClick={handleAddSplit}
                                 className="text-xs bg-background-tertiary hover:bg-background-tertiary text-foreground px-3 py-1 rounded-lg transition-colors"
                             >
@@ -1408,7 +1484,7 @@ export function TransactionForm({
                     </div>
 
                     {/* Split Rows */}
-                    <div className="bg-background/30 rounded-lg">
+                    <div className="bg-background/30 rounded-lg" ref={splitGridRef}>
                         {formData.splits.map((split, index) => (
                             <SplitRow
                                 key={split.id}
@@ -1419,8 +1495,23 @@ export function TransactionForm({
                                 canRemove={formData.splits.length > 2}
                                 transactionCurrencyGuid={formData.currency_guid}
                                 error={fieldErrors[`splits[${index}]`]}
+                                onBalance={showPlaceholder ? () => balanceSplitAt(index) : undefined}
+                                onNavigate={handleSplitNavigate(index)}
                             />
                         ))}
+                        {showPlaceholder && (
+                            <SplitRow
+                                key={placeholderSplit.id}
+                                split={placeholderSplit}
+                                index={formData.splits.length}
+                                onChange={handleSplitChange}
+                                onRemove={handleRemoveSplit}
+                                canRemove={false}
+                                transactionCurrencyGuid={formData.currency_guid}
+                                isPlaceholder
+                                onNavigate={handleSplitNavigate(formData.splits.length)}
+                            />
+                        )}
                     </div>
                     <FieldError id="tx-error-splits-advanced" message={fieldErrors.splits} />
 

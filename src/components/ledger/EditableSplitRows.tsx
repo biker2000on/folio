@@ -7,6 +7,7 @@ import { AmountCell } from '@/components/ledger/cells/AmountCell';
 import type { Split } from '@/lib/types';
 import { DEFAULT_QTY_EPSILON } from '@/lib/tolerances';
 import { Tip } from '@/components/ui/Tooltip';
+import { resolveRowMove, type RowMoveDirection } from '@/lib/hooks/useSplitGridNavigation';
 
 /** The stored state of a split, carried through edits untouched. */
 interface StoredFractions {
@@ -289,6 +290,30 @@ const EditableSplitRows = forwardRef<EditableSplitRowsHandle, EditableSplitRowsP
         });
     }, [createBlankSplit]);
 
+    /**
+     * "Balance with this split": set row `index`'s amount so the real rows
+     * sum to zero, replacing whatever it held. Same rule as the transaction
+     * modal's per-row balance button.
+     */
+    const balanceSplitAt = useCallback((index: number) => {
+        setSplits(prev => {
+            const target = prev[index];
+            if (!target || target.isPlaceholder) return prev;
+            const others = prev.reduce((sum, s, i) => {
+                if (i === index || s.isPlaceholder) return sum;
+                return sum + (parseFloat(s.debit) || 0) - (parseFloat(s.credit) || 0);
+            }, 0);
+            const needed = Math.round(-others * 100) / 100;
+            const next = [...prev];
+            next[index] = {
+                ...target,
+                debit: needed > 0 ? needed.toFixed(2) : '',
+                credit: needed < 0 ? Math.abs(needed).toFixed(2) : '',
+            };
+            return next;
+        });
+    }, []);
+
     const deleteSplit = useCallback((index: number) => {
         setSplits(prev => {
             const realCount = prev.filter(s => !s.isPlaceholder).length;
@@ -436,6 +461,17 @@ const EditableSplitRows = forwardRef<EditableSplitRowsHandle, EditableSplitRowsP
         }
         return splitsWithImbalance.length - 1;
     })();
+    // ArrowUp/ArrowDown (and Enter, which walks down) between split rows.
+    // The decision is the shared resolver the modal grid uses too; here a
+    // move is a change of the ledger's focused split index.
+    const moveRow = (direction: RowMoveDirection, index: number) => {
+        const move = resolveRowMove(direction, index, lastSplitIndex);
+        if (move.kind === 'move') onFocusedSplitChange?.(move.to);
+        else if (move.kind === 'pastStart') onArrowUp?.();
+        else onArrowDownPastEnd?.();
+    };
+    const imbalanced = splitsWithImbalance.some(s => s.isPlaceholder && (s.debit || s.credit));
+
     // Column indices: standard = 0:memo,1:account,2:debit,3:credit
     // Investment = 0:memo,1:account,2:shares,3:price,4:buy,5:sell
     const lastColIndex = isInvestmentAccount ? 5 : 3;
@@ -482,18 +518,10 @@ const EditableSplitRows = forwardRef<EditableSplitRowsHandle, EditableSplitRowsP
                                         // Enter and ArrowDown: stay in the same column, move down
                                         if (e.key === 'ArrowUp') {
                                             e.preventDefault();
-                                            if (index === 0) {
-                                                onArrowUp?.();
-                                            } else {
-                                                onFocusedSplitChange?.(index - 1);
-                                            }
+                                            moveRow('up', index);
                                         } else if (e.key === 'ArrowDown' || e.key === 'Enter') {
                                             e.preventDefault();
-                                            if (index === lastSplitIndex) {
-                                                onArrowDownPastEnd?.();
-                                            } else {
-                                                onFocusedSplitChange?.(index + 1);
-                                            }
+                                            moveRow('down', index);
                                         } else if (e.key === 'Tab' && !e.shiftKey) {
                                             e.preventDefault();
                                             onColumnFocus?.(1);
@@ -527,27 +555,12 @@ const EditableSplitRows = forwardRef<EditableSplitRowsHandle, EditableSplitRowsP
                                     autoFocus={focusedColumnIndex === 1}
                                     onFocus={() => onColumnFocus?.(1)}
                                     // Enter: go down the column (next row, same column)
-                                    onEnter={() => {
-                                        if (index === lastSplitIndex) onArrowDownPastEnd?.();
-                                        else onFocusedSplitChange?.(index + 1);
-                                    }}
+                                    onEnter={() => moveRow('down', index)}
                                     // Tab: traverse across the row to the next column
                                     onTab={() => isPlaceholder ? onTabToNextTransaction?.() : onColumnFocus?.(isInvestmentAccount ? 2 : debitColIndex)}
                                     onShiftTab={() => onColumnFocus?.(0)}
-                                    onArrowUp={() => {
-                                        if (index === 0) {
-                                            onArrowUp?.();
-                                        } else {
-                                            onFocusedSplitChange?.(index - 1);
-                                        }
-                                    }}
-                                    onArrowDown={() => {
-                                        if (index === lastSplitIndex) {
-                                            onArrowDownPastEnd?.();
-                                        } else {
-                                            onFocusedSplitChange?.(index + 1);
-                                        }
-                                    }}
+                                    onArrowUp={() => moveRow('up', index)}
+                                    onArrowDown={() => moveRow('down', index)}
                                 />
                             ) : (
                                 <span className="text-xs text-primary">
@@ -566,11 +579,11 @@ const EditableSplitRows = forwardRef<EditableSplitRowsHandle, EditableSplitRowsP
                                         autoFocus={focusedColumnIndex === 2}
                                         onFocus={() => onColumnFocus?.(2)}
                                         // Enter: next row, same column. Tab: next column.
-                                        onEnter={() => { if (index === lastSplitIndex) onArrowDownPastEnd?.(); else onFocusedSplitChange?.(index + 1); }}
+                                        onEnter={() => moveRow('down', index)}
                                         onTab={() => onColumnFocus?.(3)}
                                         onShiftTab={() => onColumnFocus?.(1)}
-                                        onArrowUp={() => { if (index === 0) onArrowUp?.(); else onFocusedSplitChange?.(index - 1); }}
-                                        onArrowDown={() => { if (index === lastSplitIndex) onArrowDownPastEnd?.(); else onFocusedSplitChange?.(index + 1); }}
+                                        onArrowUp={() => moveRow('up', index)}
+                                        onArrowDown={() => moveRow('down', index)}
                                     />
                                 ) : (
                                     <span className={`text-xs font-mono ${split.shares ? 'text-foreground-secondary' : ''}`}>
@@ -589,11 +602,11 @@ const EditableSplitRows = forwardRef<EditableSplitRowsHandle, EditableSplitRowsP
                                         autoFocus={focusedColumnIndex === 3}
                                         onFocus={() => onColumnFocus?.(3)}
                                         // Enter: next row, same column. Tab: next column.
-                                        onEnter={() => { if (index === lastSplitIndex) onArrowDownPastEnd?.(); else onFocusedSplitChange?.(index + 1); }}
+                                        onEnter={() => moveRow('down', index)}
                                         onTab={() => onColumnFocus?.(4)}
                                         onShiftTab={() => onColumnFocus?.(2)}
-                                        onArrowUp={() => { if (index === 0) onArrowUp?.(); else onFocusedSplitChange?.(index - 1); }}
-                                        onArrowDown={() => { if (index === lastSplitIndex) onArrowDownPastEnd?.(); else onFocusedSplitChange?.(index + 1); }}
+                                        onArrowUp={() => moveRow('up', index)}
+                                        onArrowDown={() => moveRow('down', index)}
                                     />
                                 ) : (
                                     <span className="text-xs font-mono text-foreground-secondary">
@@ -611,23 +624,12 @@ const EditableSplitRows = forwardRef<EditableSplitRowsHandle, EditableSplitRowsP
                                     autoFocus={focusedColumnIndex === debitColIndex}
                                     onFocus={() => onColumnFocus?.(debitColIndex)}
                                     // Enter: down the column. Tab: across to credit.
-                                    onEnter={() => { if (index === lastSplitIndex) onArrowDownPastEnd?.(); else onFocusedSplitChange?.(index + 1); }}
+                                    onEnter={() => moveRow('down', index)}
                                     onTab={() => onColumnFocus?.(creditColIndex)}
                                     onShiftTab={() => onColumnFocus?.(debitColIndex - 1)}
-                                    onArrowUp={() => {
-                                        if (index === 0) {
-                                            onArrowUp?.();
-                                        } else {
-                                            onFocusedSplitChange?.(index - 1);
-                                        }
-                                    }}
-                                    onArrowDown={() => {
-                                        if (index === lastSplitIndex) {
-                                            onArrowDownPastEnd?.();
-                                        } else {
-                                            onFocusedSplitChange?.(index + 1);
-                                        }
-                                    }}
+                                    onArrowUp={() => moveRow('up', index)}
+                                    onArrowDown={() => moveRow('down', index)}
+                                    onBalance={imbalanced ? () => balanceSplitAt(index) : undefined}
                                 />
                             ) : (
                                 <span className="text-xs text-foreground-secondary font-mono">
@@ -646,10 +648,8 @@ const EditableSplitRows = forwardRef<EditableSplitRowsHandle, EditableSplitRowsP
                                     onFocus={() => onColumnFocus?.(creditColIndex)}
                                     onShiftTab={() => onColumnFocus?.(debitColIndex)}
                                     // Enter: down the column (stay on credit, next row / past-end).
-                                    onEnter={() => {
-                                        if (index === lastSplitIndex) onArrowDownPastEnd?.();
-                                        else onFocusedSplitChange?.(index + 1);
-                                    }}
+                                    onEnter={() => moveRow('down', index)}
+                                    onBalance={imbalanced ? () => balanceSplitAt(index) : undefined}
                                     // Tab: move to next split's memo, or next transaction.
                                     onTab={() => {
                                         if (index === lastSplitIndex) {
@@ -659,20 +659,8 @@ const EditableSplitRows = forwardRef<EditableSplitRowsHandle, EditableSplitRowsP
                                             onColumnFocus?.(0);
                                         }
                                     }}
-                                    onArrowUp={() => {
-                                        if (index === 0) {
-                                            onArrowUp?.();
-                                        } else {
-                                            onFocusedSplitChange?.(index - 1);
-                                        }
-                                    }}
-                                    onArrowDown={() => {
-                                        if (index === lastSplitIndex) {
-                                            onArrowDownPastEnd?.();
-                                        } else {
-                                            onFocusedSplitChange?.(index + 1);
-                                        }
-                                    }}
+                                    onArrowUp={() => moveRow('up', index)}
+                                    onArrowDown={() => moveRow('down', index)}
                                 />
                             ) : (
                                 <span className="text-xs text-foreground-secondary font-mono">
@@ -685,37 +673,75 @@ const EditableSplitRows = forwardRef<EditableSplitRowsHandle, EditableSplitRowsP
                         {columnIds
                             ? trailingIds.map((id, i) => (
                                 <td key={id} className="px-3 py-1.5">
-                                    {i === 0 && !isPlaceholder && realSplitCount > 2 && (
-                                        <Tip content="Delete split">
-                                        <button
-                                            tabIndex={-1}
-                                            onClick={e => {
-                                                e.stopPropagation();
-                                                deleteSplit(index);
-                                            }}
-                                            className="text-xs text-foreground-muted hover:text-error transition-colors"
-                                        >
-                                            &times;
-                                        </button>
-                                        </Tip>
+                                    {i === 0 && !isPlaceholder && (
+                                        <span className="inline-flex items-center gap-2">
+                                            {imbalanced && (
+                                                <Tip content="Balance with this split (b)" describedBy={false}>
+                                                <button
+                                                    tabIndex={-1}
+                                                    aria-label="Balance with this split"
+                                                    onClick={e => {
+                                                        e.stopPropagation();
+                                                        balanceSplitAt(index);
+                                                    }}
+                                                    className="text-xs text-foreground-muted hover:text-primary transition-colors"
+                                                >
+                                                    &#8652;
+                                                </button>
+                                                </Tip>
+                                            )}
+                                            {realSplitCount > 2 && (
+                                                <Tip content="Delete split">
+                                                <button
+                                                    tabIndex={-1}
+                                                    onClick={e => {
+                                                        e.stopPropagation();
+                                                        deleteSplit(index);
+                                                    }}
+                                                    className="text-xs text-foreground-muted hover:text-error transition-colors"
+                                                >
+                                                    &times;
+                                                </button>
+                                                </Tip>
+                                            )}
+                                        </span>
                                     )}
                                 </td>
                             ))
                             : Array.from({ length: actualTrailing }, (_, i) => (
                                 <td key={`trail-${i}`} className="px-3 py-1.5">
-                                    {i === 0 && !isPlaceholder && realSplitCount > 2 && (
-                                        <Tip content="Delete split">
-                                        <button
-                                            tabIndex={-1}
-                                            onClick={e => {
-                                                e.stopPropagation();
-                                                deleteSplit(index);
-                                            }}
-                                            className="text-xs text-foreground-muted hover:text-error transition-colors"
-                                        >
-                                            &times;
-                                        </button>
-                                        </Tip>
+                                    {i === 0 && !isPlaceholder && (
+                                        <span className="inline-flex items-center gap-2">
+                                            {imbalanced && (
+                                                <Tip content="Balance with this split (b)" describedBy={false}>
+                                                <button
+                                                    tabIndex={-1}
+                                                    aria-label="Balance with this split"
+                                                    onClick={e => {
+                                                        e.stopPropagation();
+                                                        balanceSplitAt(index);
+                                                    }}
+                                                    className="text-xs text-foreground-muted hover:text-primary transition-colors"
+                                                >
+                                                    &#8652;
+                                                </button>
+                                                </Tip>
+                                            )}
+                                            {realSplitCount > 2 && (
+                                                <Tip content="Delete split">
+                                                <button
+                                                    tabIndex={-1}
+                                                    onClick={e => {
+                                                        e.stopPropagation();
+                                                        deleteSplit(index);
+                                                    }}
+                                                    className="text-xs text-foreground-muted hover:text-error transition-colors"
+                                                >
+                                                    &times;
+                                                </button>
+                                                </Tip>
+                                            )}
+                                        </span>
                                     )}
                                 </td>
                             ))

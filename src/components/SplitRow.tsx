@@ -9,6 +9,7 @@ import { useToast } from '@/contexts/ToastContext';
 import { useTaxShortcut } from '@/lib/hooks/useTaxShortcut';
 import { formatEvaluatedAccountAmount } from '@/lib/transaction-currency';
 import { Tip } from '@/components/ui/Tooltip';
+import { splitCellAttrs, type RowMoveDirection } from '@/lib/hooks/useSplitGridNavigation';
 
 interface SplitRowProps {
     split: SplitFormData;
@@ -18,6 +19,16 @@ interface SplitRowProps {
     canRemove: boolean;
     transactionCurrencyGuid?: string; // The transaction's currency GUID
     error?: string; // Row-level validation message, shown under the account cell
+    /**
+     * The trailing "what is still needed to balance" row, GnuCash desktop's
+     * blank split line. Its amounts are the imbalance; its first edit turns
+     * it into a real split (the owner handles that in `onChange`).
+     */
+    isPlaceholder?: boolean;
+    /** Set this row's amount so the transaction balances. Shown while unbalanced. */
+    onBalance?: () => void;
+    /** ArrowUp/ArrowDown from a cell: the owner moves focus to the same column in the adjacent row. */
+    onNavigate?: (direction: RowMoveDirection, col: string) => void;
 }
 
 export function SplitRow({
@@ -28,6 +39,9 @@ export function SplitRow({
     canRemove,
     transactionCurrencyGuid,
     error,
+    isPlaceholder = false,
+    onBalance,
+    onNavigate,
 }: SplitRowProps) {
     const [accountCommodity, setAccountCommodity] = useState<string | null>(null);
     const { defaultTaxRate } = useUserPreferences();
@@ -126,22 +140,44 @@ export function SplitRow({
         (msg) => success(msg),
     );
 
+    const plainKey = (e: React.KeyboardEvent) => !e.ctrlKey && !e.metaKey && !e.altKey;
+
+    // ArrowUp/ArrowDown walk the column; Enter is left to the form (submit).
+    const handleRowKeys = (e: React.KeyboardEvent<HTMLInputElement>, col: string): boolean => {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            onNavigate?.(e.key === 'ArrowUp' ? 'up' : 'down', col);
+            return true;
+        }
+        return false;
+    };
+
     const handleAmountKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, field: 'debit' | 'credit') => {
-        if ((e.key === 't' || e.key === 'T') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (handleRowKeys(e, field)) return;
+        if ((e.key === 't' || e.key === 'T') && plainKey(e)) {
             e.preventDefault();
             (field === 'debit' ? applyTaxDebit : applyTaxCredit)();
+        } else if ((e.key === 'b' || e.key === 'B') && plainKey(e) && onBalance) {
+            // "Balance here": the keyboard twin of the row's balance button.
+            e.preventDefault();
+            onBalance();
         }
     };
 
     return (
-        <div className="py-2 border-b border-border last:border-0">
+        <div
+            className={`py-2 border-b border-border last:border-0 ${isPlaceholder ? 'opacity-60 focus-within:opacity-100' : ''}`}
+            data-split-placeholder={isPlaceholder ? 'true' : undefined}
+        >
             <div className="flex flex-col md:grid md:grid-cols-12 gap-2 md:items-center">
                 {/* Account Selector */}
-                <div className="w-full md:col-span-5">
+                <div className="w-full md:col-span-5" {...splitCellAttrs(index, 'account')}>
                     <AccountSelector
                         value={split.account_guid}
                         onChange={handleAccountChange}
-                        placeholder="Select account..."
+                        placeholder={isPlaceholder ? 'Add a split...' : 'Select account...'}
+                        onArrowUp={() => onNavigate?.('up', 'account')}
+                        onArrowDown={() => onNavigate?.('down', 'account')}
                     />
                     {error && (
                         <p role="alert" className="mt-1 text-xs text-error">
@@ -153,7 +189,7 @@ export function SplitRow({
                 {/* Debit & Credit */}
                 <div className="grid grid-cols-2 gap-2 md:contents">
                     {/* Debit */}
-                    <div className="relative md:col-span-2">
+                    <div className="relative md:col-span-2" {...splitCellAttrs(index, 'debit')}>
                         <input
                             type="text"
                             inputMode="decimal"
@@ -172,7 +208,7 @@ export function SplitRow({
                     </div>
 
                     {/* Credit */}
-                    <div className="relative md:col-span-2">
+                    <div className="relative md:col-span-2" {...splitCellAttrs(index, 'credit')}>
                         <input
                             type="text"
                             inputMode="decimal"
@@ -192,24 +228,44 @@ export function SplitRow({
                 {/* Memo & Remove */}
                 <div className="flex gap-2 items-center md:contents">
                     {/* Memo */}
-                    <div className="flex-1 md:col-span-2">
+                    <div className="flex-1 md:col-span-2" {...splitCellAttrs(index, 'memo')}>
                         <input
                             type="text"
                             placeholder="Memo"
                             value={split.memo}
                             onChange={(e) => onChange(index, 'memo', e.target.value)}
+                            onKeyDown={(e) => handleRowKeys(e, 'memo')}
                             className="w-full bg-input-bg border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder-foreground-muted focus:outline-none focus:border-primary/50"
                         />
                     </div>
 
-                    {/* Remove Button */}
-                    <div className="md:col-span-1 flex justify-center">
-                        {canRemove && (
+                    {/* Balance-here and Remove. Both sit outside the tab order
+                        (like the journal's row buttons) so Tab from the memo
+                        goes straight to the next row — the placeholder when
+                        unbalanced; `b` is the keyboard way to balance. */}
+                    <div className="md:col-span-1 flex justify-center items-center gap-0.5">
+                        {onBalance && !isPlaceholder && (
+                            <Tip content="Balance with this split (b)" describedBy={false}>
+                            <button
+                                type="button"
+                                tabIndex={-1}
+                                onClick={onBalance}
+                                className="p-1.5 text-foreground-muted hover:text-primary transition-colors"
+                                aria-label="Balance with this split"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v18M4 7h16M6 7l-3 7a3 3 0 006 0L6 7zM18 7l-3 7a3 3 0 006 0l-3-7z" />
+                                </svg>
+                            </button>
+                            </Tip>
+                        )}
+                        {canRemove && !isPlaceholder && (
                             <Tip content="Remove split" describedBy={false}>
                             <button
                                 type="button"
+                                tabIndex={-1}
                                 onClick={() => onRemove(index)}
-                                className="p-2 text-foreground-muted hover:text-negative transition-colors"
+                                className="p-1.5 text-foreground-muted hover:text-negative transition-colors"
                                 aria-label="Remove split"
                             >
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
