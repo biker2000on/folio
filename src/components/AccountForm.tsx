@@ -113,6 +113,8 @@ export function AccountForm({ mode, accountGuid, initialData, parentGuid, onSave
 
     const [accounts, setAccounts] = useState<FlatAccount[]>([]);
     const [commodities, setCommodities] = useState<Commodity[]>([]);
+    // Once the user picks a type explicitly, parent changes stop overriding it.
+    const typeTouchedRef = useRef(Boolean(initialData?.account_type));
     const [splitsCount, setSplitsCount] = useState<number | null>(mode === 'create' ? 0 : null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -251,6 +253,19 @@ export function AccountForm({ mode, accountGuid, initialData, parentGuid, onSave
         }
     }, [formData.account_type, isSecurityAccount, formData.commodity_guid, commodities, mode]);
 
+    // Inherit the parent's account type on create (GnuCash behaviour): a child
+    // of Expenses is an EXPENSE account unless the user says otherwise. Without
+    // this, "New Child" under Expenses silently created ASSET accounts that
+    // income statements and tax reports ignore.
+    useEffect(() => {
+        if (mode !== 'create' || !formData.parent_guid || typeTouchedRef.current) return;
+        const parent = accounts.find(a => a.guid === formData.parent_guid);
+        if (!parent || parent.account_type === 'ROOT') return;
+        setFormData(prev => (
+            prev.account_type === parent.account_type ? prev : { ...prev, account_type: parent.account_type }
+        ));
+    }, [formData.parent_guid, accounts, mode]);
+
     // Update commodity when parent changes (inherit from parent)
     useEffect(() => {
         if (mode === 'create' && formData.parent_guid) {
@@ -380,7 +395,10 @@ export function AccountForm({ mode, accountGuid, initialData, parentGuid, onSave
                     <select
                         required
                         value={formData.account_type}
-                        onChange={e => setFormData(prev => ({ ...prev, account_type: e.target.value }))}
+                        onChange={e => {
+                            typeTouchedRef.current = true;
+                            setFormData(prev => ({ ...prev, account_type: e.target.value }));
+                        }}
                         className={SELECT}
                     >
                         {Object.entries(groupedAccountTypes).map(([group, types]) => (
