@@ -318,6 +318,7 @@ export const CreateAccountSchema = z.object({
 
 export const UpdateAccountSchema = z.object({
   name: z.string().min(1, 'Name is required').max(2048).optional(),
+  account_type: z.enum(ACCOUNT_TYPES).exclude(['ROOT']).optional(),
   code: z.string().max(2048).optional(),
   description: z.string().max(2048).optional(),
   hidden: z.number().int().min(0).max(1).optional(),
@@ -461,6 +462,27 @@ export class AccountService {
       throw new Error(`Account not found: ${guid}`);
     }
 
+    // Guard type change: ROOT is never a target (schema), and a security type
+    // (STOCK/MUTUAL) must sit on a non-currency commodity and vice versa, or
+    // every quantity on the account would be read in the wrong units.
+    if (data.account_type !== undefined && data.account_type !== existing.account_type) {
+      if (existing.account_type === 'ROOT') {
+        throw new Error('The root account cannot change type.');
+      }
+      const commodityGuid = data.commodity_guid ?? existing.commodity_guid;
+      const commodity = commodityGuid
+        ? await prisma.commodities.findUnique({ where: { guid: commodityGuid }, select: { namespace: true } })
+        : null;
+      const isCurrency = commodity ? ['CURRENCY', 'ISO4217'].includes(commodity.namespace) : true;
+      const wantsSecurity = data.account_type === 'STOCK' || data.account_type === 'MUTUAL';
+      if (wantsSecurity && isCurrency) {
+        throw new Error('Stock and mutual fund accounts need a security commodity, not a currency.');
+      }
+      if (!wantsSecurity && !isCurrency) {
+        throw new Error('Only stock and mutual fund accounts can hold a security commodity.');
+      }
+    }
+
     // Guard commodity change: only allowed when the account has no splits.
     // Changing commodity on an account with history would silently reinterpret
     // historical share quantities under the new commodity's units.
@@ -551,6 +573,7 @@ export class AccountService {
         where: { guid },
         data: {
           ...(data.name !== undefined && { name: data.name }),
+          ...(data.account_type !== undefined && { account_type: data.account_type }),
           ...(data.code !== undefined && { code: data.code }),
           ...(data.description !== undefined && { description: data.description }),
           ...(data.hidden !== undefined && { hidden: data.hidden }),
@@ -640,6 +663,7 @@ export class AccountService {
     const before = lockedBefore as LockedAccountKey | null;
     await logAudit('UPDATE', 'ACCOUNT', guid, {
       name: before?.name ?? existing.name,
+      account_type: existing.account_type,
       code: existing.code,
       description: existing.description,
       hidden: existing.hidden,
@@ -648,6 +672,7 @@ export class AccountService {
       commodity_guid: existing.commodity_guid,
     }, {
       name: account.name,
+      account_type: account.account_type,
       code: account.code,
       description: account.description,
       hidden: account.hidden,

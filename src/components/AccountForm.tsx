@@ -386,33 +386,36 @@ export function AccountForm({ mode, accountGuid, initialData, parentGuid, onSave
                 )}
             </div>
 
-            {/* Account Type - only for create mode */}
-            {mode === 'create' && (
-                <div>
-                    <label className="block text-sm font-medium text-foreground-secondary mb-2">
-                        Account Type <span className="text-error">*</span>
-                    </label>
-                    <select
-                        required
-                        value={formData.account_type}
-                        onChange={e => {
-                            typeTouchedRef.current = true;
-                            setFormData(prev => ({ ...prev, account_type: e.target.value }));
-                        }}
-                        className={SELECT}
-                    >
-                        {Object.entries(groupedAccountTypes).map(([group, types]) => (
-                            <optgroup key={group} label={group}>
-                                {types.map(type => (
-                                    <option key={type.value} value={type.value}>
-                                        {type.label}
-                                    </option>
-                                ))}
-                            </optgroup>
-                        ))}
-                    </select>
-                </div>
-            )}
+            {/* Account Type: defaults to the parent's type on create; editable in both modes */}
+            <div>
+                <label className="block text-sm font-medium text-foreground-secondary mb-2">
+                    Account Type <span className="text-error">*</span>
+                </label>
+                <select
+                    required
+                    value={formData.account_type}
+                    onChange={e => {
+                        typeTouchedRef.current = true;
+                        setFormData(prev => ({ ...prev, account_type: e.target.value }));
+                    }}
+                    className={SELECT}
+                >
+                    {Object.entries(groupedAccountTypes).map(([group, types]) => (
+                        <optgroup key={group} label={group}>
+                            {types.map(type => (
+                                <option key={type.value} value={type.value}>
+                                    {type.label}
+                                </option>
+                            ))}
+                        </optgroup>
+                    ))}
+                </select>
+                {mode === 'edit' && (
+                    <p className="mt-1 text-xs text-foreground-muted">
+                        Only income and expense accounts appear on income statements and tax reports.
+                    </p>
+                )}
+            </div>
 
             {/* Parent Account - only for create mode */}
             {mode === 'create' && (
