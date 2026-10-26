@@ -58,6 +58,9 @@ import type { Tag } from '@/lib/tags';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { type ReconciliationRowSplit } from '@/lib/reconciliation-selection';
 import { Tip } from '@/components/ui/Tooltip';
+import { fetchWithUnreconcile } from '@/lib/reconciled-split-client';
+import { useUnreconcileConfirm } from './ui/UnreconcileConfirm';
+import { ReconcileStateButton } from './ledger/cells/ReconcileStateButton';
 
 export interface AccountTransaction extends Transaction {
     running_balance: string;
@@ -340,6 +343,12 @@ export default function AccountLedger({
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+    // A save/delete that would touch a reconciled split comes back 423; this
+    // asks the user and, on yes, the request is resent with the unreconcile
+    // flag (see src/lib/reconciled-split-client.ts).
+    const { confirmUnreconcile, unreconcileDialog, isUnreconcilePromptOpen } = useUnreconcileConfirm();
+    // The R column: a reconciled/frozen split asks before its flag is cleared.
+    const [unreconcileSplitTarget, setUnreconcileSplitTarget] = useState<AccountTransaction | null>(null);
     const [deletingGuid, setDeletingGuid] = useState<string | null>(null);
     const [isDeleting, setIsDeleting] = useState(false);
     const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
@@ -666,26 +675,62 @@ export default function AccountLedger({
                 ? new Date(deletedTx.enter_date as unknown as string).toISOString()
                 : null;
             const tokenParam = `?original_enter_date=${encodeURIComponent(enterDateToken ?? 'null')}`;
-            const res = await fetch(`/api/transactions/${deletedGuid}${tokenParam}`, { method: 'DELETE' });
+            const res = await fetchWithUnreconcile(
+                `/api/transactions/${deletedGuid}${tokenParam}`,
+                { method: 'DELETE' },
+                body => confirmUnreconcile(body, 'delete'),
+                { declinedMessage: 'Not deleted. The reconciled transaction was left as it was.' },
+            );
             if (res.status === 409) {
                 error('This transaction was changed by someone else — reloading');
                 await fetchTransactions();
                 return;
             }
-            if (!res.ok) throw new Error('Failed to delete');
+            if (!res.ok) await throwErrorBody(res, 'Failed to delete transaction');
             success('Transaction deleted successfully');
             // Refetch so running_balance column reflects the removed transaction
             suppressNextDataEvent('transactions');
             fetchTransactions();
         } catch (err) {
             console.error('Delete failed:', err);
-            error('Failed to delete transaction');
+            error(err instanceof Error ? err.message : 'Failed to delete transaction');
             // Rollback on failure
             setTransactions(prevTransactions);
         } finally {
             setIsDeleting(false);
         }
-    }, [deletingGuid, transactions, success, error, fetchTransactions]);
+    }, [deletingGuid, transactions, success, error, fetchTransactions, confirmUnreconcile]);
+
+    // R column, GnuCash desktop style: N ⇄ C toggle on a click, while a
+    // reconciled (or frozen) split asks first — clearing that flag means the
+    // account's last reconciliation no longer balances.
+    const patchSplitReconcile = useCallback(async (tx: AccountTransaction, state: 'n' | 'c') => {
+        if (!tx.account_split_guid) return;
+        try {
+            const res = await fetch(`/api/splits/${tx.account_split_guid}/reconcile`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reconcile_state: state }),
+            });
+            if (!res.ok) await throwErrorBody(res, 'Failed to update reconcile state');
+            success(state === 'c' ? 'Marked cleared' : 'Marked not reconciled');
+            // The server bumps enter_date (the optimistic-lock token), so the
+            // row must be reloaded before its next inline edit.
+            suppressNextDataEvent('transactions');
+            await fetchTransactions();
+        } catch (err) {
+            error(err instanceof Error ? err.message : 'Failed to update reconcile state');
+        }
+    }, [fetchTransactions, success, error]);
+
+    const handleReconcileClick = useCallback((tx: AccountTransaction) => {
+        const state = tx.account_split_reconcile_state;
+        if (state === 'y' || state === 'f') {
+            setUnreconcileSplitTarget(tx);
+            return;
+        }
+        void patchSplitReconcile(tx, state === 'c' ? 'n' : 'c');
+    }, [patchSplitReconcile]);
 
     // Inline edit save handler
     const handleInlineSave = useCallback(async (guid: string, data: {
@@ -809,11 +854,11 @@ export default function AccountLedger({
                 // mandatory (null = the row had no enter_date when loaded)
                 body.original_enter_date = data.original_enter_date ?? null;
 
-                res = await fetch(`/api/transactions/${guid}`, {
+                res = await fetchWithUnreconcile(`/api/transactions/${guid}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
-                });
+                }, body => confirmUnreconcile(body, 'save'));
 
                 if (res.status === 409 || res.status === 428) {
                     error('This transaction was changed by someone else — reloading');
@@ -866,7 +911,7 @@ export default function AccountLedger({
             error(message);
             recordRowSaveError(guid, message);
         }
-    }, [transactions, accountGuid, accountCommodityGuid, fetchTransactions, success, error, isEditMode, handleEdit, clearRowSaveError, recordRowSaveError]);
+    }, [transactions, accountGuid, accountCommodityGuid, fetchTransactions, success, error, isEditMode, handleEdit, clearRowSaveError, recordRowSaveError, confirmUnreconcile]);
 
     // Journal/autosplit save orchestration (combines EditableRow + EditableSplitRows)
     const handleJournalSave = useCallback(async (txGuid: string): Promise<boolean> => {
@@ -912,11 +957,11 @@ export default function AccountLedger({
                 });
             } else {
                 body.original_enter_date = tx.enter_date ? new Date(tx.enter_date as unknown as string).toISOString() : null;
-                res = await fetch(`/api/transactions/${txGuid}`, {
+                res = await fetchWithUnreconcile(`/api/transactions/${txGuid}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
-                });
+                }, body => confirmUnreconcile(body, 'save'));
 
                 if (res.status === 409 || res.status === 428) {
                     error('This transaction was changed by someone else — reloading');
@@ -935,7 +980,7 @@ export default function AccountLedger({
             error(err instanceof Error ? err.message : 'Failed to save transaction');
             return false;
         }
-    }, [transactions, accountCommodityGuid, fetchTransactions, success, error]);
+    }, [transactions, accountCommodityGuid, fetchTransactions, success, error, confirmUnreconcile]);
 
     // Investment inline edit save handler
     const handleInvestmentInlineSave = useCallback(async (guid: string, data: InvestmentSaveData) => {
@@ -1022,11 +1067,11 @@ export default function AccountLedger({
             } else {
                 body.original_enter_date = data.original_enter_date ?? null;
 
-                res = await fetch(`/api/transactions/${guid}`, {
+                res = await fetchWithUnreconcile(`/api/transactions/${guid}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
-                });
+                }, body => confirmUnreconcile(body, 'save'));
 
                 if (res.status === 409 || res.status === 428) {
                     error('This transaction was changed by someone else — reloading');
@@ -1060,6 +1105,7 @@ export default function AccountLedger({
         error,
         clearRowSaveError,
         recordRowSaveError,
+        confirmUnreconcile,
     ]);
 
     // Toggle reviewed status
@@ -1320,6 +1366,7 @@ export default function AccountLedger({
         const guids = Array.from(editSelectedGuids);
         let deleted = 0;
         let conflicts = 0;
+        let protectedCount = 0;
         for (const guid of guids) {
             const tx = transactions.find(t => t.guid === guid);
             const enterDateToken = tx?.enter_date
@@ -1329,6 +1376,9 @@ export default function AccountLedger({
             const res = await fetch(`/api/transactions/${guid}${tokenParam}`, { method: 'DELETE' });
             if (res.status === 409) {
                 conflicts++;
+            } else if (res.status === 423) {
+                // Reconciled split or closed period: left alone, reported below.
+                protectedCount++;
             } else if (res.ok) {
                 deleted++;
             }
@@ -1339,6 +1389,9 @@ export default function AccountLedger({
         await fetchTransactions();
         if (conflicts > 0) {
             error(`${conflicts} transaction${conflicts !== 1 ? 's were' : ' was'} changed by someone else and not deleted — list reloaded`);
+        }
+        if (protectedCount > 0) {
+            error(`${protectedCount} transaction${protectedCount !== 1 ? 's have' : ' has'} a reconciled split or sits in a closed period and ${protectedCount !== 1 ? 'were' : 'was'} not deleted — unreconcile it from the R column or delete it on its own`);
         }
         if (deleted > 0) {
             success(`Deleted ${deleted} transaction${deleted !== 1 ? 's' : ''}`);
@@ -1587,7 +1640,7 @@ export default function AccountLedger({
     // Keyboard navigation handler
     const handleTableKeyDown = useCallback(async (e: KeyboardEvent) => {
         if (editingGuid) return; // Let InlineEditRow handle keys during edit
-        if (isEditModalOpen || isViewModalOpen || deleteConfirmOpen || showMoveDialog || imbalanceDialogTx) return; // Don't navigate when modals are open
+        if (isEditModalOpen || isViewModalOpen || deleteConfirmOpen || showMoveDialog || imbalanceDialogTx || isUnreconcilePromptOpen || unreconcileSplitTarget) return; // Don't navigate when modals are open
 
         const target = e.target as HTMLElement;
         const isInInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT';
@@ -1937,7 +1990,7 @@ export default function AccountLedger({
                 }
                 break;
         }
-    }, [editingGuid, isEditModalOpen, isViewModalOpen, deleteConfirmOpen, showMoveDialog, imbalanceDialogTx, focusedRowIndex, focusedSplitIndex, displayTransactions, isEditMode, isSlimEditMode, handleRowClick, handleEditDirect, handleJournalSave, handleDuplicate, handleDeleteClick, createNewTransaction, toggleReviewed, jumpToOtherAccount, handleBulkReview, onEscape, searchText, hasChildren, ledgerViewStyle, expandedTransactions, editSelectedGuids]);
+    }, [editingGuid, isEditModalOpen, isViewModalOpen, deleteConfirmOpen, showMoveDialog, imbalanceDialogTx, isUnreconcilePromptOpen, unreconcileSplitTarget, focusedRowIndex, focusedSplitIndex, displayTransactions, isEditMode, isSlimEditMode, handleRowClick, handleEditDirect, handleJournalSave, handleDuplicate, handleDeleteClick, createNewTransaction, toggleReviewed, jumpToOtherAccount, handleBulkReview, onEscape, searchText, hasChildren, ledgerViewStyle, expandedTransactions, editSelectedGuids]);
 
     // Attach keyboard listener
     useEffect(() => {
@@ -2697,6 +2750,7 @@ export default function AccountLedger({
                                             onSave={handleInvestmentInlineSave}
                                             onEditModal={handleEditDirect}
                                             onDuplicate={handleDuplicate}
+                                            onToggleReconcile={() => handleReconcileClick(tx)}
                                             columnCount={table.getVisibleFlatColumns().length}
                                             columnIds={visibleColumnIds}
                                             onClick={() => setFocusedRowIndex(index)}
@@ -2805,6 +2859,7 @@ export default function AccountLedger({
                                             onSave={handleInlineSave}
                                             onEditModal={handleEditDirect}
                                             onDuplicate={handleDuplicate}
+                                            onToggleReconcile={() => handleReconcileClick(tx)}
                                             columnCount={table.getVisibleFlatColumns().length}
                                             columnIds={visibleColumnIds}
                                             doubleLine={doubleLineEdit}
@@ -2907,6 +2962,7 @@ export default function AccountLedger({
                                         onSave={handleInlineSave}
                                         onEditModal={handleEditDirect}
                                         onDuplicate={handleDuplicate}
+                                        onToggleReconcile={() => handleReconcileClick(tx)}
                                         columnCount={table.getVisibleFlatColumns().length}
                                             columnIds={visibleColumnIds}
                                         doubleLine={doubleLineEdit}
@@ -2966,7 +3022,6 @@ export default function AccountLedger({
                                     : nonTradingSplits.filter(s => s.account_guid !== accountGuid);
                                 const isUnreviewed = tx.reviewed === false;
                                 const amount = parseFloat(tx.account_split_value);
-                                const reconcileInfo = getReconcileIcon(tx.account_split_reconcile_state);
 
                                 if (editingGuid === tx.guid) {
                                     return (
@@ -3039,13 +3094,10 @@ export default function AccountLedger({
                                             if (colId === 'reconcile') {
                                                 return (
                                                     <td key={cell.id} className="px-3 py-2 align-middle">
-                                                        <Tip content={reconcileInfo.label}>
-                                                        <span
-                                                            className={`inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold ${reconcileInfo.color}`}
-                                                        >
-                                                            {reconcileInfo.icon}
-                                                        </span>
-                                                        </Tip>
+                                                        <ReconcileStateButton
+                                                            state={tx.account_split_reconcile_state}
+                                                            onClick={() => handleReconcileClick(tx)}
+                                                        />
                                                     </td>
                                                 );
                                             }
@@ -3489,6 +3541,27 @@ export default function AccountLedger({
                 confirmVariant="danger"
                 isLoading={isDeleting}
             />
+
+            <ConfirmationDialog
+                isOpen={unreconcileSplitTarget !== null}
+                onConfirm={() => {
+                    const target = unreconcileSplitTarget;
+                    setUnreconcileSplitTarget(null);
+                    if (target) void patchSplitReconcile(target, 'n');
+                }}
+                onCancel={() => setUnreconcileSplitTarget(null)}
+                title={unreconcileSplitTarget?.account_split_reconcile_state === 'f' ? 'Unfreeze this split?' : 'Unreconcile this split?'}
+                message={`"${unreconcileSplitTarget?.description ?? ''}" was reconciled against a statement. Clearing the flag means this account's last reconciliation will no longer balance until you reconcile again.`}
+                confirmLabel="Unreconcile"
+                cancelLabel="Keep reconciled"
+                confirmVariant="warning"
+                // Undoing a reconciliation is the irreversible half, so it
+                // never sits under a reflexive Enter.
+                defaultFocus="cancel"
+                confirmOnEnter={false}
+            />
+
+            {unreconcileDialog}
 
             <ConfirmationDialog
                 isOpen={bulkDeleteConfirmOpen}

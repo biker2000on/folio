@@ -18,6 +18,8 @@ import {
 } from '@/lib/services/period-lock.service';
 import {
     assertSplitsNotProtected,
+    findProtectedSplitChanges,
+    parseUnreconcileFlag,
     ReconciledSplitError,
     reconciledSplitResponse,
 } from '@/lib/services/reconciled-split.service';
@@ -185,8 +187,12 @@ export async function PUT(
 
         const { guid } = await params;
         const rawBody = await request.json();
-        const { original_enter_date, ...bodyData } = rawBody;
+        const { original_enter_date, unreconcile_protected, ...bodyData } = rawBody;
         const body: CreateTransactionRequest = bodyData;
+        // Opt-in: the user has confirmed that this change may touch
+        // reconciled splits, which are then written back as 'n'. Never a
+        // default — the UI sends it only after a dialog naming the accounts.
+        const unreconcileProtected = parseUnreconcileFlag(unreconcile_protected);
 
         // Optimistic concurrency is mandatory: the client must echo back the
         // enter_date it loaded (or null when the row had none). Without it we
@@ -297,11 +303,22 @@ export async function PUT(
             const existingSplitByGuid = new Map(existingSplits.map(split => [split.guid, split]));
 
             // Reconciled/frozen splits pin this transaction to a bank
-            // statement. This edit replaces every split (amount, account, and
-            // the transaction's post date), so refuse before the first write.
-            // The row is locked and this read is inside the transaction, so a
-            // concurrent reconcile cannot slip past the check.
-            assertSplitsNotProtected('edit this transaction', existingSplits);
+            // statement. Only a change to what the statement agreed on counts
+            // — amount, account, post date, or dropping the split — so a
+            // payee/memo/num correction goes through untouched. A material
+            // change is refused before the first write unless the caller has
+            // confirmed it, in which case those splits are demoted to 'n'
+            // below. The row is locked and this read is inside the
+            // transaction, so a concurrent reconcile cannot slip past.
+            const protectedChanges = findProtectedSplitChanges(
+                existingSplits,
+                body.splits,
+                { current: lockedTx.post_date, next: new Date(body.post_date) },
+            );
+            if (protectedChanges.length > 0 && !unreconcileProtected) {
+                throw new ReconciledSplitError('edit this transaction', protectedChanges);
+            }
+            const demotedSplitGuids = new Set(protectedChanges.map(ref => ref.splitGuid));
 
             // Process multi-currency splits and add trading splits if needed
             const multiCurrencyResult = await processMultiCurrencySplits(
@@ -384,6 +401,13 @@ export async function PUT(
             for (const split of allSplits) {
                 const splitGuid = split.guid && /^[0-9a-f]{32}$/.test(split.guid) ? split.guid : generateGuid();
                 const existingSplit = existingSplitByGuid.get(splitGuid);
+                // A confirmed change to a reconciled split clears its flag;
+                // otherwise the body's state wins, and a body that says
+                // nothing keeps whatever the live row had (so a client that
+                // only edits the description cannot silently unreconcile).
+                const reconcileState = demotedSplitGuids.has(splitGuid)
+                    ? 'n'
+                    : (split.reconcile_state || existingSplit?.reconcile_state || 'n');
                 await tx.splits.create({
                     data: {
                         guid: splitGuid,
@@ -391,9 +415,9 @@ export async function PUT(
                         account_guid: split.account_guid,
                         memo: split.memo || '',
                         action: split.action ?? existingSplit?.action ?? '',
-                        reconcile_state: split.reconcile_state || 'n',
+                        reconcile_state: reconcileState,
                         reconcile_date:
-                            existingSplit && existingSplit.reconcile_state === (split.reconcile_state || 'n')
+                            existingSplit && existingSplit.reconcile_state === reconcileState
                                 ? existingSplit.reconcile_date
                                 : null,
                         value_num: BigInt(split.value_num),
@@ -524,10 +548,12 @@ export async function DELETE(
         // corrected must 409, not silently destroy the correction.
         const { searchParams } = new URL(request.url);
         let rawToken: unknown = searchParams.get('original_enter_date');
+        let jsonBody: Record<string, unknown> | null = null;
         if (rawToken === null) {
-            const jsonBody = await request.json().catch(() => null);
-            if (jsonBody && typeof jsonBody === 'object' && 'original_enter_date' in jsonBody) {
-                rawToken = (jsonBody as { original_enter_date: unknown }).original_enter_date;
+            const parsed = await request.json().catch(() => null);
+            jsonBody = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+            if (jsonBody && 'original_enter_date' in jsonBody) {
+                rawToken = jsonBody.original_enter_date;
             } else {
                 rawToken = undefined;
             }
@@ -535,6 +561,10 @@ export async function DELETE(
             // Query-param encoding of an explicit null token
             rawToken = null;
         }
+        // Opt-in, confirmed by the user in the UI: delete even though a split
+        // is reconciled. Query param (unreconcile_protected=true) or body.
+        const unreconcileProtected = parseUnreconcileFlag(searchParams.get('unreconcile_protected'))
+            || parseUnreconcileFlag(jsonBody?.unreconcile_protected);
         if (rawToken === undefined) {
             return NextResponse.json({
                 error: 'original_enter_date is required: send the enter_date value you loaded '
@@ -611,8 +641,11 @@ export async function DELETE(
             // Reconciled/frozen splits pin this transaction to a bank
             // statement — deleting it would silently break that agreement.
             // Checked inside the transaction on the locked row, before any
-            // write, so nothing is destroyed when the guard fires.
-            assertSplitsNotProtected('delete this transaction', splitRows);
+            // write, so nothing is destroyed when the guard fires. The
+            // confirmed flag is the only way past it.
+            if (!unreconcileProtected) {
+                assertSplitsNotProtected('delete this transaction', splitRows);
+            }
 
             // Preserve SimpleFin meta rows for dedup (NULL out transaction_guid, mark deleted)
             await tx.$executeRaw`

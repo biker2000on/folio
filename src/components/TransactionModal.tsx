@@ -12,6 +12,9 @@ import { TransactionActivityFeed } from './transactions/TransactionActivityFeed'
 import { usePopoutHost } from '@/lib/popout/usePopout';
 import { ReceiptIndicator } from './receipts/ReceiptIndicator';
 import { Tip } from '@/components/ui/Tooltip';
+import { ReconcileStateButton } from './ledger/cells/ReconcileStateButton';
+import { useToast } from '@/contexts/ToastContext';
+import { throwErrorBody } from '@/lib/api-error';
 
 function getReconcileStatus(splits: Split[] | undefined): {
     hasReconciled: boolean;
@@ -61,14 +64,6 @@ export function originalPayeeLine(transaction: {
     return original;
 }
 
-function getReconcileLabel(state: string) {
-    switch (state) {
-        case 'y': return { label: 'Reconciled', color: 'text-primary bg-primary/10' };
-        case 'c': return { label: 'Cleared', color: 'text-warning bg-warning/10' };
-        default: return { label: 'Not Reconciled', color: 'text-foreground-secondary bg-surface/10' };
-    }
-}
-
 /**
  * Fetches and renders one transaction's detail (header, splits, metadata).
  * Shared by the transaction modal and the /popout/transaction pane.
@@ -90,8 +85,39 @@ export function TransactionDetailContent({
     const [transaction, setTransaction] = useState<TransactionDetail | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    // Bumped after a reconcile-state change so the detail reloads with the
+    // server's new enter_date (the optimistic-lock token an edit needs).
+    const [reloadKey, setReloadKey] = useState(0);
+    // A reconciled/frozen split asks before its flag is cleared.
+    const [unreconcileSplit, setUnreconcileSplit] = useState<TransactionDetail['splits'][number] | null>(null);
+    const { success, error: showError } = useToast();
     const onLoadedRef = useRef(onLoaded);
     onLoadedRef.current = onLoaded;
+
+    // The status column, GnuCash desktop style: N ⇄ C on a click; Y/F asks.
+    const patchReconcile = useCallback(async (split: TransactionDetail['splits'][number], state: 'n' | 'c') => {
+        try {
+            const res = await fetch(`/api/splits/${split.guid}/reconcile`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reconcile_state: state }),
+            });
+            if (!res.ok) await throwErrorBody(res, 'Failed to update reconcile state');
+            success(state === 'c' ? 'Marked cleared' : 'Marked not reconciled');
+            setReloadKey(k => k + 1);
+        } catch (err) {
+            showError(err instanceof Error ? err.message : 'Failed to update reconcile state');
+        }
+    }, [success, showError]);
+
+    const handleReconcileClick = useCallback((split: TransactionDetail['splits'][number]) => {
+        const state = split.reconcile_state;
+        if (state === 'y' || state === 'f') {
+            setUnreconcileSplit(split);
+            return;
+        }
+        void patchReconcile(split, state === 'c' ? 'n' : 'c');
+    }, [patchReconcile]);
 
     useEffect(() => {
         if (!transactionGuid) {
@@ -125,7 +151,7 @@ export function TransactionDetailContent({
         return () => {
             cancelled = true;
         };
-    }, [transactionGuid]);
+    }, [transactionGuid, reloadKey]);
 
     if (loading) {
         return (
@@ -218,7 +244,6 @@ export function TransactionDetailContent({
                                 const qtyLine = showQty
                                     ? `Native: ${qty > 0 ? '+' : ''}${qty.toLocaleString('en-US', { maximumFractionDigits: 6 })} ${split.commodity_mnemonic}`
                                     : null;
-                                const reconcile = getReconcileLabel(split.reconcile_state);
                                 return (
                                     <tr key={split.guid} className="hover:bg-surface-hover/30">
                                         <td className="break-words px-4 py-3 align-top">
@@ -239,9 +264,11 @@ export function TransactionDetailContent({
                                         </td>
                                         </Tip>
                                         <td className="px-2 py-3 text-center align-top">
-                                            <span className={`text-xs px-2 py-1 rounded-full ${reconcile.color}`}>
-                                                {split.reconcile_state.toUpperCase()}
-                                            </span>
+                                            <ReconcileStateButton
+                                                state={split.reconcile_state}
+                                                variant="pill"
+                                                onClick={() => handleReconcileClick(split)}
+                                            />
                                         </td>
                                         <td className="px-3 py-3 text-right font-mono text-positive align-top">
                                             {value > 0 ? (
@@ -303,6 +330,23 @@ export function TransactionDetailContent({
             </section>
 
             {actions}
+
+            <ConfirmationDialog
+                isOpen={unreconcileSplit !== null}
+                onConfirm={() => {
+                    const target = unreconcileSplit;
+                    setUnreconcileSplit(null);
+                    if (target) void patchReconcile(target, 'n');
+                }}
+                onCancel={() => setUnreconcileSplit(null)}
+                title={unreconcileSplit?.reconcile_state === 'f' ? 'Unfreeze this split?' : 'Unreconcile this split?'}
+                message={`The ${unreconcileSplit?.account_name ?? ''} split was reconciled against a statement. Clearing the flag means that account's last reconciliation will no longer balance until you reconcile again.`}
+                confirmLabel="Unreconcile"
+                cancelLabel="Keep reconciled"
+                confirmVariant="warning"
+                defaultFocus="cancel"
+                confirmOnEnter={false}
+            />
         </div>
     );
 }

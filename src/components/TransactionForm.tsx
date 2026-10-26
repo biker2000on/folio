@@ -5,6 +5,7 @@ import { SplitFormData, TransactionFormData, CreateTransactionRequest, Transacti
 import { SplitRow } from './SplitRow';
 import { AccountSelector } from './ui/AccountSelector';
 import { DescriptionAutocomplete } from './ui/DescriptionAutocomplete';
+import { WeekdayHint } from './ui/WeekdayHint';
 import { TransactionSuggestion } from '@/app/api/transactions/descriptions/route';
 import { useFormKeyboardShortcuts } from '@/lib/hooks/useFormKeyboardShortcuts';
 import { useKeyboardShortcut } from '@/lib/hooks/useKeyboardShortcut';
@@ -13,7 +14,7 @@ import { useAccounts } from '@/lib/hooks/useAccounts';
 import { evaluateMathExpression, containsMathExpression } from '@/lib/math-eval';
 import { parseAmountStrict } from '@/lib/parse-amount';
 import { useUserPreferences } from '@/contexts/UserPreferencesContext';
-import { formatDateForDisplay, parseDateInput } from '@/lib/date-format';
+import { formatDateForDisplay, formatWeekday, parseDateInput } from '@/lib/date-format';
 import { toLocalDateString } from '@/lib/datePresets';
 import { useIsMobile } from '@/lib/hooks/useIsMobile';
 import { ErrorLiveRegion } from '@/components/a11y/LiveRegion';
@@ -1129,6 +1130,9 @@ export function TransactionForm({
                 <div className="md:w-40">
                     <label className="block text-xs text-foreground-muted uppercase tracking-wider mb-1">
                         Date
+                        {isMobile && formatWeekday(formData.post_date) && (
+                            <span className="ml-1.5 text-foreground-secondary">· {formatWeekday(formData.post_date)}</span>
+                        )}
                     </label>
                     {isMobile ? (
                         <div className="flex items-center gap-1">
@@ -1162,28 +1166,32 @@ export function TransactionForm({
                             </button>
                         </div>
                     ) : (
-                        <input
-                            ref={dateInputRef}
-                            type="text"
-                            value={dateDisplay}
-                            onChange={(e) => setDateDisplay(e.target.value)}
-                            onFocus={() => dateInputRef.current?.select()}
-                            onBlur={() => {
-                                const parsed = parseDateInput(dateDisplay);
-                                if (parsed) {
-                                    setFormData(f => ({ ...f, post_date: parsed }));
-                                    setDateDisplay(formatDateForDisplay(parsed, dateFormat));
-                                } else {
-                                    setDateDisplay(formatDateForDisplay(formData.post_date, dateFormat));
-                                }
-                            }}
-                            onKeyDown={handleDateKeyDown}
-                            data-field="post_date"
-                            placeholder="MM/DD/YYYY"
-                            aria-invalid={fieldErrors.post_date ? true : undefined}
-                            aria-describedby={fieldErrors.post_date ? 'tx-error-post_date' : undefined}
-                            className={inputClass({ base: TX_INPUT, invalid: Boolean(fieldErrors.post_date) })}
-                        />
+                        <div className="relative">
+                            <input
+                                ref={dateInputRef}
+                                type="text"
+                                value={dateDisplay}
+                                onChange={(e) => setDateDisplay(e.target.value)}
+                                onFocus={() => dateInputRef.current?.select()}
+                                onBlur={() => {
+                                    const parsed = parseDateInput(dateDisplay);
+                                    if (parsed) {
+                                        setFormData(f => ({ ...f, post_date: parsed }));
+                                        setDateDisplay(formatDateForDisplay(parsed, dateFormat));
+                                    } else {
+                                        setDateDisplay(formatDateForDisplay(formData.post_date, dateFormat));
+                                    }
+                                }}
+                                onKeyDown={handleDateKeyDown}
+                                data-field="post_date"
+                                placeholder="MM/DD/YYYY"
+                                aria-invalid={fieldErrors.post_date ? true : undefined}
+                                aria-describedby={fieldErrors.post_date ? 'tx-error-post_date' : undefined}
+                                className={inputClass({ base: TX_INPUT, invalid: Boolean(fieldErrors.post_date), extra: 'pr-11' })}
+                            />
+                            {/* Weekday of what is typed, visible while typing */}
+                            <WeekdayHint isoDate={parseDateInput(dateDisplay)} />
+                        </div>
                     )}
                     <FieldError id="tx-error-post_date" message={fieldErrors.post_date} />
                 </div>
@@ -1250,7 +1258,12 @@ export function TransactionForm({
                                     data-field="amount"
                                     aria-invalid={fieldErrors.amount ? true : undefined}
                                     aria-describedby={fieldErrors.amount ? 'tx-error-amount' : undefined}
-                                    className={inputClass({ base: TX_INPUT, invalid: Boolean(fieldErrors.amount), extra: 'placeholder-foreground-muted' })}
+                                    className={inputClass({
+                                        base: TX_INPUT,
+                                        invalid: Boolean(fieldErrors.amount),
+                                        // Room for the "=" marker so the text never runs under it.
+                                        extra: containsMathExpression(simpleData.amount) ? 'placeholder-foreground-muted pr-8' : 'placeholder-foreground-muted',
+                                    })}
                                 />
                                 {containsMathExpression(simpleData.amount) && (
                                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-primary pointer-events-none">=</span>
@@ -1335,6 +1348,26 @@ export function TransactionForm({
                     </div>
                 </div>
             ) : (
+                /*
+                 * TODO(advanced-splits): make the Advanced (multiple splits)
+                 * mode friendlier. Today it is a raw grid of Account /
+                 * Debit / Credit / Memo rows that the user has to balance by
+                 * hand. Worth doing, roughly in order:
+                 *   - a live "remaining to balance" figure next to the totals
+                 *     with a one-click "put it here" on the last row, instead
+                 *     of a separate Auto-balance link;
+                 *   - a single signed Amount column (debit/credit inferred
+                 *     from sign and account type) with the two-column view as
+                 *     an option, so entering a split is one field, not two;
+                 *   - keyboard flow: Enter on the last row adds a split, Tab
+                 *     order Account → Amount → Memo, Delete on an empty row
+                 *     removes it;
+                 *   - the account picker remembering the last accounts used
+                 *     with this payee (the description auto-match already
+                 *     knows them);
+                 *   - on phones the rows stack into cards; the current
+                 *     md:grid collapse is hard to scan.
+                 */
                 <div>
                     <div className="flex items-center justify-between mb-3">
                         <label className="text-xs text-foreground-muted uppercase tracking-wider">

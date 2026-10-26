@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { TransactionSuggestion } from '@/app/api/transactions/descriptions/route';
 
@@ -50,6 +50,12 @@ export function DescriptionAutocomplete({
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isFocusedRef = useRef(false);
   const hasUserTypedRef = useRef(false);
+  // The query the user dismissed with Escape (or "Keep what I typed"). The
+  // list stays closed for that exact text — including when the fetch that
+  // was in flight at the time resolves — and reopens only once they type
+  // something else.
+  const dismissedQueryRef = useRef<string | null>(null);
+  const listId = useId();
 
   // Debounced API call
   useEffect(() => {
@@ -84,7 +90,8 @@ export function DescriptionAutocomplete({
         });
         const data = await response.json();
         setSuggestions(data.suggestions || []);
-        if (data.suggestions && data.suggestions.length > 0 && isFocusedRef.current) {
+        const dismissed = dismissedQueryRef.current === value;
+        if (data.suggestions && data.suggestions.length > 0 && isFocusedRef.current && !dismissed) {
           setIsOpen(true);
           setFocusedIndex(0);
         } else {
@@ -159,6 +166,17 @@ export function DescriptionAutocomplete({
     }
   };
 
+  /**
+   * "None of these": close the list and keep the typed text. Tab then moves
+   * to the next field without filling anything in, and the list does not
+   * come back for this text.
+   */
+  const dismiss = () => {
+    dismissedQueryRef.current = value;
+    setIsOpen(false);
+    setFocusedIndex(null);
+  };
+
   // Auto-focus when requested
   useEffect(() => {
     if (autoFocus) {
@@ -218,9 +236,12 @@ export function DescriptionAutocomplete({
         }
         break;
       case 'Escape':
-        setIsOpen(false);
-        setFocusedIndex(null);
+        dismiss();
         e.preventDefault();
+        // The keystroke is spent on the list. Without this it would also
+        // reach the hosting modal (closing it) or the inline editor
+        // (cancelling the edit) — the list is the only thing it closes.
+        e.stopPropagation();
         break;
     }
   };
@@ -239,7 +260,7 @@ export function DescriptionAutocomplete({
         ref={inputRef}
         type="text"
         value={value}
-        onChange={(e) => { hasUserTypedRef.current = true; onChange(e.target.value); }}
+        onChange={(e) => { hasUserTypedRef.current = true; dismissedQueryRef.current = null; onChange(e.target.value); }}
         onFocus={() => {
           isFocusedRef.current = true;
           hasUserTypedRef.current = false;
@@ -254,6 +275,10 @@ export function DescriptionAutocomplete({
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         data-field="description"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={isOpen}
+        aria-controls={isOpen ? listId : undefined}
         className={`w-full bg-input-bg border rounded-lg ${compact ? 'px-2 py-1 text-xs' : 'px-3 py-2 text-sm'} text-foreground placeholder-foreground-muted focus:outline-none ${
           isOpen ? 'border-primary/50 ring-1 ring-primary/20' : hasError ? 'border-negative ring-1 ring-negative/30' : 'border-border focus:border-primary/50'
         }`}
@@ -262,6 +287,8 @@ export function DescriptionAutocomplete({
       {isOpen && typeof document !== 'undefined' && createPortal(
         <div
           data-description-dropdown
+          id={listId}
+          role="listbox"
           style={dropdownStyle}
           className="bg-background-secondary border border-border rounded-lg shadow-xl max-h-64 overflow-y-auto"
         >
@@ -281,6 +308,8 @@ export function DescriptionAutocomplete({
               <div
                 key={index}
                 ref={el => { itemRefs.current[index] = el; }}
+                role="option"
+                aria-selected={index === focusedIndex}
                 className={`px-3 py-2 cursor-pointer hover:bg-surface-hover/50 ${
                   index === focusedIndex ? 'bg-primary/20' : ''
                 }`}
@@ -297,6 +326,19 @@ export function DescriptionAutocomplete({
                 )}
               </div>
             ))
+          )}
+          {!loading && suggestions.length > 0 && (
+            <button
+              type="button"
+              // mousedown would blur the input (and close the list before
+              // the click lands); keep focus where the user is typing.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={dismiss}
+              className="flex w-full items-center justify-between border-t border-border px-3 py-1.5 text-xs text-foreground-muted hover:bg-surface-hover/50 hover:text-foreground"
+            >
+              <span>Keep what I typed</span>
+              <kbd className="rounded border border-border bg-background px-1 font-mono text-[10px]">Esc</kbd>
+            </button>
           )}
         </div>,
         document.body

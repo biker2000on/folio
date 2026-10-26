@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useDateShortcuts } from '@/lib/hooks/useDateShortcuts';
 import { formatDateForDisplay, parseDateInput } from '@/lib/date-format';
 import { useUserPreferences } from '@/contexts/UserPreferencesContext';
+import { WeekdayHint } from '@/components/ui/WeekdayHint';
 
 interface DateCellProps {
     value: string;
@@ -64,6 +65,7 @@ export function DateCell({ value, onChange, autoFocus, onEnter, onArrowUp, onArr
     };
 
     return (
+        <div className="relative">
         <input
             ref={ref}
             type="text"
@@ -84,7 +86,9 @@ export function DateCell({ value, onChange, autoFocus, onEnter, onArrowUp, onArr
             onBlur={handleBlur}
             onKeyDown={handleKeyDown}
             placeholder="MM/DD/YYYY"
-            className="w-full bg-input-bg border border-border rounded px-2 py-0.5 text-xs text-foreground focus:outline-none focus:border-primary/50 font-mono leading-tight"
+            className="w-full bg-input-bg border border-border rounded px-2 py-0.5 pr-8 text-xs text-foreground focus:outline-none focus:border-primary/50 font-mono leading-tight"
         />
+        <WeekdayHint isoDate={parseDateInput(resolvedDisplayValue)} compact />
+        </div>
     );
 }

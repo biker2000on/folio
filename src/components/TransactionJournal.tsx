@@ -22,7 +22,9 @@ import TagChip from '@/components/tags/TagChip';
 import type { Tag } from '@/lib/tags';
 import { useCurrentUser, READONLY_TOOLTIP } from '@/hooks/useCurrentUser';
 import { suppressNextDataEvent } from './DataEventsProvider';
-import { extractErrorMessage } from '@/lib/api-error';
+import { extractErrorMessage, throwErrorBody } from '@/lib/api-error';
+import { fetchWithUnreconcile } from '@/lib/reconciled-split-client';
+import { useUnreconcileConfirm } from './ui/UnreconcileConfirm';
 import { Tip } from '@/components/ui/Tooltip';
 
 function getReconcileStatus(splits: Split[] | undefined): {
@@ -133,6 +135,9 @@ export default function TransactionJournal({ initialTransactions, startDate, end
     // Reconcile warning state
     const [reconcileWarningOpen, setReconcileWarningOpen] = useState(false);
     const [pendingAction, setPendingAction] = useState<'edit' | 'delete' | null>(null);
+    // A delete of a reconciled transaction comes back 423; this asks and, on
+    // yes, resends with the unreconcile flag.
+    const { confirmUnreconcile, unreconcileDialog } = useUnreconcileConfirm();
     const [pendingGuid, setPendingGuid] = useState<string | null>(null);
 
     // Delete confirmation state
@@ -337,21 +342,24 @@ export default function TransactionJournal({ initialTransactions, startDate, end
                 ? new Date(tx.enter_date as unknown as string).toISOString()
                 : null;
             const tokenParam = `?original_enter_date=${encodeURIComponent(enterDateToken ?? 'null')}`;
-            const res = await fetch(`/api/transactions/${guid}${tokenParam}`, {
-                method: 'DELETE',
-            });
+            const res = await fetchWithUnreconcile(
+                `/api/transactions/${guid}${tokenParam}`,
+                { method: 'DELETE' },
+                body => confirmUnreconcile(body, 'delete'),
+                { declinedMessage: 'Not deleted. The reconciled transaction was left as it was.' },
+            );
             if (res.status === 409) {
                 error('This transaction was changed by someone else — reloading');
                 await fetchTransactions();
                 return;
             }
-            if (!res.ok) throw new Error('Failed to delete');
+            if (!res.ok) await throwErrorBody(res, 'Failed to delete transaction');
             // Optimistic removal above already reflects the delete; drop the echo.
             suppressNextDataEvent('transactions');
             success('Transaction deleted successfully');
         } catch (err) {
             console.error('Delete failed:', err);
-            error('Failed to delete transaction');
+            error(err instanceof Error ? err.message : 'Failed to delete transaction');
             // Rollback on failure
             setTransactions(prevTransactions);
         } finally {
@@ -956,6 +964,8 @@ export default function TransactionJournal({ initialTransactions, startDate, end
                 confirmLabel="Continue Anyway"
                 confirmVariant={hasReconciled ? "danger" : "warning"}
             />
+
+            {unreconcileDialog}
 
             {/* Delete Confirmation Dialog */}
             <ConfirmationDialog

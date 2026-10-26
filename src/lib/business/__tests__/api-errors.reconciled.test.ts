@@ -45,6 +45,7 @@ describe.each([
             guid: SPLIT_GUID,
             tx_guid: TX_GUID,
             account_guid: 'a'.repeat(32),
+            account_name: 'Assets:Checking',
             reconcile_state: state,
         }]);
     });

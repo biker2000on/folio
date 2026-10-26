@@ -2,6 +2,7 @@
 import React, { useState, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { AccountTransaction } from '@/components/AccountLedger';
 import { DateCell } from './cells/DateCell';
+import { ReconcileStateButton } from './cells/ReconcileStateButton';
 import { DescriptionCell } from './cells/DescriptionCell';
 import { AccountCell } from './cells/AccountCell';
 import { AmountCell } from './cells/AmountCell';
@@ -74,6 +75,8 @@ interface InvestmentEditRowProps {
     onColumnFocus?: (columnIndex: number) => void;
     onTabFromActions?: (direction: 'next' | 'previous') => void;
     columnIds?: string[];
+    /** Click on the R column; the ledger decides whether to toggle or ask first. */
+    onToggleReconcile?: () => void;
 }
 
 export const InvestmentEditRow = forwardRef<InvestmentEditRowHandle, InvestmentEditRowProps>(
@@ -97,6 +100,7 @@ export const InvestmentEditRow = forwardRef<InvestmentEditRowHandle, InvestmentE
         onColumnFocus,
         onTabFromActions,
         columnIds,
+        onToggleReconcile,
     }, ref) {
         const handleRowClick = (e: React.MouseEvent) => {
             const target = e.target as HTMLElement;
@@ -244,9 +248,13 @@ export const InvestmentEditRow = forwardRef<InvestmentEditRowHandle, InvestmentE
 
         const reconcileCell = (
             <td className="px-3 py-1 align-middle">
-                <span className="inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold text-foreground-muted bg-surface/10">
-                    {reconcileIcon}
-                </span>
+                {onToggleReconcile ? (
+                    <ReconcileStateButton state={reconcileState} onClick={onToggleReconcile} />
+                ) : (
+                    <span className="inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold text-foreground-muted bg-surface/10">
+                        {reconcileIcon}
+                    </span>
+                )}
             </td>
         );
 

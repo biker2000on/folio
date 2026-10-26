@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { AccountTransaction } from './AccountLedger';
 import { AccountSelector } from './ui/AccountSelector';
 import { DescriptionAutocomplete } from './ui/DescriptionAutocomplete';
+import { WeekdayHint } from './ui/WeekdayHint';
 import { useDateShortcuts } from '@/lib/hooks/useDateShortcuts';
 import { useTaxShortcut } from '@/lib/hooks/useTaxShortcut';
 import { formatDateForDisplay, parseDateInput } from '@/lib/date-format';
@@ -182,25 +183,28 @@ export function InlineEditRow({
 
             {/* Date */}
             <td className="px-2 py-1 align-middle">
-                <input
-                    ref={dateRef}
-                    type="text"
-                    value={dateDisplay}
-                    onChange={(e) => setDateDisplay(e.target.value)}
-                    onFocus={() => dateRef.current?.select()}
-                    onBlur={() => {
-                        const parsed = parseDateInput(dateDisplay);
-                        if (parsed) {
-                            setPostDate(parsed);
-                            setDateDisplay(formatDateForDisplay(parsed, dateFormat));
-                        } else {
-                            setDateDisplay(formatDateForDisplay(postDate, dateFormat));
-                        }
-                    }}
-                    onKeyDown={handleDateKeyDown}
-                    placeholder="MM/DD/YYYY"
-                    className="w-full bg-input-bg border border-border rounded px-2 py-0.5 text-xs text-foreground focus:outline-none focus:border-primary/50 font-mono leading-tight"
-                />
+                <div className="relative">
+                    <input
+                        ref={dateRef}
+                        type="text"
+                        value={dateDisplay}
+                        onChange={(e) => setDateDisplay(e.target.value)}
+                        onFocus={() => dateRef.current?.select()}
+                        onBlur={() => {
+                            const parsed = parseDateInput(dateDisplay);
+                            if (parsed) {
+                                setPostDate(parsed);
+                                setDateDisplay(formatDateForDisplay(parsed, dateFormat));
+                            } else {
+                                setDateDisplay(formatDateForDisplay(postDate, dateFormat));
+                            }
+                        }}
+                        onKeyDown={handleDateKeyDown}
+                        placeholder="MM/DD/YYYY"
+                        className="w-full bg-input-bg border border-border rounded px-2 py-0.5 pr-8 text-xs text-foreground focus:outline-none focus:border-primary/50 font-mono leading-tight"
+                    />
+                    <WeekdayHint isoDate={parseDateInput(dateDisplay)} compact />
+                </div>
             </td>
 
             {/* Description */}

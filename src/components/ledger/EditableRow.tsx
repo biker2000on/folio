@@ -2,6 +2,7 @@
 import React, { useState, useCallback, useEffect, useImperativeHandle, useRef, forwardRef } from 'react';
 import { AccountTransaction } from '@/components/AccountLedger';
 import { DateCell } from './cells/DateCell';
+import { ReconcileStateButton } from './cells/ReconcileStateButton';
 import { DescriptionCell } from './cells/DescriptionCell';
 import { AccountCell } from './cells/AccountCell';
 import { AmountCell } from './cells/AmountCell';
@@ -61,6 +62,8 @@ interface EditableRowProps {
      * memo, editable in place.
      */
     doubleLine?: boolean;
+    /** Click on the R column; the ledger decides whether to toggle or ask first. */
+    onToggleReconcile?: () => void;
 }
 
 export const EditableRow = forwardRef<EditableRowHandle, EditableRowProps>(
@@ -88,6 +91,7 @@ export const EditableRow = forwardRef<EditableRowHandle, EditableRowProps>(
         columnIds,
         onDescriptionSuggestion,
         doubleLine,
+        onToggleReconcile,
     }, ref) {
         const handleRowClick = (e: React.MouseEvent) => {
             const target = e.target as HTMLElement;
@@ -353,19 +357,23 @@ export const EditableRow = forwardRef<EditableRowHandle, EditableRowProps>(
             </td>
         ) : <td className="px-3 py-2"></td>;
 
+        const reconcileMarker = onToggleReconcile ? (
+            <ReconcileStateButton state={reconcileState} onClick={onToggleReconcile} />
+        ) : (
+            <span className="inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold text-foreground-muted bg-surface/10">
+                {reconcileIcon}
+            </span>
+        );
+
         const reconcileCell = (
             <td className="px-3 py-2 align-middle">
-                <span className="inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold text-foreground-muted bg-surface/10">
-                    {reconcileIcon}
-                </span>
+                {reconcileMarker}
             </td>
         );
 
         const reconcileCellCompact = (
             <td className="px-3 py-1 align-middle">
-                <span className="inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold text-foreground-muted bg-surface/10">
-                    {reconcileIcon}
-                </span>
+                {reconcileMarker}
             </td>
         );
 

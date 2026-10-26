@@ -7,6 +7,8 @@ import { TransactionForm, type TransactionFormHandle } from './TransactionForm';
 import { Transaction, CreateTransactionRequest } from '@/lib/types';
 import { useToast } from '@/contexts/ToastContext';
 import { ApiRequestError } from '@/lib/api-error';
+import { fetchWithUnreconcile } from '@/lib/reconciled-split-client';
+import { useUnreconcileConfirm } from './ui/UnreconcileConfirm';
 import { TransactionActivityFeed } from './transactions/TransactionActivityFeed';
 
 interface TransactionFormModalProps {
@@ -27,6 +29,9 @@ export function TransactionFormModal({
     onRefresh,
 }: TransactionFormModalProps) {
     const { success, error: showError } = useToast();
+    // A save that would change a reconciled split comes back 423; this asks
+    // the user and, on yes, resends with the unreconcile flag.
+    const { confirmUnreconcile, unreconcileDialog, isUnreconcilePromptOpen } = useUnreconcileConfirm();
     const [fullTransaction, setFullTransaction] = useState<Transaction | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -93,13 +98,13 @@ export function TransactionFormModal({
                 }
                 : data;
 
-            const response = await fetch(url, {
+            const response = await fetchWithUnreconcile(url, {
                 method,
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify(payload),
-            });
+            }, body => confirmUnreconcile(body, 'save'));
 
             if (response.status === 409 || response.status === 428) {
                 // Reload the latest version so the user can redo their edit
@@ -209,9 +214,9 @@ export function TransactionFormModal({
             title={isEditMode ? 'Edit Transaction' : 'New Transaction'}
             size="2xl"
             closeOnBackdrop={false}
-            // While the discard prompt is up it owns Escape; otherwise both
-            // dialogs would answer the same keystroke.
-            closeOnEscape={!discardPromptOpen}
+            // While the discard or unreconcile prompt is up it owns Escape;
+            // otherwise both dialogs would answer the same keystroke.
+            closeOnEscape={!discardPromptOpen && !isUnreconcilePromptOpen}
             resetKey={transaction?.guid ?? 'new'}
         >
             <div className="px-6 py-4">
@@ -270,6 +275,8 @@ export function TransactionFormModal({
                 defaultFocus="cancel"
                 confirmOnEnter={false}
             />
+
+            {unreconcileDialog}
         </Modal>
     );
 }

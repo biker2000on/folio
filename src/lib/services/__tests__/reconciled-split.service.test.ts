@@ -40,6 +40,10 @@ vi.mock('@/lib/prisma', () => ({
 }));
 
 import {
+    findProtectedSplitChanges,
+    parseUnreconcileFlag,
+    sameCalendarDay,
+    splitAmountsIntact,
     PROTECTED_RECONCILE_STATES,
     ReconciledSplitError,
     assertNoReconciledSplits,
@@ -385,6 +389,7 @@ describe('reconciledSplitResponse', () => {
             guid: SPLIT_A,
             tx_guid: TX_GUID,
             account_guid: ACCOUNT_GUID,
+            account_name: 'Assets:Checking',
             reconcile_state: 'y',
         }]);
     });
@@ -415,5 +420,104 @@ describe('withReconciledSplitCheck', () => {
         await expect(
             withReconciledSplitCheck('edit this transaction', { txGuids: [TX_GUID] }, { client: txClient(), bookAccountGuids: BOOK }),
         ).rejects.toThrow('connection reset');
+    });
+});
+
+describe('findProtectedSplitChanges', () => {
+    const G1 = '1'.repeat(32);
+    const G2 = '2'.repeat(32);
+    const live = (guid: string, state: string, overrides: Partial<{ account_guid: string; value_num: bigint; quantity_num: bigint }> = {}) => ({
+        guid,
+        tx_guid: 't'.repeat(32),
+        account_guid: 'a'.repeat(32),
+        reconcile_state: state,
+        value_num: 100n, value_denom: 100n,
+        quantity_num: 100n, quantity_denom: 100n,
+        account: { name: 'Checking' },
+        ...overrides,
+    });
+    const same = (guid: string) => ({
+        guid, account_guid: 'a'.repeat(32),
+        value_num: 1, value_denom: 1, quantity_num: 1, quantity_denom: 1,
+    });
+    const day = { current: new Date('2026-07-15T10:59:00.000Z'), next: new Date('2026-07-15T00:00:00.000Z') };
+
+    it('reports nothing when no live split is protected', () => {
+        expect(findProtectedSplitChanges([live(G1, 'n'), live(G2, 'c')], [], day)).toEqual([]);
+    });
+
+    it('compares amounts as rationals, so 1/1 matches the live 100/100', () => {
+        expect(findProtectedSplitChanges([live(G1, 'y')], [same(G1)], day)).toEqual([]);
+    });
+
+    it('reads an omitted quantity as equal to the value', () => {
+        const { quantity_num: _q, quantity_denom: _d, ...noQty } = same(G1);
+        void _q; void _d;
+        expect(findProtectedSplitChanges([live(G1, 'y')], [noQty], day)).toEqual([]);
+    });
+
+    it.each([
+        ['value', { ...same(G1), value_num: 2 }],
+        ['quantity', { ...same(G1), quantity_num: 3, quantity_denom: 2 }],
+        ['account', { ...same(G1), account_guid: 'b'.repeat(32) }],
+    ])('flags a %s change on a reconciled split', (_label, incoming) => {
+        const refs = findProtectedSplitChanges([live(G1, 'y')], [incoming], day);
+        expect(refs.map(r => r.splitGuid)).toEqual([G1]);
+    });
+
+    it('flags a reconciled split the body no longer carries, including a guid-less resend', () => {
+        const { guid: _g, ...guidless } = same(G1);
+        void _g;
+        expect(findProtectedSplitChanges([live(G1, 'f')], [guidless], day).map(r => r.splitGuid)).toEqual([G1]);
+        expect(findProtectedSplitChanges([live(G1, 'y')], [], day).map(r => r.splitGuid)).toEqual([G1]);
+    });
+
+    it('flags every protected split when the post date moves to another day', () => {
+        const refs = findProtectedSplitChanges(
+            [live(G1, 'y'), live(G2, 'n'), live('3'.repeat(32), 'f')],
+            [same(G1), same(G2), same('3'.repeat(32))],
+            { current: day.current, next: new Date('2026-07-16T00:00:00.000Z') },
+        );
+        expect(refs.map(r => r.splitGuid).sort()).toEqual([G1, '3'.repeat(32)].sort());
+    });
+
+    it('only names the protected splits, never the cleared ones that changed too', () => {
+        const refs = findProtectedSplitChanges(
+            [live(G1, 'y'), live(G2, 'c')],
+            [same(G1), { ...same(G2), value_num: 9 }],
+            day,
+        );
+        expect(refs).toEqual([]);
+    });
+});
+
+describe('splitAmountsIntact / sameCalendarDay / parseUnreconcileFlag', () => {
+    it('sameCalendarDay ignores the time of day and handles null', () => {
+        expect(sameCalendarDay(new Date('2026-07-15T23:59:59.000Z'), new Date('2026-07-15T00:00:00.000Z'))).toBe(true);
+        expect(sameCalendarDay(new Date('2026-07-15T23:59:59.000Z'), new Date('2026-07-16T00:00:00.000Z'))).toBe(false);
+        expect(sameCalendarDay(null, null)).toBe(true);
+        expect(sameCalendarDay(null, new Date())).toBe(false);
+        expect(sameCalendarDay(new Date('garbage'), new Date())).toBe(false);
+    });
+
+    it('splitAmountsIntact needs account, value and quantity all unchanged', () => {
+        const existing = {
+            guid: 'x', account_guid: 'a', reconcile_state: 'y',
+            value_num: 250n, value_denom: 100n, quantity_num: 5n, quantity_denom: 2n,
+        };
+        expect(splitAmountsIntact(existing, { account_guid: 'a', value_num: 5, value_denom: 2, quantity_num: 25, quantity_denom: 10 })).toBe(true);
+        expect(splitAmountsIntact(existing, { account_guid: 'a', value_num: 5, value_denom: 2 })).toBe(true);
+        expect(splitAmountsIntact(existing, { account_guid: 'a', value_num: 251, value_denom: 100 })).toBe(false);
+    });
+
+    it('parseUnreconcileFlag accepts only true, "true" and "1"', () => {
+        expect(parseUnreconcileFlag(true)).toBe(true);
+        expect(parseUnreconcileFlag('true')).toBe(true);
+        expect(parseUnreconcileFlag(' TRUE ')).toBe(true);
+        expect(parseUnreconcileFlag('1')).toBe(true);
+        expect(parseUnreconcileFlag('yes')).toBe(false);
+        expect(parseUnreconcileFlag(1)).toBe(false);
+        expect(parseUnreconcileFlag(undefined)).toBe(false);
+        expect(parseUnreconcileFlag(null)).toBe(false);
     });
 });

@@ -51,6 +51,26 @@
  * ('f') split too, so 'f' is recoverable, not a dead end. Those routes
  * intentionally do NOT call this guard: they are the way out.
  *
+ * ## What counts as touching a reconciled split
+ *
+ * Only the fields a statement agreed on: a split's amount (value or
+ * quantity), the account it posts to, the transaction's post date, and the
+ * split's existence. A description, num, memo or notes edit leaves the
+ * statement agreement intact and is NOT refused — the transaction PUT uses
+ * `findProtectedSplitChanges` to tell the two apart, so a reconciled
+ * transaction can still have its payee corrected without ceremony.
+ *
+ * ## The confirmed way through
+ *
+ * The transaction PUT and DELETE routes accept an explicit
+ * `unreconcile_protected: true` (PUT body / DELETE query or body). With it the
+ * guard stands down and every protected split the change touches is written
+ * back as 'n' in the same transaction — the GnuCash desktop "you are about to
+ * change a reconciled split" flow, where the user confirms once and the
+ * split loses its reconciled flag. The UI only sends the flag after the user
+ * has confirmed a dialog that names the affected accounts; it is never a
+ * default.
+ *
  * HTTP status is 423 Locked, not 409. The transaction routes already use 409
  * for the optimistic-concurrency conflict and their clients special-case it:
  * `AccountLedger.tsx` silently reloads and returns (the block would vanish
@@ -184,6 +204,109 @@ export function assertSplitsNotProtected(
 ): void {
     const refs = findProtectedSplits(rows);
     if (refs.length > 0) throw new ReconciledSplitError(operation, refs);
+}
+
+// ---------------------------------------------------------------------------
+// Material-change detection (transaction PUT)
+// ---------------------------------------------------------------------------
+
+/** The split fields a statement agreed on, as the live row holds them. */
+export interface ExistingSplitAmounts extends SplitReconcileRow {
+    account_guid: string;
+    value_num: bigint | number;
+    value_denom: bigint | number;
+    quantity_num: bigint | number;
+    quantity_denom: bigint | number;
+}
+
+/** The same fields as the PUT body supplies them. */
+export interface IncomingSplitAmounts {
+    guid?: string;
+    account_guid: string;
+    value_num: bigint | number;
+    value_denom: bigint | number;
+    quantity_num?: bigint | number;
+    quantity_denom?: bigint | number;
+}
+
+/** Exact rational equality, so 1/1 and 100/100 compare equal. */
+function sameFraction(
+    aNum: bigint | number, aDenom: bigint | number,
+    bNum: bigint | number, bDenom: bigint | number,
+): boolean {
+    return BigInt(aNum) * BigInt(bDenom) === BigInt(bNum) * BigInt(aDenom);
+}
+
+/**
+ * Same calendar day in UTC. GnuCash desktop stamps post dates at 10:59:00 UTC
+ * and this app at 00:00:00 UTC, so the time part carries no meaning; the day
+ * is what a statement agreed on.
+ */
+export function sameCalendarDay(a: Date | null | undefined, b: Date | null | undefined): boolean {
+    if (!a || !b) return a === b;
+    if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return false;
+    return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
+}
+
+/**
+ * True when the incoming split leaves everything a statement agreed on
+ * untouched: same account, same value, same quantity. A body split that
+ * omits quantity is taken to mean "quantity equals value" (what every
+ * single-currency client sends).
+ */
+export function splitAmountsIntact(existing: ExistingSplitAmounts, incoming: IncomingSplitAmounts): boolean {
+    if (existing.account_guid !== incoming.account_guid) return false;
+    if (!sameFraction(existing.value_num, existing.value_denom, incoming.value_num, incoming.value_denom)) return false;
+    const qtyNum = incoming.quantity_num ?? incoming.value_num;
+    const qtyDenom = incoming.quantity_denom ?? incoming.value_denom;
+    return sameFraction(existing.quantity_num, existing.quantity_denom, qtyNum, qtyDenom);
+}
+
+/**
+ * Which of the live protected splits an edit would materially change. Pure.
+ *
+ * A protected split is "changed" when the body no longer carries it (no
+ * split with its guid), when its account or amount differs, or when the
+ * transaction's post date moves to another day — a date change re-dates
+ * every split, reconciled ones included. Returns the refs for the message
+ * and for the caller to demote to 'n' when the user has confirmed.
+ *
+ * Body splits without a guid cannot be matched to a live row, so a client
+ * that resends a reconciled split guid-less reads as "removed it". That is
+ * the conservative direction: the guard fires and the UI asks.
+ */
+export function findProtectedSplitChanges(
+    existing: readonly ExistingSplitAmounts[],
+    incoming: readonly IncomingSplitAmounts[],
+    postDate: { current: Date | null | undefined; next: Date | null | undefined },
+): ProtectedSplitRef[] {
+    const protectedRows = existing.filter(row => isProtectedReconcileState(row.reconcile_state));
+    if (protectedRows.length === 0) return [];
+    if (!sameCalendarDay(postDate.current, postDate.next)) return findProtectedSplits(protectedRows);
+
+    const incomingByGuid = new Map<string, IncomingSplitAmounts>();
+    for (const split of incoming) {
+        if (split.guid) incomingByGuid.set(split.guid, split);
+    }
+    const changed = protectedRows.filter(row => {
+        const next = incomingByGuid.get(row.guid);
+        return !next || !splitAmountsIntact(row, next);
+    });
+    return findProtectedSplits(changed);
+}
+
+/**
+ * Read the opt-in "unreconcile what this change touches" flag from a body
+ * field or a query-string value. Only a literal boolean true or the strings
+ * "true" / "1" count; anything else is off.
+ */
+export function parseUnreconcileFlag(raw: unknown): boolean {
+    if (raw === true) return true;
+    if (typeof raw === 'string') {
+        const v = raw.trim().toLowerCase();
+        return v === 'true' || v === '1';
+    }
+    return false;
 }
 
 export interface ReconciledCheckOptions {
@@ -403,6 +526,7 @@ export function reconciledSplitResponse(error: ReconciledSplitError): NextRespon
                 guid: ref.splitGuid,
                 tx_guid: ref.txGuid,
                 account_guid: ref.accountGuid,
+                account_name: ref.accountName,
                 reconcile_state: ref.reconcileState,
             })),
         },

@@ -162,10 +162,12 @@ export function SplitRow({
                             onChange={(e) => handleDebitChange(e.target.value)}
                             onBlur={handleDebitBlur}
                             onKeyDown={(e) => handleAmountKeyDown(e, 'debit')}
-                            className="w-full bg-input-bg border border-border rounded-lg px-3 py-2 text-sm text-positive placeholder-foreground-muted focus:outline-none focus:border-primary/50 text-right font-mono"
+                            // pr-8 reserves room for the "=" marker: the text is
+                            // right-aligned, so without it the digits sit under it.
+                            className={`w-full bg-input-bg border border-border rounded-lg px-3 py-2 text-sm text-positive placeholder-foreground-muted focus:outline-none focus:border-primary/50 text-right font-mono ${containsMathExpression(split.debit) ? 'pr-8' : ''}`}
                         />
                         {containsMathExpression(split.debit) && (
-                            <span className="absolute right-8 top-1/2 -translate-y-1/2 text-xs text-primary pointer-events-none">=</span>
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-primary pointer-events-none">=</span>
                         )}
                     </div>
 
@@ -179,10 +181,10 @@ export function SplitRow({
                             onChange={(e) => handleCreditChange(e.target.value)}
                             onBlur={handleCreditBlur}
                             onKeyDown={(e) => handleAmountKeyDown(e, 'credit')}
-                            className="w-full bg-input-bg border border-border rounded-lg px-3 py-2 text-sm text-negative placeholder-foreground-muted focus:outline-none focus:border-primary/50 text-right font-mono"
+                            className={`w-full bg-input-bg border border-border rounded-lg px-3 py-2 text-sm text-negative placeholder-foreground-muted focus:outline-none focus:border-primary/50 text-right font-mono ${containsMathExpression(split.credit) ? 'pr-8' : ''}`}
                         />
                         {containsMathExpression(split.credit) && (
-                            <span className="absolute right-8 top-1/2 -translate-y-1/2 text-xs text-primary pointer-events-none">=</span>
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-primary pointer-events-none">=</span>
                         )}
                     </div>
                 </div>

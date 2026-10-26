@@ -10,6 +10,7 @@ import { formatDateForDisplay, parseDateInput } from '@/lib/date-format';
 import { useUserPreferences } from '@/contexts/UserPreferencesContext';
 import { toLocalDateString } from '@/lib/datePresets';
 import { AccountSelector } from '@/components/ui/AccountSelector';
+import { WeekdayHint } from '@/components/ui/WeekdayHint';
 import { FieldGrid } from '@/components/ui/form';
 import { ErrorLiveRegion } from '@/components/a11y/LiveRegion';
 import { extractErrorMessage } from '@/lib/api-error';
@@ -731,24 +732,27 @@ export function InvestmentTransactionForm({
                 <label className="block text-xs text-foreground-muted uppercase tracking-wider mb-1">
                     Date
                 </label>
-                <input
-                    type="text"
-                    value={dateDisplay}
-                    onChange={(e) => setDateDisplay(e.target.value)}
-                    onFocus={(e) => e.target.select()}
-                    onKeyDown={handleDateKeyDown}
-                    onBlur={() => {
-                        const parsed = parseDateInput(dateDisplay);
-                        if (parsed) {
-                            handleChange('date', parsed);
-                            setDateDisplay(formatDateForDisplay(parsed, dateFormat));
-                        } else {
-                            setDateDisplay(formatDateForDisplay(form.date, dateFormat));
-                        }
-                    }}
-                    placeholder="MM/DD/YYYY"
-                    className="w-full bg-input-bg border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary/50"
-                />
+                <div className="relative">
+                    <input
+                        type="text"
+                        value={dateDisplay}
+                        onChange={(e) => setDateDisplay(e.target.value)}
+                        onFocus={(e) => e.target.select()}
+                        onKeyDown={handleDateKeyDown}
+                        onBlur={() => {
+                            const parsed = parseDateInput(dateDisplay);
+                            if (parsed) {
+                                handleChange('date', parsed);
+                                setDateDisplay(formatDateForDisplay(parsed, dateFormat));
+                            } else {
+                                setDateDisplay(formatDateForDisplay(form.date, dateFormat));
+                            }
+                        }}
+                        placeholder="MM/DD/YYYY"
+                        className="w-full bg-input-bg border border-border rounded-lg px-3 py-2 pr-11 text-sm text-foreground focus:outline-none focus:border-primary/50"
+                    />
+                    <WeekdayHint isoDate={parseDateInput(dateDisplay)} />
+                </div>
             </div>
 
             {/* Buy/Sell/Reinvest Fields */}
