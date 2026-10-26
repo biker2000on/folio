@@ -112,6 +112,28 @@ export function DataEventsProvider() {
   const pendingRef = useRef(new Map<DataChangeEntity, DataChangeEventPayload>());
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // React Query invalidation for the query keys each entity affects.
+  const invalidateForEntity = useCallback((entity: DataChangeEntity) => {
+    if (entity === 'book') {
+      // Import/overwrite/book delete: refresh the scoped known-key list.
+      for (const queryKey of BOOK_SCOPED_QUERY_KEYS) {
+        void queryClient.invalidateQueries({ queryKey });
+      }
+    } else if (entity === 'accounts') {
+      // Account create/rename/move/delete: hierarchy shape and rolled-up
+      // balances change; reconcile/review rollups do not.
+      void queryClient.invalidateQueries({ queryKey: ['accounts', 'hierarchy'] });
+      void queryClient.invalidateQueries({ queryKey: ['accounts', 'balances'] });
+    } else if (entity === 'transactions' || entity === 'reconciliation') {
+      // Ledger writes move balances and reconcile/review rollups.
+      void queryClient.invalidateQueries({ queryKey: ['accounts', 'balances'] });
+      void queryClient.invalidateQueries({ queryKey: ['accounts', 'reconcile-summary'] });
+      void queryClient.invalidateQueries({ queryKey: ['accounts', 'review-status'] });
+    }
+    // budgets / schedules / prices / business have no React Query caches
+    // today — pages consume the window event instead.
+  }, [queryClient]);
+
   const flush = useCallback(() => {
     flushTimerRef.current = null;
 
@@ -125,42 +147,38 @@ export function DataEventsProvider() {
     pendingRef.current = new Map();
 
     for (const [entity, payload] of pending) {
+      // React Query invalidation runs for every event, echo or not: the page
+      // that wrote only refetches its own list (the ledger), while the shared
+      // caches other pages read (account balances, reconcile rollups) still
+      // hold pre-write numbers for their whole staleTime. Dropping the echo
+      // here used to leave the account hierarchy showing stale balances for
+      // minutes after a ledger entry.
+      invalidateForEntity(entity);
+
       // Late echo check: the SSE frame can arrive before the mutating fetch on
       // this tab resolves and marks suppression, so re-check at flush time.
+      // Only the window fan-out is the echo — that is what would trigger the
+      // writing page's duplicate refetch.
       if (isEchoSuppressed(entity)) continue;
-
-      // React Query invalidation for the query keys each entity affects.
-      if (entity === 'book') {
-        // Import/overwrite/book delete: refresh the scoped known-key list.
-        for (const queryKey of BOOK_SCOPED_QUERY_KEYS) {
-          void queryClient.invalidateQueries({ queryKey });
-        }
-      } else if (entity === 'accounts') {
-        // Account create/rename/move/delete: hierarchy shape and rolled-up
-        // balances change; reconcile/review rollups do not.
-        void queryClient.invalidateQueries({ queryKey: ['accounts', 'hierarchy'] });
-        void queryClient.invalidateQueries({ queryKey: ['accounts', 'balances'] });
-      } else if (entity === 'transactions' || entity === 'reconciliation') {
-        // Ledger writes move balances and reconcile/review rollups.
-        void queryClient.invalidateQueries({ queryKey: ['accounts', 'balances'] });
-        void queryClient.invalidateQueries({ queryKey: ['accounts', 'reconcile-summary'] });
-        void queryClient.invalidateQueries({ queryKey: ['accounts', 'review-status'] });
-      }
-      // budgets / schedules / prices / business have no React Query caches
-      // today — pages consume the window event below.
 
       window.dispatchEvent(new CustomEvent(DATA_CHANGE_EVENT, { detail: payload }));
     }
-  }, [queryClient]);
+  }, [invalidateForEntity]);
   const flushRef = useRef(flush);
+  const invalidateRef = useRef(invalidateForEntity);
   useEffect(() => {
     flushRef.current = flush;
-  }, [flush]);
+    invalidateRef.current = invalidateForEntity;
+  }, [flush, invalidateForEntity]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') return;
 
     let disposed = false;
+    // Set once the stream has dropped (server restart, network blip). Any
+    // event published while it was down is gone, so the next 'connected'
+    // refreshes the book-scoped caches instead of trusting them.
+    let dropped = false;
 
     const connect = () => {
       if (disposed || sourceRef.current) return;
@@ -170,15 +188,19 @@ export function DataEventsProvider() {
       source.addEventListener('connected', () => {
         // Healthy stream — reset the backoff.
         reconnectDelayRef.current = RECONNECT_MIN_MS;
+        if (dropped) {
+          dropped = false;
+          invalidateRef.current('book');
+        }
       });
 
       source.addEventListener('data-change', (e) => {
         try {
           const payload = JSON.parse((e as MessageEvent).data) as DataChangeEventPayload;
           if (!payload?.entity) return;
-          // Drop this tab's own echo: the page that performed the mutation
-          // already refetched (and marked suppression on success).
-          if (isEchoSuppressed(payload.entity)) return;
+          // This tab's own echo still goes through flush so the shared React
+          // Query caches are invalidated; only the window fan-out is dropped
+          // there (the writing page already refetched its own list).
           pendingRef.current.set(payload.entity, payload);
           // Only schedule the debounce flush while visible; hidden tabs just
           // accumulate and flush once on visibilitychange -> visible.
@@ -194,6 +216,7 @@ export function DataEventsProvider() {
         source.close();
         sourceRef.current = null;
         if (disposed) return;
+        dropped = true;
         if (reconnectRef.current) clearTimeout(reconnectRef.current);
         const delay = reconnectDelayRef.current;
         reconnectDelayRef.current = Math.min(delay * 2, RECONNECT_MAX_MS);

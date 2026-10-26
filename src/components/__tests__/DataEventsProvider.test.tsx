@@ -229,8 +229,17 @@ describe('DataEventsProvider', () => {
         emitDataChange('transactions', { guid: 'tx-own' });
         vi.advanceTimersByTime(DEBOUNCE_MS);
 
+        // The window fan-out is the echo (it would re-run the writing page's
+        // own refetch). The shared React Query caches are NOT: the ledger
+        // never refreshes account balances itself, so an own-write must still
+        // mark them stale or the hierarchy page shows pre-write numbers.
         expect(receivedEvents).toHaveLength(0);
-        expect(invalidateSpy).not.toHaveBeenCalled();
+        expect(invalidatedKeys()).toEqual([
+            ['accounts', 'balances'],
+            ['accounts', 'reconcile-summary'],
+            ['accounts', 'review-status'],
+        ]);
+        invalidateSpy.mockClear();
 
         // After the suppression window expires, events flow again.
         vi.advanceTimersByTime(SUPPRESS_ECHO_MS);
@@ -263,5 +272,28 @@ describe('DataEventsProvider', () => {
         vi.advanceTimersByTime(DEBOUNCE_MS);
 
         expect(receivedEvents).toHaveLength(0);
+        expect(invalidatedKeys()).toContainEqual(['accounts', 'balances']);
+    });
+
+    it('refreshes the book-scoped caches when the stream reconnects after a drop', () => {
+        renderProvider();
+
+        // Initial connect is not a reconnect: nothing to refresh.
+        source().emit('connected', { redis: true });
+        expect(invalidateSpy).not.toHaveBeenCalled();
+
+        // Server restart: the stream errors, events published meanwhile are lost.
+        source().onerror?.();
+        vi.advanceTimersByTime(5_000);
+        expect(MockEventSource.instances).toHaveLength(2);
+
+        source().emit('connected', { redis: true });
+        expect(invalidatedKeys()).toEqual([
+            ['accounts', 'hierarchy'],
+            ['accounts', 'balances'],
+            ['accounts', 'reconcile-summary'],
+            ['accounts', 'review-status'],
+            ['tags'],
+        ]);
     });
 });
