@@ -36,6 +36,7 @@ import { useCurrentUser, READONLY_TOOLTIP } from '@/hooks/useCurrentUser';
 import { extractErrorMessage } from '@/lib/api-error';
 import { Tip } from '@/components/ui/Tooltip';
 import { ACCOUNT_TYPES } from './filters/AccountTypeFilter';
+import { MONEY_DISPLAY_EPSILON } from '@/lib/tolerances';
 
 interface TagWithAccounts extends Tag {
     account_guids?: string[];
@@ -1031,7 +1032,7 @@ export default function AccountHierarchy({ accounts, onRefresh, headerActions, o
                 const value = row.original.totalBalanceUsd - row.original.reconciledUsd;
                 return (
                     <div className="whitespace-nowrap px-3 py-1.5 text-right font-mono text-sm leading-tight" style={TNUM}>
-                        <span className={Math.abs(value) < 0.005 ? 'text-foreground-muted' : 'text-foreground-secondary'}>
+                        <span className={Math.abs(value) < MONEY_DISPLAY_EPSILON ? 'text-foreground-muted' : 'text-foreground-secondary'}>
                             {formatCurrency(value, 'USD')}
                         </span>
                     </div>
