@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { DATE_PRESETS, DateRange, formatDateForDisplay } from '@/lib/datePresets';
 import { formatDateForDisplay as formatIsoToDisplay, parseDateInput } from '@/lib/date-format';
 import { useUserPreferences } from '@/contexts/UserPreferencesContext';
+import { Tip } from '@/components/ui/Tooltip';
 
 interface DateRangePickerProps {
     startDate: string | null;
@@ -113,22 +114,26 @@ function DateRangePickerInner({ startDate, endDate, onChange, className = '', al
                     {/* Presets */}
                     <div className="p-2 border-b border-border">
                         <div className="text-xs text-foreground-muted uppercase tracking-wider px-2 py-1">Quick Select</div>
-                        <div className="grid grid-cols-2 gap-1">
+                        <div className="grid grid-cols-3 gap-1">
                             {DATE_PRESETS.map((preset) => {
                                 const { startDate: ps, endDate: pe } = preset.getValue();
                                 const isActive = ps === startDate && pe === endDate;
                                 return (
-                                    <button
-                                        key={preset.label}
-                                        onClick={() => handlePresetClick(preset)}
-                                        className={`px-3 py-2 text-sm rounded-lg text-left transition-colors ${
-                                            isActive
-                                                ? 'bg-primary/20 text-primary'
-                                                : 'text-foreground-secondary hover:bg-surface-hover'
-                                        }`}
-                                    >
-                                        {preset.label}
-                                    </button>
+                                    <Tip key={preset.label} content={preset.label} describedBy={false}>
+                                        <button
+                                            type="button"
+                                            onClick={() => handlePresetClick(preset)}
+                                            aria-label={preset.label}
+                                            aria-pressed={isActive}
+                                            className={`px-3 py-2 text-sm rounded-lg text-center transition-colors ${
+                                                isActive
+                                                    ? 'bg-primary/20 text-primary'
+                                                    : 'text-foreground-secondary hover:bg-surface-hover'
+                                            }`}
+                                        >
+                                            {preset.short}
+                                        </button>
+                                    </Tip>
                                 );
                             })}
                         </div>

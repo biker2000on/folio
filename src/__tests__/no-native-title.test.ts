@@ -13,8 +13,9 @@
  * This test parses every .tsx file with the TypeScript compiler rather than
  * grepping, because `title` is a legitimate PROP on plenty of components
  * (`<StatCard title=…>`, `<PageHeader title=…>`, `<Modal title=…>`) and a
- * regex cannot tell those from a host element's attribute. Only lowercase JSX
- * tags — real DOM elements — are checked.
+ * regex cannot tell those from a host element's attribute. Lowercase JSX tags
+ * — real DOM elements — are checked, plus the components in
+ * DOM_FORWARDING_COMPONENTS, which spread `title` straight onto their element.
  */
 import { describe, expect, it } from 'vitest';
 import { execSync } from 'node:child_process';
@@ -36,6 +37,20 @@ const ALLOWED_TAGS = new Set(['abbr', 'iframe', 'svg', 'title', 'g', 'path', 'sy
  */
 const ALLOWLIST: ReadonlySet<string> = new Set<string>([]);
 
+/**
+ * Components that pass unknown props through to a DOM element, so `title` on
+ * them is a native tooltip too. `next/link`'s `<Link>` renders an `<a>` with
+ * every extra prop (several of these slipped past a lowercase-only check
+ * until 2026-11-02).
+ */
+const DOM_FORWARDING_COMPONENTS = new Set(['Link']);
+
+/** True when `title` on this JSX tag reaches the DOM as a native tooltip. */
+function isDomTitleTag(tag: string): boolean {
+    if (DOM_FORWARDING_COMPONENTS.has(tag)) return true;
+    return /^[a-z]/.test(tag) && !ALLOWED_TAGS.has(tag);
+}
+
 const repoRoot = resolve(__dirname, '../..');
 
 function tsxFiles(): string[] {
@@ -54,7 +69,7 @@ function findNativeTitles(file: string): string[] {
     const visit = (node: ts.Node): void => {
         if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
             const tag = node.tagName.getText(sf);
-            if (/^[a-z]/.test(tag) && !ALLOWED_TAGS.has(tag)) {
+            if (isDomTitleTag(tag)) {
                 for (const attr of node.attributes.properties) {
                     if (ts.isJsxAttribute(attr) && attr.name.getText(sf) === 'title') {
                         const { line } = sf.getLineAndCharacterOfPosition(attr.getStart(sf));
@@ -90,7 +105,7 @@ describe('native title= tooltips', () => {
         // otherwise let the suite pass forever.
         const sf = ts.createSourceFile(
             'sample.tsx',
-            'const a = <div title="hint">x</div>;\nconst b = <StatCard title="fine" />;\nconst c = <abbr title="ok">x</abbr>;',
+            'const a = <div title="hint">x</div>;\nconst b = <StatCard title="fine" />;\nconst c = <abbr title="ok">x</abbr>;\nconst d = <Link href="/" title="hint">x</Link>;',
             ts.ScriptTarget.Latest,
             true,
             ts.ScriptKind.TSX,
@@ -99,7 +114,7 @@ describe('native title= tooltips', () => {
         const visit = (node: ts.Node): void => {
             if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
                 const tag = node.tagName.getText(sf);
-                if (/^[a-z]/.test(tag) && !ALLOWED_TAGS.has(tag)) {
+                if (isDomTitleTag(tag)) {
                     for (const attr of node.attributes.properties) {
                         if (ts.isJsxAttribute(attr) && attr.name.getText(sf) === 'title') hits.push(tag);
                     }
@@ -108,7 +123,7 @@ describe('native title= tooltips', () => {
             ts.forEachChild(node, visit);
         };
         visit(sf);
-        // The <div> is caught; the component prop and the <abbr> are not.
-        expect(hits).toEqual(['div']);
+        // The <div> and the <Link> are caught; the component prop and the <abbr> are not.
+        expect(hits).toEqual(['div', 'Link']);
     });
 });

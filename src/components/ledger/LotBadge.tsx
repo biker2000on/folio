@@ -19,6 +19,8 @@ interface LotBadgeProps {
     tooltip?: LotTooltipData;
     className?: string;
     sharePrecision?: number;
+    /** Short acquisition date shown after the index: "L1 · 12/24/25". */
+    dateLabel?: string | null;
 }
 
 // Consistent color palette for lot badges (up to 12 distinct colors, then cycle).
@@ -39,7 +41,7 @@ const LOT_COLORS = [
     'bg-sky-500/20 text-sky-400 border-sky-500/30',
 ];
 
-export default function LotBadge({ lotIndex, isClosed, tooltip, className = '', sharePrecision: sp = 4 }: LotBadgeProps) {
+export default function LotBadge({ lotIndex, isClosed, tooltip, className = '', sharePrecision: sp = 4, dateLabel }: LotBadgeProps) {
     const [showTooltip, setShowTooltip] = useState(false);
     const colorIndex = (lotIndex - 1) % LOT_COLORS.length;
     const colorClass = isClosed
@@ -53,9 +55,11 @@ export default function LotBadge({ lotIndex, isClosed, tooltip, className = '', 
             onMouseLeave={() => setShowTooltip(false)}
         >
             <span
-                className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${colorClass} cursor-default`}
+                className={`inline-flex items-center whitespace-nowrap px-1.5 py-0.5 rounded text-xs font-mono font-medium border ${colorClass} cursor-default`}
             >
                 L{lotIndex}
+                {/* The date only fits on wide registers; the tooltip always has it. */}
+                {dateLabel && <span className="hidden min-[1800px]:inline">&nbsp;· {dateLabel}</span>}
             </span>
 
             {showTooltip && tooltip && (
@@ -75,7 +79,7 @@ export default function LotBadge({ lotIndex, isClosed, tooltip, className = '', 
                             )}
                             {tooltip.holdingPeriod && (
                                 <div>
-                                    <span className={`inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold ${
+                                    <span className={`inline-flex items-center px-1 py-0.5 rounded text-xs font-bold ${
                                         tooltip.holdingPeriod === 'long_term'
                                             ? 'bg-primary/20 text-primary'
                                             : 'bg-warning/20 text-warning'

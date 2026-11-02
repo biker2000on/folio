@@ -21,18 +21,25 @@ vi.mock('@/lib/financial-actions/client-events', () => ({
 vi.mock('@/components/TransactionFormModal', () => ({
     TransactionFormModal: ({
         isOpen,
+        transaction,
         defaultAccountGuid,
         onSuccess,
     }: {
         isOpen: boolean;
-        defaultAccountGuid: string;
+        transaction?: { guid: string; enter_date: Date } | null;
+        defaultAccountGuid?: string;
         onSuccess: () => void;
-    }) => isOpen ? (
+    }) => !isOpen ? null : transaction ? (
+        <div role="dialog" aria-label="Edit Transaction">
+            <span>Editing: {transaction.guid} @ {transaction.enter_date.toISOString()}</span>
+            <button type="button" onClick={onSuccess}>Complete edit</button>
+        </div>
+    ) : (
         <div role="dialog" aria-label="New Transaction">
             <span>Default account: {defaultAccountGuid}</span>
             <button type="button" onClick={onSuccess}>Complete new transaction</button>
         </div>
-    ) : null,
+    ),
 }));
 
 vi.mock('@/components/ui/ConfirmationDialog', () => ({
@@ -57,6 +64,7 @@ const workspace = {
         name: 'Checking',
         account_type: 'BANK',
         currency: 'USD',
+        commodityScu: 100,
     },
     statementDate: '2026-07-28T00:00:00.000Z',
     lastReconcileDate: null,
@@ -197,6 +205,44 @@ describe('ReconcilePage transaction actions', () => {
         await waitFor(() => expect(workspaceRequests).toBeGreaterThanOrEqual(2));
         expect(deletedTransactions).toEqual([]);
         expect(toastSuccess).not.toHaveBeenCalled();
+    });
+
+    it('defaults the ending balance to the book balance as of the statement date', async () => {
+        render(<ReconcilePage />);
+        await screen.findByText('Review me');
+
+        // 100.00 already reconciled + the -25.00 candidate.
+        await waitFor(() => expect(screen.getByLabelText(/ending balance/i)).toHaveValue('75.00'));
+        expect(screen.getByText(/Book balance/)).toBeInTheDocument();
+    });
+
+    it('keeps a typed ending balance when the workspace reloads', async () => {
+        render(<ReconcilePage />);
+        await screen.findByText('Review me');
+        const endingInput = screen.getByLabelText(/ending balance/i);
+        await waitFor(() => expect(endingInput).toHaveValue('75.00'));
+
+        fireEvent.change(endingInput, { target: { value: '80' } });
+        fireEvent.click(screen.getByRole('button', { name: /New Transaction/ }));
+        fireEvent.click(screen.getByRole('button', { name: 'Complete new transaction' }));
+
+        await waitFor(() => expect(workspaceRequests).toBeGreaterThanOrEqual(2));
+        expect(endingInput).toHaveValue('80');
+        expect(screen.queryByText(/Book balance/)).not.toBeInTheDocument();
+    });
+
+    it('edits a candidate transaction in place and refreshes the workspace', async () => {
+        render(<ReconcilePage />);
+        await screen.findByText('Review me');
+        fireEvent.click(screen.getByRole('button', { name: 'Edit Review me' }));
+
+        expect(screen.getByRole('dialog', { name: 'Edit Transaction' })).toBeInTheDocument();
+        // The owning transaction, with the enter_date lock token from the workspace.
+        expect(screen.getByText('Editing: transaction-guid @ 2026-07-20T08:00:00.000Z')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Complete edit' }));
+        await waitFor(() => expect(workspaceRequests).toBeGreaterThanOrEqual(2));
+        expect(screen.queryByRole('dialog', { name: 'Edit Transaction' })).not.toBeInTheDocument();
     });
 
     it('pins the running balances below the global application header', async () => {

@@ -178,12 +178,11 @@ export default function TagsPage() {
                                     {
                                         label: 'Tag',
                                         value: (
-                                            <Link
-                                                href={`/ledger?search=${encodeURIComponent(`#${tag.name}`)}`}
-                                                title={`Show transactions tagged #${tag.name}`}
-                                            >
+                                            <Tip content={`Show transactions tagged #${tag.name}`}>
+                                            <Link href={`/ledger?search=${encodeURIComponent(`#${tag.name}`)}`}>
                                                 <TagChip name={tag.name} color={tag.color} size="sm" className="cursor-pointer hover:brightness-125 transition-all" />
                                             </Link>
+                                            </Tip>
                                         ),
                                     },
                                     { label: 'Description', value: tag.description || <span className="text-foreground-muted">—</span> },
@@ -226,12 +225,11 @@ export default function TagsPage() {
                                 {tags.map(tag => (
                                     <tr key={tag.id} className="hover:bg-surface-hover transition-colors">
                                         <td className="px-4 py-3">
-                                            <Link
-                                                href={`/ledger?search=${encodeURIComponent(`#${tag.name}`)}`}
-                                                title={`Show transactions tagged #${tag.name}`}
-                                            >
+                                            <Tip content={`Show transactions tagged #${tag.name}`}>
+                                            <Link href={`/ledger?search=${encodeURIComponent(`#${tag.name}`)}`}>
                                                 <TagChip name={tag.name} color={tag.color} size="sm" className="cursor-pointer hover:brightness-125 transition-all" />
                                             </Link>
+                                            </Tip>
                                         </td>
                                         <td className="px-4 py-3 text-sm text-foreground-secondary max-w-md truncate">
                                             {tag.description || <span className="text-foreground-muted">—</span>}

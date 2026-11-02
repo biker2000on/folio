@@ -691,7 +691,7 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-3xl mx-auto space-y-8">
-      <PageHeader title="Settings" />
+      <PageHeader title="General Settings" />
 
       {/* ── Book & Entity ─────────────────────────────────────────────── */}
       <section className="space-y-3">

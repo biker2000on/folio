@@ -61,7 +61,7 @@ export const DOMAIN_LABELS: Record<FeatureDomain, string> = {
     planning: 'Planning',
     reports: 'Reports',
     business: 'Business',
-    settings: 'Settings',
+    settings: 'Administration',
 };
 
 export const FEATURES: Feature[] = [

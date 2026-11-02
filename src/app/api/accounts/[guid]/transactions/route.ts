@@ -279,26 +279,34 @@ export async function GET(
         if (isInvestmentAccount && !unreviewedOnly && !includeSubaccounts) {
             const cacheStart = startDate?.toISOString().slice(0, 10) || '0001-01-01';
             const cacheEnd = endDate?.toISOString().slice(0, 10) || '9999-12-31';
-            // `investment-ledger-v3` retires entries written before
-            // costBasisUncoveredShares and positionSide existed. A v2 payload
-            // carries no side at all, so an oversold row would deserialize as a
-            // long position holding ~$0 of basis instead of the short leg's
-            // proceeds — served for up to a full TTL after deploy. Bump this
-            // name whenever the shape of InvestmentRunningTotal changes.
+            // `investment-ledger-v5` retires entries written before the replay
+            // was seeded with the position held at the range start (v3 started
+            // both totals at zero on `startDate`) and before trading-account
+            // legs stopped reading as $0 transfers-in. v3 itself retired payloads
+            // with no costBasisUncoveredShares / positionSide. Bump this name
+            // whenever the shape OR the meaning of InvestmentRunningTotal
+            // changes, or stale rows are served for up to a full TTL.
             const totalsCacheKey =
-                `cache:${roleResult.bookGuid}:investment-ledger-v3:${accountGuid}:` +
+                `cache:${roleResult.bookGuid}:investment-ledger-v5:${accountGuid}:` +
                 `${costBasisMethod}:${costBasisCarryOver ? 'carry' : 'local'}:` +
                 `${cacheStart}-${cacheEnd}`;
             const accountCommodityGuid = account?.commodity_guid || '';
+            // The running totals of a dated range must START from the position
+            // already held when the range opens, so both paths replay the whole
+            // history up to `endDate` and only REPORT rows on or after
+            // `startDate`. Replaying from `startDate` restarted the share
+            // balance and the cost basis at zero (VTI read -105.66 shares).
+            const inRange = (postDate: Date | null | undefined) =>
+                !startDate || (postDate != null && postDate.getTime() >= startDate.getTime());
 
             investmentRunningTotals = await loadInvestmentRunningTotals(totalsCacheKey, async () => {
             if (costBasisCarryOver && accountCommodityGuid) {
                 // Enhanced path: flat batched queries (account splits, sibling
                 // splits by tx, sibling accounts) instead of a 3-level nested
                 // include that dragged every column of every related row.
+                // No lower bound: see `inRange` above.
                 const dateWhere: Prisma.transactionsWhereInput = {};
-                if (startDate) dateWhere.post_date = { ...dateWhere.post_date as object, gte: startDate };
-                if (endDate) dateWhere.post_date = { ...dateWhere.post_date as object, lte: endDate };
+                if (endDate) dateWhere.post_date = { lte: endDate };
 
                 const baseSplits = await prisma.splits.findMany({
                     where: {
@@ -334,19 +342,23 @@ export async function GET(
                         },
                     })
                     : [];
-                // One batch: accounts of those sibling splits (guid +
-                // commodity_guid — same fields the old include selected)
+                // One batch: accounts of those sibling splits. `account_type`
+                // is load-bearing: isTransferIn skips TRADING siblings, and in
+                // a book with trading accounts every buy carries a same-
+                // commodity Trading:…:VTI leg. Without the type, each purchase
+                // read as a $0 transfer-in and the basis column was $0
+                // "fully covered" for the whole history.
                 const siblingAccountGuids = [...new Set(siblingSplits.map(s => s.account_guid))];
                 const siblingAccounts = siblingAccountGuids.length > 0
                     ? await prisma.accounts.findMany({
                         where: { guid: { in: siblingAccountGuids } },
-                        select: { guid: true, commodity_guid: true },
+                        select: { guid: true, commodity_guid: true, account_type: true },
                     })
                     : [];
                 const siblingAccountByGuid = new Map(siblingAccounts.map(a => [a.guid, a]));
 
                 type SiblingSplit = (typeof siblingSplits)[number] & {
-                    account: { guid: string; commodity_guid: string | null } | null;
+                    account: { guid: string; commodity_guid: string | null; account_type: string } | null;
                 };
                 const siblingsByTx = new Map<string, SiblingSplit[]>();
                 for (const s of siblingSplits) {
@@ -460,6 +472,7 @@ export async function GET(
                     // shares left to be uncovered; reportPool() owns both of
                     // those calls so this route and the holdings surface in
                     // commodities.ts cannot disagree about them.
+                    if (!inRange(split.transaction?.post_date)) continue;
                     const report = reportPool(pool, coverageEps);
                     const balancesAgree = Math.abs(runShares - poolShares) < coverageEps;
                     const coverageIsKnowable = balancesAgree && report.coverageKnowable;
@@ -473,19 +486,20 @@ export async function GET(
                 return totals;
             } else {
                 // Original path: simple raw SQL without transfer tracing
+                // No lower bound: see `inRange` above.
                 const allSplitsWithTx = await prisma.$queryRaw<{
                     tx_guid: string;
+                    post_date: Date | null;
                     quantity_num: bigint;
                     quantity_denom: bigint;
                     value_num: bigint;
                     value_denom: bigint;
                 }[]>`
-                    SELECT s.tx_guid, s.quantity_num, s.quantity_denom, s.value_num, s.value_denom
+                    SELECT s.tx_guid, t.post_date, s.quantity_num, s.quantity_denom, s.value_num, s.value_denom
                     FROM splits s
                     JOIN transactions t ON t.guid = s.tx_guid
                     WHERE s.account_guid = ${accountGuid}
                     ${endDate ? Prisma.sql`AND t.post_date <= ${endDate}` : Prisma.empty}
-                    ${startDate ? Prisma.sql`AND t.post_date >= ${startDate}` : Prisma.empty}
                     ORDER BY t.post_date ASC, t.enter_date ASC
                 `;
 
@@ -508,6 +522,7 @@ export async function GET(
                         }
                         runShares += shares;
                     }
+                    if (!inRange(split.post_date)) continue;
                     totals.set(split.tx_guid, {
                         shareBalance: runShares,
                         costBasis: runCostBasis,

@@ -36,6 +36,7 @@ describe('CandidateTable', () => {
                 onToggle={onToggle}
                 onSelectAll={vi.fn()}
                 onDelete={vi.fn()}
+                onEdit={vi.fn()}
                 currency="USD"
                 commodityScu={100}
             />,
@@ -57,6 +58,7 @@ describe('CandidateTable', () => {
                 onToggle={vi.fn()}
                 onSelectAll={onSelectAll}
                 onDelete={vi.fn()}
+                onEdit={vi.fn()}
                 currency="USD"
                 commodityScu={100}
             />,
@@ -76,6 +78,7 @@ describe('CandidateTable', () => {
                 onToggle={onToggle}
                 onSelectAll={vi.fn()}
                 onDelete={onDelete}
+                onEdit={vi.fn()}
                 currency="USD"
                 commodityScu={100}
             />,
@@ -83,6 +86,33 @@ describe('CandidateTable', () => {
 
         fireEvent.click(screen.getByRole('button', { name: 'Delete First item' }));
         expect(onDelete).toHaveBeenCalledWith(candidates[0]);
+        expect(onToggle).not.toHaveBeenCalled();
+    });
+});
+
+describe('CandidateTable edit action', () => {
+    it('edits from the button and the E key without toggling the row', () => {
+        const onToggle = vi.fn();
+        const onEdit = vi.fn();
+        render(
+            <CandidateTable
+                candidates={candidates}
+                selected={new Set()}
+                onToggle={onToggle}
+                onSelectAll={vi.fn()}
+                onDelete={vi.fn()}
+                onEdit={onEdit}
+                currency="USD"
+                commodityScu={100}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit First item' }));
+        expect(onEdit).toHaveBeenCalledWith(candidates[0]);
+
+        const row = screen.getAllByRole('row')[1];
+        fireEvent.keyDown(row, { key: 'e' });
+        expect(onEdit).toHaveBeenCalledTimes(2);
         expect(onToggle).not.toHaveBeenCalled();
     });
 });

@@ -11,7 +11,7 @@ import { DataEventsProvider } from '@/components/DataEventsProvider';
 import BookSwitcher from './BookSwitcher';
 import { KeyboardShortcutHelp } from './KeyboardShortcutHelp';
 import { GlobalShortcuts } from './GlobalShortcuts';
-import { FeedbackButton, FeedbackProvider } from './feedback/FeedbackProvider';
+import { FeedbackButton, FeedbackProvider, useFeedback } from './feedback/FeedbackProvider';
 import { ContextualHelpLink } from './docs/ContextualHelpLink';
 import { BrandLockup } from '@/components/brand/BrandLockup';
 import { FEATURES, featureById, type FeatureDomain } from '@/lib/feature-registry';
@@ -349,7 +349,13 @@ const navItems: NavItem[] = [
     { name: 'Taxes', href: '/taxes', icon: 'Percent', children: registryNavChildren('taxes') },
     { name: 'Planning', href: '/planning', icon: 'Wrench', children: registryNavChildren('planning') },
     { name: 'Reports', href: '/reports', icon: 'BarChart3' },
-    { name: 'Settings', href: '/settings', icon: 'Settings', children: registryNavChildren('settings') },
+    { name: 'Administration', href: '/settings', icon: 'Settings', children: registryNavChildren('settings') },
+];
+
+// App-operator pages appended to Administration for admins only; the routes
+// enforce admin themselves, this just keeps them out of everyone else's nav.
+const ADMIN_NAV_CHILDREN: Array<{ name: string; href: string }> = [
+    { name: 'Feedback Review', href: '/admin/feedback' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -368,8 +374,19 @@ const subscribe = () => () => undefined;
 // Layout component
 // ---------------------------------------------------------------------------
 
+// FeedbackProvider wraps the whole shell so the sidebar can read its
+// admin status (the operator-only Administration entries).
 export default function Layout({ children }: { children: ReactNode }) {
+    return (
+        <FeedbackProvider>
+            <LayoutShell>{children}</LayoutShell>
+        </FeedbackProvider>
+    );
+}
+
+function LayoutShell({ children }: { children: ReactNode }) {
     const pathname = usePathname();
+    const isAppAdmin = useFeedback()?.isAdmin ?? false;
     const router = useRouter();
     const searchParams = useSearchParams();
 
@@ -519,14 +536,21 @@ export default function Layout({ children }: { children: ReactNode }) {
             return withPins(items);
         }
         return withPins([...navItems]);
-    })();
+    })().map(item =>
+        isAppAdmin && item.href === '/settings'
+            ? { ...item, children: [...(item.children ?? []), ...ADMIN_NAV_CHILDREN] }
+            : item,
+    );
 
     // Data-dense pages use the full content width to reduce horizontal scrolling.
     const isFullWidthPage =
         pathname?.startsWith('/budgets') ||
         pathname === '/ledger' ||
         pathname === '/settings/commodities' ||
-        (pathname?.startsWith('/accounts/') && pathname !== '/accounts/') ||
+        // The account tree and ledgers are data surfaces that own their
+        // (1920px) width; see DATA_SURFACE_MAX_WIDTH.
+        pathname === '/accounts' ||
+        pathname?.startsWith('/accounts/') ||
         pathname === '/reports/income_statement_by_period' ||
         // The Investments section sets its own (wider) content width.
         pathname === '/investments' ||
@@ -607,9 +631,10 @@ export default function Layout({ children }: { children: ReactNode }) {
                 }
             }
         });
-        // effectiveNavItems depends on isBusinessBook; re-run when either changes.
+        // effectiveNavItems depends on isBusinessBook and on the admin status
+        // (which arrives after mount and adds Feedback Review); re-run on each.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [pathname, isBusinessBook]);
+    }, [pathname, isBusinessBook, isAppAdmin]);
 
     // Persist collapsed state to localStorage
     const toggleCollapsed = useCallback(() => {
@@ -780,7 +805,6 @@ export default function Layout({ children }: { children: ReactNode }) {
     }
 
     return (
-        <FeedbackProvider>
         <div data-feedback-root className="flex h-screen bg-background text-foreground font-sans">
             <GlobalShortcuts />
             <KeyboardShortcutHelp />
@@ -1045,6 +1069,5 @@ export default function Layout({ children }: { children: ReactNode }) {
                 </div>
             </main>
         </div>
-        </FeedbackProvider>
     );
 }

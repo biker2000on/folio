@@ -145,6 +145,7 @@ beforeEach(() => {
         if (query.text.includes('SELECT s.tx_guid')) {
             return Promise.resolve(ALL_SPLITS.map(s => ({
                 tx_guid: s.own.tx_guid,
+                post_date: POST_DATE[s.own.tx_guid],
                 quantity_num: s.own.quantity_num, quantity_denom: s.own.quantity_denom,
                 value_num: s.own.value_num, value_denom: s.own.value_denom,
             })));
@@ -442,5 +443,114 @@ describe('investment ledger running cost basis — coverage', () => {
         expect(replayWhere.account_guid).toBe(ACCOUNT);
         expect(Object.keys(replayWhere)).toEqual(['account_guid', 'transaction']);
         expect(traceCostBasisMock).toHaveBeenCalledTimes(1);
+    });
+
+});
+
+/**
+ * A dated ledger range must open on the position already held, not on zero.
+ * Before 2026-11-02 the replay itself was filtered to `startDate`, so a range
+ * that began after the first purchase showed a share balance that could go
+ * negative (VTI from 2025-01-01 read -105.66 of 705.92 shares) and a cost
+ * basis that restarted at $0.
+ */
+describe('investment ledger running totals — dated range', () => {
+    beforeEach(() => {
+        traceCostBasisMock.mockResolvedValue({
+            coveredShares: 100, uncoveredShares: 0, basisOfCoveredShares: 5_000,
+            perShareCost: 50, method: 'fifo',
+        });
+        // Honour the replay's date bounds, as the database would: with a mock
+        // that ignores `where`, a replay filtered to startDate still sees the
+        // 2020 buy and the regression goes unnoticed.
+        prismaMock.splits.findMany.mockImplementation((args: {
+            where: { account_guid?: unknown; transaction?: { post_date?: { gte?: Date; lte?: Date } } };
+        }) => {
+            if (typeof args.where.account_guid === 'string') {
+                const bounds = args.where.transaction?.post_date ?? {};
+                return Promise.resolve(ALL_SPLITS
+                    .filter(s => {
+                        const posted = POST_DATE[s.own.tx_guid];
+                        return (!bounds.gte || posted >= bounds.gte) && (!bounds.lte || posted <= bounds.lte);
+                    })
+                    .map(s => ({
+                        ...s.own,
+                        transaction: { post_date: POST_DATE[s.own.tx_guid], enter_date: POST_DATE[s.own.tx_guid] },
+                    })));
+            }
+            return Promise.resolve(ALL_SPLITS.flatMap(s => [s.own, s.counter]));
+        });
+    });
+
+    it('seeds share balance and cost basis with the position held at the range start', async () => {
+        // The range opens after the 2020 buy (100 sh, $1,000) and covers the
+        // 2021 transfer (+100 sh, $5,000 traced) and the 2024 sale (-100).
+        const rows = await ledger('startDate=2021-01-01&limit=100');
+
+        expect(Number(rows[XFER_TX].share_balance)).toBeCloseTo(200, 6);
+        expect(Number(rows[XFER_TX].cost_basis)).toBeCloseTo(6_000, 6);
+        expect(Number(rows[SELL_TX].share_balance)).toBeCloseTo(100, 6);
+        expect(Number(rows[SELL_TX].cost_basis)).toBeCloseTo(3_000, 6);
+    });
+
+    it('replays from the start of history and only bounds the end of the range', async () => {
+        await ledger('startDate=2021-01-01&endDate=2024-12-31&limit=100');
+
+        const replayWhere = prismaMock.splits.findMany.mock.calls[0][0].where;
+        const postDate = replayWhere.transaction.post_date as Record<string, unknown>;
+        expect(postDate.gte).toBeUndefined();
+        expect(postDate.lte).toBeInstanceOf(Date);
+    });
+
+    it('seeds the no-carry-over path the same way', async () => {
+        const rows = await ledger('costBasisCarryOver=false&startDate=2021-01-01&limit=100');
+
+        // This path enters the in-kind transfer at its $0 value, so only the
+        // share balance is comparable: 100 held + 100 in = 200, not 100.
+        expect(Number(rows[XFER_TX].share_balance)).toBeCloseTo(200, 6);
+        expect(Number(rows[XFER_TX].cost_basis)).toBeCloseTo(1_000, 6);
+        expect(Number(rows[SELL_TX].share_balance)).toBeCloseTo(100, 6);
+
+        const replaySql = prismaMock.$queryRaw.mock.calls
+            .map(([strings, ...values]) => Prisma.sql(strings as TemplateStringsArray, ...values))
+            .find(query => query.text.includes('SELECT s.tx_guid'));
+        expect(replaySql?.text).not.toMatch(/post_date >=/);
+    });
+});
+
+/**
+ * A book with trading accounts gives every purchase a same-commodity
+ * `Trading:…:AAPL` leg with negative quantity. isTransferIn must skip it, which
+ * it can only do if the route loads the sibling's `account_type`. Without it
+ * every buy read as a $0 transfer-in (VTI: $0 basis, "fully covered").
+ */
+describe('investment ledger running cost basis — trading accounts', () => {
+    const TRADING_AAPL = 'f'.repeat(32);
+
+    it('prices a buy with a trading-account leg as a purchase, not a $0 transfer', async () => {
+        prismaMock.accounts.findMany.mockImplementation((args: { select?: Record<string, boolean> }) => Promise.resolve([
+            { guid: ACCOUNT, commodity_guid: AAPL, account_type: 'STOCK' },
+            { guid: CASH, commodity_guid: USD, account_type: 'BANK' },
+            { guid: TRADING_AAPL, commodity_guid: AAPL, account_type: 'TRADING' },
+        ].map(a => (args.select?.account_type ? a : { guid: a.guid, commodity_guid: a.commodity_guid }))));
+        const tradingLeg: RawSplit = {
+            guid: 'buy-trading', tx_guid: BUY_TX, account_guid: TRADING_AAPL, lot_guid: null,
+            quantity_num: -1_000_000n, quantity_denom: 10_000n, value_num: -10_000_000n, value_denom: 10_000n,
+        };
+        prismaMock.splits.findMany.mockImplementation((args: { where: Record<string, unknown> }) => {
+            if (typeof args.where.account_guid === 'string') {
+                return Promise.resolve([BUY].map(s => ({
+                    ...s.own,
+                    transaction: { post_date: POST_DATE[s.own.tx_guid], enter_date: POST_DATE[s.own.tx_guid] },
+                })));
+            }
+            return Promise.resolve([BUY.own, BUY.counter, tradingLeg]);
+        });
+
+        const rows = await ledger();
+
+        expect(traceCostBasisMock).not.toHaveBeenCalled();
+        expect(Number(rows[BUY_TX].share_balance)).toBeCloseTo(100, 6);
+        expect(Number(rows[BUY_TX].cost_basis)).toBeCloseTo(1_000, 6);
     });
 });

@@ -41,7 +41,7 @@ Restrained. One accent color + navy/slate neutrals. Color is rare and meaningful
 | `--border-hover` | `#2d3d5a` | Hover/focus borders |
 | `--foreground` | `#e2e8f0` | Primary text |
 | `--foreground-secondary` | `#94a3b8` | Secondary text, labels |
-| `--foreground-muted` | `#64748b` | Muted text, placeholders |
+| `--foreground-muted` | `#8090a6` | Muted text, placeholders, small labels (5.2:1 on `--surface`) |
 | `--primary` | `#2dd4bf` | Accent (teal-400), interactive elements |
 | `--primary-hover` | `#5eead4` | Accent hover state |
 | `--primary-light` | `rgba(45,212,191,0.12)` | Accent background tint |
@@ -68,7 +68,7 @@ Restrained. One accent color + navy/slate neutrals. Color is rare and meaningful
 | `--border-hover` | `#cbd5e1` | Hover/focus borders |
 | `--foreground` | `#0f172a` | Primary text |
 | `--foreground-secondary` | `#475569` | Secondary text |
-| `--foreground-muted` | `#94a3b8` | Muted text |
+| `--foreground-muted` | `#64748b` | Muted text (4.8:1 on `--surface`) |
 | `--primary` | `#0d9488` | Accent (teal-600, darker for white bg contrast) |
 | `--primary-hover` | `#0f766e` | Accent hover |
 | `--primary-light` | `rgba(13,148,136,0.08)` | Accent background tint |
@@ -102,7 +102,12 @@ The one carve-out is the marketing surface's *material textures* (knob knurling,
 ## Layout
 - **Approach:** Grid-disciplined (data tables, sidebars, metric cards need clean alignment)
 - **Grid:** 12 columns, collapsing to 4 on mobile
-- **Max content width:** 1400px
+- **Max content width:** 1400px for dashboards, reports, forms and section pages.
+- **Data surfaces: 1920px.** Registers you scan row by row (the account tree at `/accounts`, the account
+  ledgers at `/accounts/[guid]`) cap at `max-w-[1920px]` (`DATA_SURFACE_MAX_WIDTH` in
+  `src/components/ui/layout-widths.ts`). Inside one, keep the elastic text column bounded (Description
+  about 60ch) so amounts stay next to what they belong to. The optional Accounts split view (tree beside
+  ledger, from 1920px up) is the only layout that may run wider.
 - **Border radius:** sm: 4px, md: 6px, lg: 10px, full: 9999px (avatars only)
   - The scale is closed. `rounded-xl` (12px), `rounded-2xl` (16px) and `rounded-3xl` (24px) are **not**
     on it and are banned everywhere — including cards, panels and modals, which use `rounded-lg`.
@@ -130,6 +135,8 @@ The one carve-out is the marketing surface's *material textures* (knob knurling,
 - **Positive amounts:** `--positive` (#4ade80 dark / #16a34a light)
 - **Negative amounts:** `--negative` (#f87171 dark / #dc2626 light)
 - **Neutral amounts:** `--foreground-secondary`
+- **Zero:** `--foreground-muted`. A zero balance is never green. Balances follow the sign: positive
+  green, negative red (owner decision 2026-11-02). Share counts are quantities, not money: `--foreground`.
 - **Table column alignment:** Right-align all numeric columns
 - **Date format in tables:** Use JetBrains Mono for dates too (consistent monospace column)
 
@@ -228,3 +235,6 @@ ignores the app's light/dark toggle. Strategy and copy rules live in PRODUCT.md 
 | 2026-08-19 | Native `title=` banned app-wide, replaced by `Tip` | The 2026-08-04 rule only covered abbreviations; ~350 other sites kept an untouchable, unstyleable, touch-invisible hint |
 | 2026-10-13 | KPI cards always drill down; Investments section primitives | Owner feedback: the section looked amateur and its KPI cards were dead ends. One control vocabulary per section, and every headline number opens its explanation |
 | 2026-10-15 | Marketing site gets its own "desk instrument" world (`.bench`) | Owner chose the Hardware Bench direction for self-hoster evaluators; positioning is "you own the ledger", shown as an appliance whose every cable lands on your hardware. Stock photos removed. |
+| 2026-11-02 | 1920px data-surface width tier for the account tree and ledgers | Owner feedback #9: Accounts was held to 1152px on a 2560 screen while the ledger ran unbounded (amounts 1,500px from their description). 1400px is a dashboard measure, not a register measure |
+| 2026-11-02 | `--foreground-muted` brightened (dark `#8090a6`, light `#64748b`) | The old values measured 3.6:1 (dark) and 2.6:1 (light) on `--surface`, below WCAG AA for the 11–12px labels the token is actually used for |
+| 2026-11-02 | Balances keep sign colour; zero is muted | Owner: positive = green, negative = red. A wall of green `$0.00` made zeros read as gains |

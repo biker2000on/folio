@@ -39,6 +39,7 @@ import TaxMappingPanel, {
 } from '@/components/tools/tax/TaxMappingPanel';
 import ScenarioPanel from '@/components/tools/tax/ScenarioPanel';
 import { EntityYearStatusNotice } from '@/components/tax/EntityYearStatusNotice';
+import { Tip } from '@/components/ui/Tooltip';
 
 /* ------------------------------------------------------------------ */
 /* API payload types                                                   */
@@ -1584,13 +1585,14 @@ function CategoryCard({ label, ytd, used, accounts }: {
         <div className="pb-2.5 pl-4 space-y-1">
           {accounts.map(a => (
             <div key={a.accountGuid} className="flex justify-between items-baseline gap-2">
+              <Tip content={a.accountPath}>
               <Link
                 href={`/accounts/${a.accountGuid}`}
                 className="text-[11px] text-secondary hover:text-secondary-hover truncate"
-                title={a.accountPath}
               >
                 {a.accountPath}
               </Link>
+              </Tip>
               <span className="text-[11px] font-mono text-right text-foreground-muted shrink-0" style={{ fontFeatureSettings: "'tnum'" }}>
                 {formatCurrency(a.amount)}
               </span>
@@ -1629,7 +1631,7 @@ function CategoryRow({ label, ytd, used, accounts }: {
       {open && accounts.map(a => (
         <tr key={a.accountGuid} className="border-b border-border/30">
           <td className="py-1 pl-6 text-[11px]">
-            <Link href={`/accounts/${a.accountGuid}`} className="text-secondary hover:text-secondary-hover" title={a.accountPath}>
+            <Link href={`/accounts/${a.accountGuid}`} className="text-secondary hover:text-secondary-hover">
               {a.accountPath}
             </Link>
           </td>

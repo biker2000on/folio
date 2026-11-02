@@ -57,7 +57,7 @@ export function ReconcileStateButton({ state, onClick, variant = 'cell', disable
     const info = describe(state);
     const shape = variant === 'pill'
         ? 'text-xs px-2 py-1 rounded-full'
-        : 'w-5 h-5 rounded text-[10px] font-bold';
+        : 'w-5 h-5 rounded text-xs font-bold';
     const text = variant === 'pill' ? state.toUpperCase() : info.icon;
 
     if (!onClick) {

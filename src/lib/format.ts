@@ -83,3 +83,13 @@ export function applyBalanceReversal(
 export function round2(value: number): number {
     return Math.round(value * 100) / 100;
 }
+
+/**
+ * Colour class for an amount or balance (DESIGN.md "Financial Data Display"):
+ * positive green, negative red, and zero muted so a column of $0.00 never
+ * reads as a column of gains. `epsilon` absorbs sub-cent float residue.
+ */
+export function amountToneClass(value: number, epsilon = 0.005): string {
+    if (!Number.isFinite(value) || Math.abs(value) < epsilon) return 'text-foreground-muted';
+    return value < 0 ? 'text-negative' : 'text-positive';
+}

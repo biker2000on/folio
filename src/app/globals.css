@@ -25,7 +25,7 @@
     --background-tertiary: #e2e8f0;
     --foreground: #0f172a;
     --foreground-secondary: #475569;
-    --foreground-muted: #94a3b8;
+    --foreground-muted: #64748b;
 
     /* Card and surface colors */
     --surface: #ffffff;
@@ -108,7 +108,7 @@
     --background-tertiary: #131d2e;
     --foreground: #e2e8f0;
     --foreground-secondary: #94a3b8;
-    --foreground-muted: #64748b;
+    --foreground-muted: #8090a6;
 
     /* Card and surface colors */
     --surface: #131d2e;

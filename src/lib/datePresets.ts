@@ -4,7 +4,10 @@ export interface DateRange {
 }
 
 export interface DatePreset {
+    /** Full name. Also the preset's identity: callers look presets up by it. */
     label: string;
+    /** Compact label for the Quick Select grid; the full label is its tooltip. */
+    short: string;
     getValue: () => DateRange;
 }
 
@@ -115,9 +118,30 @@ function subMonths(date: Date, months: number): Date {
     return result;
 }
 
+/**
+ * The N years ending today: from the day after today's date N years ago
+ * through today, so the window is exactly N years long.
+ */
+function trailingYears(years: number): DatePreset {
+    return {
+        label: `Last ${years} Years`,
+        short: `${years}Y`,
+        getValue: () => {
+            const now = new Date();
+            const start = subYears(now, years);
+            start.setDate(start.getDate() + 1);
+            return {
+                startDate: formatDate(start),
+                endDate: formatDate(now)
+            };
+        }
+    };
+}
+
 export const DATE_PRESETS: DatePreset[] = [
     {
         label: 'This Month',
+        short: 'MTD',
         getValue: () => {
             const now = new Date();
             return {
@@ -128,6 +152,7 @@ export const DATE_PRESETS: DatePreset[] = [
     },
     {
         label: 'Last Month',
+        short: 'PM',
         getValue: () => {
             const lastMonth = subMonths(new Date(), 1);
             return {
@@ -138,6 +163,7 @@ export const DATE_PRESETS: DatePreset[] = [
     },
     {
         label: 'This Quarter',
+        short: 'QTD',
         getValue: () => {
             const now = new Date();
             return {
@@ -148,6 +174,7 @@ export const DATE_PRESETS: DatePreset[] = [
     },
     {
         label: 'This Year',
+        short: 'YTD',
         getValue: () => {
             const now = new Date();
             return {
@@ -158,6 +185,7 @@ export const DATE_PRESETS: DatePreset[] = [
     },
     {
         label: 'Last Year',
+        short: 'PY',
         getValue: () => {
             const lastYear = subYears(new Date(), 1);
             return {
@@ -166,8 +194,12 @@ export const DATE_PRESETS: DatePreset[] = [
             };
         }
     },
+    trailingYears(2),
+    trailingYears(3),
+    trailingYears(5),
     {
         label: 'All Time',
+        short: 'All',
         getValue: () => ({
             startDate: null,
             endDate: null

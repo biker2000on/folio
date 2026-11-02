@@ -74,6 +74,48 @@ If those answers are weak, improve an existing workflow instead.
 
 # Open
 
+### [P3] Implied interest rate on interest-bearing accounts
+
+**Status:** Open · **Area:** ledger · **Added:** 2026-11-02 · **Effort:** M
+**Keywords:** APY, APR, interest rate, yield, savings, checking, HYSA, CD,
+effective rate, account page, feedback #8
+
+**Outcome:** An interest-bearing account's page shows an approximate annual
+rate computed from its own history, with no rate typed in anywhere.
+
+- From in-app feedback #8 (Ally Interest Checking, a `BANK` account).
+- Rate = interest income credited to the account ÷ average daily balance over
+  the same window, annualized (trailing 3, 6 and 12 months). Interest splits are
+  the ones whose other side is an `INCOME` account under an interest subtree
+  (or matched by name); the average daily balance comes from the running
+  balance, not period-end snapshots, so mid-month deposits don't skew it.
+- Labelled as an estimate, and hidden until there are at least ~2 interest
+  postings in the window. Show the evidence: the interest postings and the
+  average balance that produced the number.
+- Reuse for liabilities later: a loan or card's implied rate from its interest
+  expense (the mortgage service already extracts rates by Newton–Raphson).
+
+### [P3] Brokerage view for parent accounts that hold investments
+
+**Status:** Open · **Area:** investments · **Added:** 2026-11-02 · **Effort:** M–L
+**Keywords:** brokerage, 401k, IRA, parent account, ASSET, contributions,
+growth, gain, performance, holdings, modal, feedback #10
+
+**Outcome:** An `ASSET` account whose children are `STOCK`/`MUTUAL` accounts
+(e.g. Industrial Insight 401k) acts like a brokerage account page: you can
+see contributions, market growth and gain/loss for the whole account from it.
+
+- From in-app feedback #10. GnuCash has no brokerage account type, so detect it
+  by children (any `STOCK`/`MUTUAL` child) rather than a new flag.
+- Summary on the account page: market value, contributions (period and total),
+  growth = value change − net contributions, unrealized/realized gain, and
+  per-holding allocation. Drill-downs open in modals rather than new pages.
+- Reuse existing engines: contribution classification from
+  `src/lib/reports/contribution-summary.ts` (and the retirement flag / IRS
+  limits for retirement accounts), lot summaries from `src/lib/lots.ts`, and
+  the Investments section's account view. Respect the KPI-card rule in
+  DESIGN.md: every number links to the view that explains it.
+
 ### [P3] Contractor portal follow-ups
 
 **Status:** Open · **Area:** business · **Added:** 2026-10-02 · **Effort:** S–M

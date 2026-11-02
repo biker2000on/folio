@@ -11,6 +11,8 @@ interface CandidateTableProps {
     /** Select (true) or deselect (false) every candidate. */
     onSelectAll: (select: boolean) => void;
     onDelete: (candidate: ReconcileCandidate) => void;
+    /** Open the candidate's transaction for editing (also `E` on a focused row). */
+    onEdit: (candidate: ReconcileCandidate) => void;
     currency: string;
     /** Account commodity SCU: sets the amounts' decimal places. */
     commodityScu: number;
@@ -25,8 +27,9 @@ function stateBadge(state: 'n' | 'c') {
 
 /**
  * The candidate splits table: checkbox, date, num, description, funds in/out,
- * cleared-state badge. Rows are keyboard-focusable and Space toggles the
- * focused row. The header checkbox selects/deselects every candidate.
+ * cleared-state badge. Rows are keyboard-focusable: Space toggles the focused
+ * row and E edits its transaction. The header checkbox selects/deselects every
+ * candidate.
  */
 export function CandidateTable({
     candidates,
@@ -34,6 +37,7 @@ export function CandidateTable({
     onToggle,
     onSelectAll,
     onDelete,
+    onEdit,
     currency,
     commodityScu,
 }: CandidateTableProps) {
@@ -69,7 +73,7 @@ export function CandidateTable({
                         <th className="p-3 text-right font-semibold">Funds In</th>
                         <th className="p-3 text-right font-semibold">Funds Out</th>
                         <th className="p-3 text-center font-semibold w-14">State</th>
-                        <th className="p-3 text-center font-semibold w-14">
+                        <th className="p-3 text-center font-semibold w-24">
                             <span className="sr-only">Actions</span>
                         </th>
                     </tr>
@@ -89,6 +93,12 @@ export function CandidateTable({
                                     if (e.key === ' ' || e.key === 'Spacebar') {
                                         e.preventDefault();
                                         onToggle(index, e.shiftKey);
+                                    } else if (
+                                        (e.key === 'e' || e.key === 'E')
+                                        && !e.ctrlKey && !e.metaKey && !e.altKey
+                                    ) {
+                                        e.preventDefault();
+                                        onEdit(c);
                                     }
                                 }}
                                 className={`border-b border-border last:border-b-0 cursor-pointer transition-colors duration-150 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--primary)] ${
@@ -143,7 +153,30 @@ export function CandidateTable({
                                     </span>
                                     </Tip>
                                 </td>
-                                <td className="p-2 text-center">
+                                <td className="p-2 text-center whitespace-nowrap">
+                                    <Tip content="Edit transaction (E)">
+                                    <button
+                                        type="button"
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            onEdit(c);
+                                        }}
+                                        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-foreground-muted hover:bg-surface-hover hover:text-foreground transition-colors"
+                                        aria-label={`Edit ${c.description || 'transaction'}`}
+                                    >
+                                        <svg
+                                            className="h-4 w-4"
+                                            viewBox="0 0 24 24"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="2"
+                                            aria-hidden="true"
+                                        >
+                                            <path d="M12 20h9" />
+                                            <path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4 12.5-12.5z" />
+                                        </svg>
+                                    </button>
+                                    </Tip>
                                     <Tip content="Delete transaction">
                                     <button
                                         type="button"

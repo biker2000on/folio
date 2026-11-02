@@ -44,7 +44,9 @@ export async function GET(
                 FROM splits s
                 JOIN transactions t ON s.tx_guid = t.guid
                 WHERE s.account_guid = ${guid}
-                AND t.post_date <= ${asOfDate}::timestamp
+                -- Whole days: GnuCash posts at 10:59 UTC, so "<= date 00:00" would
+                -- drop the as-of day's own transactions.
+                AND t.post_date < (${asOfDate}::date + 1)
             `;
         } else {
             result = await prisma.$queryRaw<[{ total_balance: string }]>`

@@ -7,6 +7,7 @@ import { useToast } from '@/contexts/ToastContext';
 import { notifyActionCenterUpdated } from '@/lib/financial-actions/client-events';
 import {
     computeDifferenceUnits,
+    decimalPlacesForScu,
     toggleCandidateSelection,
     type ReconcileCandidate,
     type ReconcileWorkspace,
@@ -16,6 +17,7 @@ import { ConfirmationDialog } from '@/components/ui/ConfirmationDialog';
 import { ReconcileSummary } from './ReconcileSummary';
 import { CandidateTable } from './CandidateTable';
 import { Tip } from '@/components/ui/Tooltip';
+import type { Transaction } from '@/lib/types';
 
 function todayIsoDate(): string {
     return new Date().toISOString().slice(0, 10);
@@ -28,6 +30,36 @@ function parseEndingBalance(raw: string): string | null {
     return /^-?\d+(?:\.\d+)?$/.test(cleaned) ? cleaned : null;
 }
 
+/**
+ * The account's book balance as of the statement date: what is already
+ * reconciled plus every cleared/unreconciled split on or before that date —
+ * i.e. the ending balance at which "select all" would finish. Summed in
+ * commodity units so the default is exact, not a float sum.
+ */
+function bookBalanceAsOf(workspace: ReconcileWorkspace): string {
+    const scu = workspace.account.commodityScu;
+    const units = workspace.candidates.reduce(
+        (sum, c) => sum + Math.round(c.amount * scu),
+        Math.round(workspace.reconciledBalance * scu),
+    );
+    return (units / scu).toFixed(decimalPlacesForScu(scu));
+}
+
+/**
+ * The modal only needs the GUID (it loads the full transaction itself) and
+ * the enter_date optimistic-lock token, which a candidate already carries.
+ */
+function candidateAsTransaction(c: ReconcileCandidate): Transaction {
+    return {
+        guid: c.transactionGuid,
+        currency_guid: '',
+        num: c.num,
+        post_date: new Date(c.date),
+        enter_date: c.enterDate ? new Date(c.enterDate) : new Date(c.date),
+        description: c.description,
+    };
+}
+
 function ReconcilePageContent() {
     const params = useParams();
     const guid = params.guid as string;
@@ -35,7 +67,9 @@ function ReconcilePageContent() {
     const toast = useToast();
 
     const [statementDate, setStatementDate] = useState<string>(todayIsoDate);
-    const [endingInput, setEndingInput] = useState<string>('');
+    // What the user typed into Ending Balance; null until they type, and while
+    // null the field shows a default (see `endingDefault` below).
+    const [typedEnding, setTypedEnding] = useState<string | null>(null);
     const [workspace, setWorkspace] = useState<ReconcileWorkspace | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -47,13 +81,13 @@ function ReconcilePageContent() {
     const [submitting, setSubmitting] = useState(false);
     const [finished, setFinished] = useState<{ count: number; date: string } | null>(null);
     const [newTransactionOpen, setNewTransactionOpen] = useState(false);
+    const [editCandidate, setEditCandidate] = useState<ReconcileCandidate | null>(null);
     const [deleteCandidate, setDeleteCandidate] = useState<ReconcileCandidate | null>(null);
     const [deleting, setDeleting] = useState(false);
     const sessionId = useRef<string | null>(null);
     const sessionStart = useRef<Promise<string | null> | null>(null);
     const pendingInteractions = useRef(0);
     const selectionAnchor = useRef<number | null>(null);
-    const endingInputTouched = useRef(false);
 
     const fetchWorkspace = useCallback(async () => {
         if (!guid || !statementDate) return;
@@ -95,6 +129,7 @@ function ReconcilePageContent() {
                 && !event.shiftKey
                 && event.key.toLowerCase() === 'n'
                 && !newTransactionOpen
+                && !editCandidate
                 && !deleteCandidate
             ) {
                 event.preventDefault();
@@ -103,7 +138,7 @@ function ReconcilePageContent() {
         };
         window.addEventListener('keydown', handleNewTransactionShortcut);
         return () => window.removeEventListener('keydown', handleNewTransactionShortcut);
-    }, [newTransactionOpen, deleteCandidate]);
+    }, [newTransactionOpen, editCandidate, deleteCandidate]);
 
     // Escape returns to this account's ledger, mirroring the ledger's own
     // Escape-back-to-hierarchy step. Focus inside an input blurs first, so a
@@ -114,7 +149,7 @@ function ReconcilePageContent() {
     // ever opts out of closeOnEscape.
     useEffect(() => {
         const handleEscape = (event: KeyboardEvent) => {
-            if (event.key !== 'Escape' || newTransactionOpen || deleteCandidate) return;
+            if (event.key !== 'Escape' || newTransactionOpen || editCandidate || deleteCandidate) return;
             const target = event.target as HTMLElement | null;
             const tag = target?.tagName;
             if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
@@ -127,7 +162,7 @@ function ReconcilePageContent() {
         };
         window.addEventListener('keydown', handleEscape);
         return () => window.removeEventListener('keydown', handleEscape);
-    }, [guid, newTransactionOpen, deleteCandidate, router]);
+    }, [guid, newTransactionOpen, editCandidate, deleteCandidate, router]);
 
     useEffect(() => {
         if (!guid) return;
@@ -141,9 +176,6 @@ function ReconcilePageContent() {
                     balanceDate: typeof body.balanceDate === 'string' ? body.balanceDate : null,
                 };
                 setSimpleFinBalance(nextBalance);
-                if (!endingInputTouched.current) {
-                    setEndingInput(nextBalance.balance.toFixed(2));
-                }
             })
             .catch(() => undefined);
     }, [guid]);
@@ -255,6 +287,19 @@ function ReconcilePageContent() {
     );
 
     const currency = workspace?.account.currency || 'USD';
+    // Until the user types one, the ending balance defaults to the bank's
+    // balance from SimpleFIN when there is one, else the book balance as of the
+    // statement date — which follows date changes and added/edited transactions.
+    const endingSource: 'typed' | 'simplefin' | 'book' | null =
+        typedEnding !== null ? 'typed'
+            : simpleFinBalance ? 'simplefin'
+                : workspace ? 'book'
+                    : null;
+    const endingInput =
+        endingSource === 'typed' ? typedEnding ?? ''
+            : endingSource === 'simplefin' ? simpleFinBalance!.balance.toFixed(2)
+                : endingSource === 'book' ? bookBalanceAsOf(workspace!)
+                    : '';
     const endingBalance = parseEndingBalance(endingInput);
 
     const selectedAmounts = useMemo(() => {
@@ -393,14 +438,16 @@ function ReconcilePageContent() {
                             inputMode="decimal"
                             placeholder="0.00"
                             value={endingInput}
-                            onChange={(e) => {
-                                endingInputTouched.current = true;
-                                setEndingInput(e.target.value);
-                            }}
+                            onChange={(e) => setTypedEnding(e.target.value)}
                             className="px-3 py-2 bg-surface border border-border rounded-md text-sm text-foreground font-mono text-right focus:outline-none focus:border-border-hover w-40"
                             style={{ fontFeatureSettings: "'tnum'" }}
                         />
-                        {simpleFinBalance && (
+                        {endingSource === 'book' && (
+                            <span className="text-[11px] text-foreground-muted">
+                                Book balance · edit to match your statement
+                            </span>
+                        )}
+                        {endingSource === 'simplefin' && simpleFinBalance && (
                             <span className="text-[11px] text-foreground-muted">
                                 From SimpleFIN
                                 {simpleFinBalance.balanceDate
@@ -524,6 +571,7 @@ function ReconcilePageContent() {
                     onToggle={toggle}
                     onSelectAll={selectAll}
                     onDelete={setDeleteCandidate}
+                    onEdit={setEditCandidate}
                     currency={currency}
                     commodityScu={workspace.account.commodityScu}
                 />
@@ -535,6 +583,18 @@ function ReconcilePageContent() {
                 defaultAccountGuid={guid}
                 onSuccess={() => {
                     setNewTransactionOpen(false);
+                    fetchWorkspace();
+                }}
+                onRefresh={fetchWorkspace}
+            />
+
+            <TransactionFormModal
+                isOpen={editCandidate !== null}
+                onClose={() => setEditCandidate(null)}
+                transaction={editCandidate ? candidateAsTransaction(editCandidate) : null}
+                onSuccess={() => {
+                    setEditCandidate(null);
+                    recordInteraction();
                     fetchWorkspace();
                 }}
                 onRefresh={fetchWorkspace}

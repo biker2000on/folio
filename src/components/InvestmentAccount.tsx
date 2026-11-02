@@ -1,6 +1,17 @@
 'use client';
 
+/**
+ * Investment-account pieces of the account ledger page. The page is a ledger
+ * first (owner decision, 2026-11-02): the security summary lives in the page
+ * header and a compact KPI strip, the transactions come next, and the price
+ * chart is a collapsible panel under them.
+ *
+ * All three read one cached valuation query, so they never disagree and the
+ * page makes one request for them.
+ */
+
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency } from '@/lib/format';
 import {
     CostBasisCoverageMark,
@@ -10,13 +21,14 @@ import {
     ShortBasisNote,
     BASIS_CONSEQUENCE,
 } from '@/components/investments/CostBasisCoverageMark';
+import { CHART_THEME, KpiCard, Segmented, signTone } from '@/components/investments/ui';
 import type { CostBasisCoverage, PositionSide } from '@/lib/holdings-coverage';
 import { useToast } from '@/contexts/ToastContext';
-import { InvestmentTransactionForm } from './InvestmentTransactionForm';
 import { Modal } from './ui/Modal';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceArea, AreaChart, Area, ReferenceLine } from 'recharts';
+import { Tip } from './ui/Tooltip';
+import { inputClass, LABEL } from './ui/form';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceArea, AreaChart, Area, ReferenceLine, CartesianGrid } from 'recharts';
 import type { CategoricalChartFunc } from 'recharts/types/chart/types';
-import { computeZeroOffset, CHART_COLORS, GRADIENT_FILL_OPACITY } from '@/lib/chart-utils';
 import { formatDateForDisplay, parseDateInput } from '@/lib/date-format';
 import { useUserPreferences } from '@/contexts/UserPreferencesContext';
 import { toLocalDateString } from '@/lib/datePresets';
@@ -29,7 +41,7 @@ interface PriceData {
     source: string | null;
 }
 
-interface ValuationData {
+export interface ValuationData {
     isInvestment: boolean;
     account: {
         guid: string;
@@ -59,83 +71,397 @@ interface ValuationData {
     priceHistory?: PriceData[];
 }
 
-interface InvestmentAccountProps {
-    accountGuid: string;
+/**
+ * The account's valuation (holdings, latest price, price history). Keyed
+ * under ['accounts', 'balances'] so ledger writes, which invalidate that
+ * prefix, refresh it.
+ */
+export function valuationQueryKey(accountGuid: string) {
+    return ['accounts', 'balances', accountGuid, 'valuation'] as const;
 }
 
-export function InvestmentAccount({ accountGuid }: InvestmentAccountProps) {
+export function useAccountValuation(accountGuid: string, enabled = true) {
+    return useQuery<ValuationData>({
+        queryKey: valuationQueryKey(accountGuid),
+        queryFn: async () => {
+            const res = await fetch(`/api/accounts/${accountGuid}/valuation?days=36500`);
+            if (!res.ok) throw new Error('Failed to fetch valuation');
+            return res.json() as Promise<ValuationData>;
+        },
+        enabled,
+        staleTime: 1000 * 60,
+    });
+}
+
+function formatShares(shares: number): string {
+    return shares.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+function formatPriceDate(date: string): string {
+    return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ---------------------------------------------------------------------------
+// Header line: security name, last price, price actions
+// ---------------------------------------------------------------------------
+
+/**
+ * One line under the page title: the security's full name and last price,
+ * with Fetch Price / Add Price as icon buttons.
+ */
+export function InvestmentSecurityLine({ accountGuid }: { accountGuid: string }) {
+    const { data } = useAccountValuation(accountGuid);
+    const queryClient = useQueryClient();
     const { success, error: showError } = useToast();
     const { dateFormat } = useUserPreferences();
-    const [data, setData] = useState<ValuationData | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [fetchingPrice, setFetchingPrice] = useState(false);
     const [showPriceModal, setShowPriceModal] = useState(false);
     const [newPrice, setNewPrice] = useState({ date: '', value: '' });
     const [priceDisplayDate, setPriceDisplayDate] = useState('');
     const [savingPrice, setSavingPrice] = useState(false);
-    const [fetchingPrice, setFetchingPrice] = useState(false);
-    const [showTransactionModal, setShowTransactionModal] = useState(false);
+    const [priceError, setPriceError] = useState<string | null>(null);
 
-    // Time period selection
-    const [selectedPeriod, setSelectedPeriod] = useState<'1M' | '3M' | '6M' | '1Y' | '3Y' | '5Y' | 'ALL'>('3M');
+    const refresh = useCallback(
+        () => queryClient.invalidateQueries({ queryKey: valuationQueryKey(accountGuid) }),
+        [accountGuid, queryClient],
+    );
+
+    if (!data?.isInvestment || !data.commodity) return null;
+    const { commodity, holdings } = data;
+
+    const handleFetchPrice = async () => {
+        setFetchingPrice(true);
+        try {
+            const response = await fetch('/api/prices/fetch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbols: [commodity.mnemonic] }),
+            });
+            const responseData = await response.json();
+
+            if (!response.ok) {
+                showError(extractErrorMessage(responseData, 'Failed to fetch price'));
+                return;
+            }
+            if (responseData.queued) {
+                success('Price refresh queued');
+                return;
+            }
+            if (responseData.stored > 0) {
+                await refresh();
+                success(
+                    `Updated ${responseData.results?.[0]?.symbol || commodity.mnemonic}: ${responseData.stored} historical price${responseData.stored === 1 ? '' : 's'} stored`
+                );
+            } else {
+                const result = responseData.results?.[0];
+                if (result?.success === false) {
+                    showError(result.error || 'Failed to fetch price');
+                } else {
+                    success(`${commodity.mnemonic} is already up to date`);
+                    await refresh();
+                }
+            }
+        } catch {
+            showError('Network error fetching price');
+        } finally {
+            setFetchingPrice(false);
+        }
+    };
+
+    const openAddPrice = () => {
+        const today = toLocalDateString(new Date());
+        setNewPrice({ date: today, value: '' });
+        setPriceDisplayDate(formatDateForDisplay(today, dateFormat));
+        setPriceError(null);
+        setShowPriceModal(true);
+    };
+
+    const handleAddPrice = async () => {
+        if (!newPrice.date || !newPrice.value) return;
+
+        setSavingPrice(true);
+        setPriceError(null);
+        try {
+            // Find USD currency for pricing
+            const commoditiesRes = await fetch('/api/commodities');
+            const commodities = await commoditiesRes.json();
+            const usd = commodities.find((c: { mnemonic: string; namespace: string }) =>
+                c.mnemonic === 'USD' && c.namespace === 'CURRENCY'
+            );
+            if (!usd) throw new Error('USD currency not found');
+
+            const res = await fetch('/api/prices', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    commodity_guid: commodity.guid,
+                    currency_guid: usd.guid,
+                    date: newPrice.date,
+                    value: parseFloat(newPrice.value),
+                }),
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(extractErrorMessage(err, 'Failed to add price'));
+            }
+
+            setShowPriceModal(false);
+            setNewPrice({ date: '', value: '' });
+            success(`Added ${commodity.mnemonic} price`);
+            void refresh();
+        } catch (err) {
+            setPriceError(err instanceof Error ? err.message : 'Failed to add price');
+        } finally {
+            setSavingPrice(false);
+        }
+    };
+
+    const iconButton = 'flex h-7 w-7 items-center justify-center rounded-md text-foreground-secondary transition-colors hover:bg-surface-hover hover:text-foreground disabled:opacity-50';
+
+    return (
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-foreground-secondary">
+            {commodity.fullname && <span className="truncate">{commodity.fullname}</span>}
+            {commodity.fullname && holdings?.latestPrice && <span aria-hidden="true" className="text-foreground-muted">·</span>}
+            {holdings?.latestPrice ? (
+                <span className="whitespace-nowrap">
+                    <span className="font-mono text-foreground" style={{ fontFeatureSettings: "'tnum'" }}>
+                        {formatCurrency(holdings.latestPrice.value, 'USD')}
+                    </span>{' '}
+                    on {formatPriceDate(holdings.latestPrice.date)}
+                </span>
+            ) : (
+                <span>No price yet</span>
+            )}
+            <span className="flex items-center">
+                <Tip content={fetchingPrice ? 'Fetching price…' : `Fetch the latest ${commodity.mnemonic} price`} describedBy={false}>
+                    <button
+                        type="button"
+                        onClick={handleFetchPrice}
+                        disabled={fetchingPrice}
+                        aria-label="Fetch price"
+                        className={iconButton}
+                    >
+                        <svg aria-hidden="true" className={`h-4 w-4 ${fetchingPrice ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                    </button>
+                </Tip>
+                <Tip content="Add a price by hand" describedBy={false}>
+                    <button type="button" onClick={openAddPrice} aria-label="Add price" className={iconButton}>
+                        <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                        </svg>
+                    </button>
+                </Tip>
+            </span>
+
+            <Modal isOpen={showPriceModal} onClose={() => setShowPriceModal(false)} title={`Add ${commodity.mnemonic} Price`} size="sm">
+                <div className="space-y-4 p-5">
+                    <div>
+                        <label htmlFor="add-price-date" className={LABEL}>Date</label>
+                        <input
+                            id="add-price-date"
+                            type="text"
+                            value={priceDisplayDate}
+                            onChange={e => setPriceDisplayDate(e.target.value)}
+                            onFocus={(e) => e.target.select()}
+                            onBlur={() => {
+                                const parsed = parseDateInput(priceDisplayDate);
+                                if (parsed) {
+                                    setNewPrice(prev => ({ ...prev, date: parsed }));
+                                    setPriceDisplayDate(formatDateForDisplay(parsed, dateFormat));
+                                } else if (newPrice.date) {
+                                    setPriceDisplayDate(formatDateForDisplay(newPrice.date, dateFormat));
+                                }
+                            }}
+                            placeholder="MM/DD/YYYY"
+                            className={inputClass()}
+                        />
+                    </div>
+                    <div>
+                        <label htmlFor="add-price-value" className={LABEL}>Price (USD)</label>
+                        <input
+                            id="add-price-value"
+                            type="number"
+                            step="0.01"
+                            value={newPrice.value}
+                            onChange={e => setNewPrice(prev => ({ ...prev, value: e.target.value }))}
+                            placeholder="0.00"
+                            className={inputClass({ extra: 'font-mono' })}
+                        />
+                    </div>
+                    {priceError && <p className="text-sm text-error" role="alert">{priceError}</p>}
+                    <div className="flex justify-end gap-3 pt-2">
+                        <button
+                            type="button"
+                            onClick={() => setShowPriceModal(false)}
+                            className="px-4 py-2 text-sm text-foreground-secondary transition-colors hover:text-foreground"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleAddPrice}
+                            disabled={savingPrice || !newPrice.date || !newPrice.value}
+                            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-50"
+                        >
+                            {savingPrice ? 'Saving…' : 'Add Price'}
+                        </button>
+                    </div>
+                </div>
+            </Modal>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// KPI strip
+// ---------------------------------------------------------------------------
+
+/** Shares · cost basis · market value · gain, each a link to its explanation. */
+export function InvestmentKpis({ accountGuid }: { accountGuid: string }) {
+    const { data, isLoading, error } = useAccountValuation(accountGuid);
+
+    if (isLoading) {
+        return <div className="h-[104px] animate-pulse rounded-lg border border-border bg-surface" aria-hidden="true" />;
+    }
+    if (error) {
+        return (
+            <div className="rounded-lg border border-error/40 bg-surface px-4 py-3 text-sm text-error" role="alert">
+                Could not load holdings: {error instanceof Error ? error.message : 'request failed'}
+            </div>
+        );
+    }
+    const holdings = data?.holdings;
+    if (!data?.isInvestment || !holdings) return null;
+
+    return (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <KpiCard
+                label="Shares"
+                value={formatShares(holdings.shares)}
+                sub={data.commodity?.mnemonic}
+                href="?view=lots#ledger"
+                cta="View lots"
+            />
+            <KpiCard
+                label="Cost basis"
+                value={formatCurrency(Math.abs(holdings.costBasis), 'USD')}
+                adornment={
+                    <>
+                        {/* Says what this number IS: on a short position it is the
+                            proceeds received for shares sold before they were owned. */}
+                        <ShortPositionMark positionSide={holdings.positionSide} />
+                        {/* Names the shares this basis (and the gain beside it) leaves out. */}
+                        <CostBasisCoverageMark coverage={holdings.costBasisCoverage} consequence={BASIS_CONSEQUENCE} />
+                    </>
+                }
+                sub={<ShortBasisNote positionSide={holdings.positionSide} />}
+                href="?view=lots#ledger"
+                cta="Lot detail"
+            />
+            <KpiCard
+                label="Market value"
+                value={formatCurrency(holdings.marketValue, 'USD')}
+                tone={signTone(holdings.marketValue)}
+                sub={holdings.latestPrice ? `at ${formatCurrency(holdings.latestPrice.value, 'USD')}` : 'No price yet'}
+                href="#price-history"
+                cta="Price history"
+            />
+            <KpiCard
+                // The heading names the slice: this is the gain on the shares the
+                // basis covers, beside a whole-position share count and value.
+                label={gainHeading(holdings.costBasisCoverage)}
+                value={`${holdings.gainLoss >= 0 ? '+' : ''}${formatCurrency(holdings.gainLoss, 'USD')}`}
+                tone={signTone(holdings.gainLoss)}
+                adornment={<CostBasisCoverageMark coverage={holdings.costBasisCoverage} consequence={BASIS_CONSEQUENCE} />}
+                sub={
+                    <>
+                        {holdings.gainLoss >= 0 ? '+' : ''}{holdings.gainLossPercent.toFixed(2)}%
+                        <CoveredSliceNote coverage={holdings.costBasisCoverage} />
+                    </>
+                }
+                href="/reports/investment_lots"
+                cta="Lots report"
+            />
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Price chart (collapsible, follows the page date range)
+// ---------------------------------------------------------------------------
+
+const CHART_OPEN_KEY = 'investmentAccount.priceChartOpen';
+
+/**
+ * Price history for the page's date range, in a panel that is closed by
+ * default (the ledger comes first). The open state is remembered, and a
+ * `#price-history` link (the Market value KPI) opens it.
+ */
+export function InvestmentPriceChart({
+    accountGuid,
+    startDate,
+    endDate,
+}: {
+    accountGuid: string;
+    startDate?: string | null;
+    endDate?: string | null;
+}) {
+    const { data } = useAccountValuation(accountGuid);
+    // The panel only renders once the valuation has loaded client-side, so
+    // reading storage and the hash in the initialiser cannot mismatch SSR.
+    const [open, setOpen] = useState(() => {
+        if (typeof window === 'undefined') return false;
+        if (window.location.hash === '#price-history') return true;
+        try { return localStorage.getItem(CHART_OPEN_KEY) === '1'; } catch { return false; }
+    });
     const [chartMode, setChartMode] = useState<'price' | 'percentChange'>('price');
+
+    useEffect(() => {
+        const openFromHash = () => {
+            if (window.location.hash === '#price-history') setOpen(true);
+        };
+        window.addEventListener('hashchange', openFromHash);
+        return () => window.removeEventListener('hashchange', openFromHash);
+    }, []);
+
+    const toggle = () => {
+        setOpen(prev => {
+            const next = !prev;
+            try { localStorage.setItem(CHART_OPEN_KEY, next ? '1' : '0'); } catch { /* ignore */ }
+            return next;
+        });
+    };
 
     // Index-based zoom state
     interface ZoomDomain {
         startIndex: number | null;
         endIndex: number | null;
     }
-    const [zoomDomain, setZoomDomain] = useState<ZoomDomain>({ startIndex: null, endIndex: null });
-
-    // Drag selection state
+    // Zoom belongs to one date range; a new range starts unzoomed.
+    const rangeKey = `${startDate ?? ''}|${endDate ?? ''}`;
+    const [zoom, setZoom] = useState<ZoomDomain & { rangeKey: string }>({ rangeKey, startIndex: null, endIndex: null });
+    const zoomDomain: ZoomDomain = zoom.rangeKey === rangeKey ? zoom : { startIndex: null, endIndex: null };
+    const setZoomDomain = useCallback((next: ZoomDomain) => setZoom({ rangeKey, ...next }), [rangeKey]);
     const [isDragging, setIsDragging] = useState(false);
     const [dragStart, setDragStart] = useState<number | null>(null);
     const [dragEnd, setDragEnd] = useState<number | null>(null);
-
-    // Chart container ref for wheel events
     const chartContainerRef = useRef<HTMLDivElement>(null);
 
-    // 1. Memoize filtered price history based on period selection
+    // The page's date range drives the chart; no second period control.
     const filteredPriceHistory = useMemo(() => {
-        if (!data?.priceHistory) return [];
-        const priceHistory = data.priceHistory;
-        const now = new Date();
-        const cutoffDate = new Date();
+        const history = data?.priceHistory ?? [];
+        return history.filter(p => {
+            const day = p.date.slice(0, 10);
+            return (!startDate || day >= startDate) && (!endDate || day <= endDate);
+        });
+    }, [data?.priceHistory, startDate, endDate]);
 
-        switch (selectedPeriod) {
-            case '1M':
-                cutoffDate.setMonth(now.getMonth() - 1);
-                break;
-            case '3M':
-                cutoffDate.setMonth(now.getMonth() - 3);
-                break;
-            case '6M':
-                cutoffDate.setMonth(now.getMonth() - 6);
-                break;
-            case '1Y':
-                cutoffDate.setFullYear(now.getFullYear() - 1);
-                break;
-            case '3Y':
-                cutoffDate.setFullYear(now.getFullYear() - 3);
-                break;
-            case '5Y':
-                cutoffDate.setFullYear(now.getFullYear() - 5);
-                break;
-            case 'ALL':
-                return priceHistory;
-        }
-        return priceHistory.filter(p => new Date(p.date) >= cutoffDate);
-    }, [data?.priceHistory, selectedPeriod]);
-
-    // 2. Memoize chart data (applies zoom to filtered data)
     const chartData = useMemo(() => {
         if (!filteredPriceHistory.length) return [];
-
-        // No zoom applied - return all filtered data
-        if (zoomDomain.startIndex === null && zoomDomain.endIndex === null) {
-            return filteredPriceHistory;
-        }
-
+        if (zoomDomain.startIndex === null && zoomDomain.endIndex === null) return filteredPriceHistory;
         const start = zoomDomain.startIndex ?? 0;
         const end = zoomDomain.endIndex ?? filteredPriceHistory.length;
         return filteredPriceHistory.slice(start, end + 1);
@@ -151,12 +477,6 @@ export function InvestmentAccount({ accountGuid }: InvestmentAccountProps) {
         }));
     }, [chartData, chartMode]);
 
-    const zeroOffset = useMemo(() => {
-        if (chartMode !== 'percentChange') return 0.5;
-        return computeZeroOffset(displayChartData);
-    }, [displayChartData, chartMode]);
-
-    // Mouse down handler - start drag selection
     const handleMouseDown = useCallback<CategoricalChartFunc>((nextState) => {
         if (nextState.activeTooltipIndex !== undefined) {
             setIsDragging(true);
@@ -165,617 +485,192 @@ export function InvestmentAccount({ accountGuid }: InvestmentAccountProps) {
         }
     }, []);
 
-    // Mouse move handler - update drag selection
     const handleMouseMove = useCallback<CategoricalChartFunc>((nextState) => {
         if (isDragging && nextState.activeTooltipIndex !== undefined) {
             setDragEnd(nextState.activeTooltipIndex as number);
         }
     }, [isDragging]);
 
-    // Mouse up handler - apply zoom
     const handleMouseUp = useCallback(() => {
         if (isDragging && dragStart !== null && dragEnd !== null && dragStart !== dragEnd) {
-            const startIdx = Math.min(dragStart, dragEnd);
-            const endIdx = Math.max(dragStart, dragEnd);
-            setZoomDomain({ startIndex: startIdx, endIndex: endIdx });
+            setZoomDomain({ startIndex: Math.min(dragStart, dragEnd), endIndex: Math.max(dragStart, dragEnd) });
         }
         setIsDragging(false);
         setDragStart(null);
         setDragEnd(null);
-    }, [isDragging, dragStart, dragEnd]);
+    }, [isDragging, dragStart, dragEnd, setZoomDomain]);
 
-    // Wheel zoom handler - depends on filteredPriceHistory.length only
     const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
         e.preventDefault();
         const dataLength = filteredPriceHistory.length;
         if (dataLength < 2) return;
 
-        // Get current visible range
         const currentStart = zoomDomain.startIndex ?? 0;
         const currentEnd = zoomDomain.endIndex ?? dataLength - 1;
         const currentLength = currentEnd - currentStart + 1;
 
-        // Calculate zoom factor (scroll up = zoom in, scroll down = zoom out)
+        // Scroll up zooms in, scroll down zooms out
         const zoomFactor = e.deltaY > 0 ? 1.2 : 0.8;
         const newLength = Math.max(5, Math.min(dataLength, Math.round(currentLength * zoomFactor)));
-
-        // If zooming out to full range, reset zoom
         if (newLength >= dataLength) {
             setZoomDomain({ startIndex: null, endIndex: null });
             return;
         }
 
-        // Calculate center and new range
         const center = Math.floor((currentStart + currentEnd) / 2);
         const halfNew = Math.floor(newLength / 2);
         const newStart = Math.max(0, Math.min(dataLength - newLength, center - halfNew));
         const newEnd = Math.min(dataLength - 1, newStart + newLength - 1);
-
         setZoomDomain({ startIndex: newStart, endIndex: newEnd });
-    }, [filteredPriceHistory.length, zoomDomain.startIndex, zoomDomain.endIndex]);
+    }, [filteredPriceHistory.length, zoomDomain.startIndex, zoomDomain.endIndex, setZoomDomain]);
 
-    // Reset zoom handler
-    const handleZoomReset = useCallback(() => {
-        setZoomDomain({ startIndex: null, endIndex: null });
-    }, []);
+    if (!data?.isInvestment || !data.priceHistory?.length) return null;
 
-    // Period change handler - resets zoom
-    const handlePeriodChange = useCallback((period: '1M' | '3M' | '6M' | '1Y' | '3Y' | '5Y' | 'ALL') => {
-        setSelectedPeriod(period);
-        setZoomDomain({ startIndex: null, endIndex: null });
-    }, []);
-
-    const fetchData = useCallback(async () => {
-        try {
-            setLoading(true);
-            const res = await fetch(`/api/accounts/${accountGuid}/valuation?days=36500`);
-            if (!res.ok) throw new Error('Failed to fetch valuation');
-            const json = await res.json();
-            setData(json);
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'An error occurred');
-        } finally {
-            setLoading(false);
-        }
-    }, [accountGuid]);
-
-    useEffect(() => {
-        fetchData();
-    }, [fetchData]);
-
-    // Reset zoom when period changes
-    useEffect(() => {
-        setZoomDomain({ startIndex: null, endIndex: null });
-    }, [selectedPeriod]);
-
-    const handleFetchPrice = async () => {
-        if (!data?.commodity) return;
-
-        setFetchingPrice(true);
-        try {
-            const response = await fetch('/api/prices/fetch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbols: [data.commodity.mnemonic] }),
-            });
-
-            const responseData = await response.json();
-
-            if (!response.ok) {
-                showError(extractErrorMessage(responseData, 'Failed to fetch price'));
-                return;
-            }
-
-            if (responseData.queued) {
-                success('Price refresh queued');
-                return;
-            }
-
-            if (responseData.stored > 0) {
-                await fetchData();
-                success(
-                    `Updated ${responseData.results?.[0]?.symbol || data.commodity.mnemonic}: ${responseData.stored} historical price${responseData.stored === 1 ? '' : 's'} stored`
-                );
-            } else {
-                const result = responseData.results?.[0];
-                if (result?.success === false) {
-                    showError(result.error || 'Failed to fetch price');
-                } else {
-                    success(`${data.commodity.mnemonic} is already up to date`);
-                    await fetchData();
-                }
-            }
-        } catch {
-            showError('Network error fetching price');
-        } finally {
-            setFetchingPrice(false);
-        }
-    };
-
-    const handleAddPrice = async () => {
-        if (!data?.commodity || !newPrice.date || !newPrice.value) return;
-
-        setSavingPrice(true);
-        try {
-            // Find USD currency for pricing
-            const commoditiesRes = await fetch('/api/commodities');
-            const commodities = await commoditiesRes.json();
-            const usd = commodities.find((c: { mnemonic: string; namespace: string }) =>
-                c.mnemonic === 'USD' && c.namespace === 'CURRENCY'
-            );
-
-            if (!usd) {
-                throw new Error('USD currency not found');
-            }
-
-            const res = await fetch('/api/prices', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    commodity_guid: data.commodity.guid,
-                    currency_guid: usd.guid,
-                    date: newPrice.date,
-                    value: parseFloat(newPrice.value),
-                }),
-            });
-
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(extractErrorMessage(err, 'Failed to add price'));
-            }
-
-            setShowPriceModal(false);
-            setNewPrice({ date: '', value: '' });
-            fetchData();
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to add price');
-        } finally {
-            setSavingPrice(false);
-        }
-    };
-
-    if (loading) {
-        return (
-            <div className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg p-8 flex items-center justify-center">
-                <div className="flex items-center gap-3">
-                    <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-                    <span className="text-foreground-secondary">Loading investment data...</span>
-                </div>
-            </div>
-        );
-    }
-
-    if (error) {
-        return (
-            <div className="bg-surface/30 backdrop-blur-xl border border-error/50 rounded-lg p-8 text-center">
-                <div className="text-error">{error}</div>
-            </div>
-        );
-    }
-
-    if (!data || !data.isInvestment) {
-        return null; // Not an investment account
-    }
-
-    const { commodity, holdings } = data;
+    const isZoomed = zoomDomain.startIndex !== null || zoomDomain.endIndex !== null;
+    const lastValue = displayChartData[displayChartData.length - 1]?.value ?? 0;
+    // % mode: line colour follows the sign of the change over the range.
+    const percentColor = lastValue < 0 ? 'var(--negative)' : 'var(--positive)';
+    const shortDate = (date: string) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const longDate = (date: string) => new Date(date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    const dragArea = isDragging && dragStart !== null && dragEnd !== null && (
+        <ReferenceArea
+            x1={chartData[Math.min(dragStart, dragEnd)]?.date}
+            x2={chartData[Math.max(dragStart, dragEnd)]?.date}
+            strokeOpacity={0}
+            fill="var(--primary)"
+            fillOpacity={0.12}
+        />
+    );
 
     return (
-        <div className="space-y-6">
-            {/* Header */}
-            <div className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg p-6">
-                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                    <div>
-                        <div className="flex items-center gap-3">
-                            <h2 className="text-2xl font-bold text-foreground">
-                                {commodity?.mnemonic || 'Unknown'}
-                            </h2>
-                            {commodity?.namespace && (
-                                <span className="px-2 py-1 text-xs bg-primary/20 text-primary rounded-lg">
-                                    {commodity.namespace}
-                                </span>
-                            )}
-                        </div>
-                        {commodity?.fullname && (
-                            <p className="text-foreground-muted mt-1">{commodity.fullname}</p>
-                        )}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                        <button
-                            onClick={() => setShowTransactionModal(true)}
-                            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-border text-foreground-muted hover:text-primary hover:border-primary/30 hover:bg-primary/10 transition-colors"
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                            </svg>
-                            New Transaction
-                        </button>
-                        <button
-                            onClick={handleFetchPrice}
-                            disabled={fetchingPrice}
-                            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-border text-foreground-muted hover:text-primary hover:border-primary/30 hover:bg-primary/10 transition-colors disabled:opacity-50"
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                            </svg>
-                            {fetchingPrice ? 'Fetching...' : 'Fetch Price'}
-                        </button>
-                        <button
-                            onClick={() => {
-                                setNewPrice({ date: toLocalDateString(new Date()), value: '' });
-                                setShowPriceModal(true);
-                            }}
-                            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-border text-foreground-muted hover:text-primary hover:border-primary/30 hover:bg-primary/10 transition-colors"
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                            </svg>
-                            Add Price
-                        </button>
-                    </div>
-                </div>
-
-                {holdings?.latestPrice && (
-                    <div className="mt-4 text-foreground-secondary">
-                        Last price: {formatCurrency(holdings.latestPrice.value, 'USD')} on{' '}
-                        {new Date(holdings.latestPrice.date).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                        })}
-                    </div>
-                )}
-            </div>
-
-            {/* Holdings Summary */}
-            {holdings && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg p-4 overflow-hidden">
-                        <div className="text-xs text-foreground-muted uppercase tracking-wider">Shares</div>
-                        <div className="text-lg sm:text-xl font-mono font-semibold text-foreground mt-1">
-                            {holdings.shares.toLocaleString(undefined, { maximumFractionDigits: 4 })}
-                        </div>
-                    </div>
-                    <div className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg p-4 overflow-hidden">
-                        <div className="text-xs text-foreground-muted uppercase tracking-wider">Cost Basis</div>
-                        <div className="text-lg sm:text-xl font-mono font-semibold text-foreground mt-1">
-                            {formatCurrency(Math.abs(holdings.costBasis), 'USD')}
-                            {/* Says what this number IS: on a short position it is the
-                                proceeds received for shares sold before they were owned. */}
-                            <ShortPositionMark positionSide={holdings.positionSide} />
-                            {/* Names the shares this basis (and the gain beside it) leaves out. */}
-                            <CostBasisCoverageMark
-                                coverage={holdings.costBasisCoverage}
-                                consequence={BASIS_CONSEQUENCE}
-                            />
-                            <ShortBasisNote positionSide={holdings.positionSide} />
-                        </div>
-                    </div>
-                    <div className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg p-4 overflow-hidden">
-                        <div className="text-xs text-foreground-muted uppercase tracking-wider">Market Value</div>
-                        <div className="text-lg sm:text-xl font-mono font-semibold text-foreground mt-1">
-                            {formatCurrency(holdings.marketValue, 'USD')}
-                        </div>
-                    </div>
-                    <div className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg p-4 overflow-hidden">
-                        {/* The heading names the slice: this is the gain on the shares
-                            the basis covers, beside a whole-position share count and
-                            market value. */}
-                        <div className="text-xs text-foreground-muted uppercase tracking-wider">
-                            {gainHeading(holdings.costBasisCoverage)}
-                        </div>
-                        <div className={`font-mono font-semibold mt-1 ${
-                            holdings.gainLoss >= 0 ? 'text-positive' : 'text-negative'
-                        }`}>
-                            <div className="text-lg sm:text-xl">
-                                {holdings.gainLoss >= 0 ? '+' : ''}{formatCurrency(holdings.gainLoss, 'USD')}
-                                <CostBasisCoverageMark
-                                    coverage={holdings.costBasisCoverage}
-                                    consequence={BASIS_CONSEQUENCE}
-                                />
-                            </div>
-                            <div className="text-xs sm:text-sm">
-                                ({holdings.gainLoss >= 0 ? '+' : ''}{holdings.gainLossPercent.toFixed(2)}%)
-                            </div>
-                            <CoveredSliceNote coverage={holdings.costBasisCoverage} />
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Price History Chart */}
-            {data?.priceHistory && data.priceHistory.length > 0 && (
-                <div className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg p-4 sm:p-6 overflow-hidden">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
-                        <h3 className="text-lg font-semibold text-foreground">Price History</h3>
-                        <div className="flex flex-wrap items-center gap-2">
-                            <div className="flex flex-wrap gap-1">
-                                {(['1M', '3M', '6M', '1Y', '3Y', '5Y', 'ALL'] as const).map(period => (
-                                    <button
-                                        key={period}
-                                        onClick={() => handlePeriodChange(period)}
-                                        className={`px-2 sm:px-3 py-1 text-xs sm:text-sm rounded-lg transition-colors ${
-                                            selectedPeriod === period
-                                                ? 'bg-primary text-primary-foreground'
-                                                : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover hover:text-foreground'
-                                        }`}
-                                    >
-                                        {period}
-                                    </button>
-                                ))}
-                            </div>
-                            <div className="flex gap-1 sm:ml-2 sm:border-l sm:border-border sm:pl-2">
-                                <button
-                                    onClick={() => setChartMode('price')}
-                                    className={`px-3 py-1 text-sm rounded-lg transition-colors ${
-                                        chartMode === 'price'
-                                            ? 'bg-primary text-primary-foreground'
-                                            : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover hover:text-foreground'
-                                    }`}
-                                >
-                                    $
-                                </button>
-                                <button
-                                    onClick={() => setChartMode('percentChange')}
-                                    className={`px-3 py-1 text-sm rounded-lg transition-colors ${
-                                        chartMode === 'percentChange'
-                                            ? 'bg-primary text-primary-foreground'
-                                            : 'bg-background-tertiary text-foreground-secondary hover:bg-surface-hover hover:text-foreground'
-                                    }`}
-                                >
-                                    %
-                                </button>
-                            </div>
-                            {(zoomDomain.startIndex !== null || zoomDomain.endIndex !== null) && (
-                                <button
-                                    onClick={handleZoomReset}
-                                    className="px-3 py-1 text-sm bg-background-tertiary text-foreground-secondary hover:bg-surface-hover hover:text-foreground rounded-lg transition-colors flex items-center gap-1"
-                                >
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                                    </svg>
-                                    Reset
-                                </button>
-                            )}
-                        </div>
-                    </div>
-                    <div
-                        ref={chartContainerRef}
-                        className="h-64"
-                        onWheel={handleWheel}
-                    >
-                        <ResponsiveContainer width="100%" height="100%">
-                            {chartMode === 'percentChange' ? (
-                                <AreaChart
-                                    data={displayChartData}
-                                    onMouseDown={handleMouseDown}
-                                    onMouseMove={handleMouseMove}
-                                    onMouseUp={handleMouseUp}
-                                    onMouseLeave={handleMouseUp}
-                                >
-                                    <defs>
-                                        <linearGradient id="investFillGradient" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="0%" stopColor={CHART_COLORS.green} stopOpacity={GRADIENT_FILL_OPACITY} />
-                                            <stop offset={`${zeroOffset * 100}%`} stopColor={CHART_COLORS.green} stopOpacity={GRADIENT_FILL_OPACITY} />
-                                            <stop offset={`${zeroOffset * 100}%`} stopColor={CHART_COLORS.red} stopOpacity={GRADIENT_FILL_OPACITY} />
-                                            <stop offset="100%" stopColor={CHART_COLORS.red} stopOpacity={GRADIENT_FILL_OPACITY} />
-                                        </linearGradient>
-                                        <linearGradient id="investStrokeGradient" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="0%" stopColor={CHART_COLORS.green} stopOpacity={1} />
-                                            <stop offset={`${zeroOffset * 100}%`} stopColor={CHART_COLORS.green} stopOpacity={1} />
-                                            <stop offset={`${zeroOffset * 100}%`} stopColor={CHART_COLORS.red} stopOpacity={1} />
-                                            <stop offset="100%" stopColor={CHART_COLORS.red} stopOpacity={1} />
-                                        </linearGradient>
-                                    </defs>
-                                    <XAxis
-                                        dataKey="date"
-                                        tick={{ fill: '#737373', fontSize: 12 }}
-                                        tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                        stroke="#404040"
-                                    />
-                                    <YAxis
-                                        tick={{ fill: '#737373', fontSize: 12 }}
-                                        tickFormatter={(value) => `${Number(value).toFixed(1)}%`}
-                                        stroke="#404040"
-                                        domain={['auto', 'auto']}
-                                        width={70}
-                                    />
-                                    <Tooltip
-                                        contentStyle={{
-                                            backgroundColor: '#171717',
-                                            border: '1px solid #404040',
-                                            borderRadius: '8px'
-                                        }}
-                                        labelStyle={{ color: '#a3a3a3' }}
-                                        formatter={(value) => [
-                                            `${Number(value).toFixed(2)}%`,
-                                            '% Change'
-                                        ]}
-                                        labelFormatter={(date) => new Date(date).toLocaleDateString('en-US', {
-                                            weekday: 'short',
-                                            month: 'short',
-                                            day: 'numeric',
-                                            year: 'numeric'
-                                        })}
-                                    />
-                                    <ReferenceLine y={0} stroke="#737373" strokeDasharray="3 3" />
-                                    <Area
-                                        type="monotone"
-                                        dataKey="value"
-                                        stroke="url(#investStrokeGradient)"
-                                        fill="url(#investFillGradient)"
-                                        fillOpacity={1}
-                                        strokeWidth={2}
-                                        dot={false}
-                                        activeDot={{ r: 4, fill: CHART_COLORS.green }}
-                                        animationDuration={300}
-                                        baseValue={0}
-                                    />
-                                    {isDragging && dragStart !== null && dragEnd !== null && (
-                                        <ReferenceArea
-                                            x1={chartData[Math.min(dragStart, dragEnd)]?.date}
-                                            x2={chartData[Math.max(dragStart, dragEnd)]?.date}
-                                            strokeOpacity={0.3}
-                                            fill="#06b6d4"
-                                            fillOpacity={0.3}
-                                        />
-                                    )}
-                                </AreaChart>
-                            ) : (
-                                <LineChart
-                                    data={displayChartData}
-                                    onMouseDown={handleMouseDown}
-                                    onMouseMove={handleMouseMove}
-                                    onMouseUp={handleMouseUp}
-                                    onMouseLeave={handleMouseUp}
-                                >
-                                    <XAxis
-                                        dataKey="date"
-                                        tick={{ fill: '#737373', fontSize: 12 }}
-                                        tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                        stroke="#404040"
-                                    />
-                                    <YAxis
-                                        tick={{ fill: '#737373', fontSize: 12 }}
-                                        tickFormatter={(value) => `$${Number(value).toFixed(2)}`}
-                                        stroke="#404040"
-                                        domain={['auto', 'auto']}
-                                        width={70}
-                                    />
-                                    <Tooltip
-                                        contentStyle={{
-                                            backgroundColor: '#171717',
-                                            border: '1px solid #404040',
-                                            borderRadius: '8px'
-                                        }}
-                                        labelStyle={{ color: '#a3a3a3' }}
-                                        formatter={(value) => [
-                                            `$${Number(value).toFixed(2)}`,
-                                            'Price'
-                                        ]}
-                                        labelFormatter={(date) => new Date(date).toLocaleDateString('en-US', {
-                                            weekday: 'short',
-                                            month: 'short',
-                                            day: 'numeric',
-                                            year: 'numeric'
-                                        })}
-                                    />
-                                    <Line
-                                        type="monotone"
-                                        dataKey="value"
-                                        stroke="#06b6d4"
-                                        strokeWidth={2}
-                                        dot={false}
-                                        activeDot={{ r: 4, fill: '#06b6d4' }}
-                                        animationDuration={300}
-                                    />
-                                    {isDragging && dragStart !== null && dragEnd !== null && (
-                                        <ReferenceArea
-                                            x1={chartData[Math.min(dragStart, dragEnd)]?.date}
-                                            x2={chartData[Math.max(dragStart, dragEnd)]?.date}
-                                            strokeOpacity={0.3}
-                                            fill="#06b6d4"
-                                            fillOpacity={0.3}
-                                        />
-                                    )}
-                                </LineChart>
-                            )}
-                        </ResponsiveContainer>
-                    </div>
-                </div>
-            )}
-
-            {/* Investment Transaction Modal. The shared Modal owns Escape and
-                stops its propagation, so the ledger's window-level handler
-                cannot also see the keystroke and navigate back to the account
-                hierarchy while the modal closes. */}
-            {commodity && (
-                <Modal
-                    isOpen={showTransactionModal}
-                    onClose={() => setShowTransactionModal(false)}
-                    title="New Investment Transaction"
-                    size="2xl"
-                    closeOnBackdrop={false}
-                    closeOnEscape={true}
-                    resetKey="new-investment"
+        <section id="price-history" className="scroll-mt-4 rounded-lg border border-border bg-surface">
+            <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2.5 sm:px-5">
+                <button
+                    type="button"
+                    onClick={toggle}
+                    aria-expanded={open}
+                    aria-controls="price-history-body"
+                    className="-ml-1 flex items-center gap-2 rounded-sm px-1 py-1 text-sm font-semibold text-foreground hover:text-primary"
                 >
-                    <div className="px-6 py-4">
-                        <InvestmentTransactionForm
-                            accountGuid={data.account.guid}
-                            accountName={data.account.name}
-                            commoditySymbol={commodity.mnemonic}
-                            commodityFraction={commodity.fraction}
-                            onSave={() => {
-                                setShowTransactionModal(false);
-                                fetchData();
-                            }}
-                            onSaveAndNew={() => fetchData()}
-                            onCancel={() => setShowTransactionModal(false)}
+                    <svg aria-hidden="true" viewBox="0 0 16 16" className={`h-3.5 w-3.5 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 3.5 10.5 8 6 12.5" />
+                    </svg>
+                    {data.commodity?.mnemonic} price history
+                    <span className="text-xs font-normal text-foreground-secondary">
+                        {filteredPriceHistory.length > 0
+                            ? `${filteredPriceHistory.length} price${filteredPriceHistory.length === 1 ? '' : 's'} in range`
+                            : 'No prices in this range'}
+                    </span>
+                </button>
+                {open && filteredPriceHistory.length > 0 && (
+                    <div className="flex items-center gap-2">
+                        {isZoomed && (
+                            <button
+                                type="button"
+                                onClick={() => setZoomDomain({ startIndex: null, endIndex: null })}
+                                className="h-7 rounded-md px-2.5 text-xs font-medium text-foreground-secondary hover:bg-surface-hover hover:text-foreground"
+                            >
+                                Reset zoom
+                            </button>
+                        )}
+                        <Segmented
+                            ariaLabel="Chart units"
+                            value={chartMode}
+                            onChange={setChartMode}
+                            options={[
+                                { value: 'price', label: '$', ariaLabel: 'Price', hint: 'Price per share' },
+                                { value: 'percentChange', label: '%', ariaLabel: 'Percent change', hint: 'Change since the start of the range' },
+                            ]}
                         />
                     </div>
-                </Modal>
-            )}
-
-            {/* Add Price Modal */}
-            {showPriceModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-black/50 p-4">
-                    <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-auto rounded-lg border border-border bg-surface-elevated p-5">
-                        <h3 className="text-lg font-semibold text-foreground mb-4">Add Price</h3>
-                        <div className="space-y-4">
-                            <div>
-                                <label className="block text-xs text-foreground-muted uppercase tracking-wider mb-1">
-                                    Date
-                                </label>
-                                <input
-                                    type="text"
-                                    value={priceDisplayDate}
-                                    onChange={e => setPriceDisplayDate(e.target.value)}
-                                    onFocus={(e) => e.target.select()}
-                                    onBlur={() => {
-                                        const parsed = parseDateInput(priceDisplayDate);
-                                        if (parsed) {
-                                            setNewPrice(prev => ({ ...prev, date: parsed }));
-                                            setPriceDisplayDate(formatDateForDisplay(parsed, dateFormat));
-                                        } else if (newPrice.date) {
-                                            setPriceDisplayDate(formatDateForDisplay(newPrice.date, dateFormat));
-                                        }
-                                    }}
-                                    placeholder="MM/DD/YYYY"
-                                    className="w-full bg-input-bg border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:border-primary/50"
-                                />
-                            </div>
-                            <div>
-                                <label className="block text-xs text-foreground-muted uppercase tracking-wider mb-1">
-                                    Price (USD)
-                                </label>
-                                <input
-                                    type="number"
-                                    step="0.01"
-                                    value={newPrice.value}
-                                    onChange={e => setNewPrice(prev => ({ ...prev, value: e.target.value }))}
-                                    placeholder="0.00"
-                                    className="w-full bg-input-bg border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:border-primary/50"
-                                />
-                            </div>
+                )}
+            </header>
+            {open && (
+                <div id="price-history-body" className="border-t border-border p-4 sm:p-5">
+                    {filteredPriceHistory.length === 0 ? (
+                        <p className="py-8 text-center text-sm text-foreground-secondary">
+                            No {data.commodity?.mnemonic} prices fall in this date range.
+                        </p>
+                    ) : (
+                        <div ref={chartContainerRef} className="h-64 select-none" onWheel={handleWheel}>
+                            <ResponsiveContainer width="100%" height="100%">
+                                {chartMode === 'percentChange' ? (
+                                    <AreaChart
+                                        data={displayChartData}
+                                        onMouseDown={handleMouseDown}
+                                        onMouseMove={handleMouseMove}
+                                        onMouseUp={handleMouseUp}
+                                        onMouseLeave={handleMouseUp}
+                                    >
+                                        <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" vertical={false} />
+                                        <XAxis dataKey="date" tick={CHART_THEME.tick} tickFormatter={shortDate} stroke={CHART_THEME.axis} />
+                                        <YAxis
+                                            tick={CHART_THEME.tick}
+                                            tickFormatter={(value) => `${Number(value).toFixed(1)}%`}
+                                            stroke={CHART_THEME.axis}
+                                            domain={['auto', 'auto']}
+                                            width={64}
+                                        />
+                                        <Tooltip
+                                            {...CHART_THEME.tooltip}
+                                            formatter={(value) => [`${Number(value).toFixed(2)}%`, 'Change']}
+                                            labelFormatter={(label) => longDate(String(label))}
+                                        />
+                                        <ReferenceLine y={0} stroke={CHART_THEME.zeroLine} strokeDasharray="3 3" />
+                                        <Area
+                                            type="monotone"
+                                            dataKey="value"
+                                            stroke={percentColor}
+                                            fill={percentColor}
+                                            fillOpacity={0.1}
+                                            strokeWidth={2}
+                                            dot={false}
+                                            activeDot={{ r: 4, fill: percentColor }}
+                                            animationDuration={300}
+                                            baseValue={0}
+                                        />
+                                        {dragArea}
+                                    </AreaChart>
+                                ) : (
+                                    <LineChart
+                                        data={displayChartData}
+                                        onMouseDown={handleMouseDown}
+                                        onMouseMove={handleMouseMove}
+                                        onMouseUp={handleMouseUp}
+                                        onMouseLeave={handleMouseUp}
+                                    >
+                                        <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" vertical={false} />
+                                        <XAxis dataKey="date" tick={CHART_THEME.tick} tickFormatter={shortDate} stroke={CHART_THEME.axis} />
+                                        <YAxis
+                                            tick={CHART_THEME.tick}
+                                            tickFormatter={(value) => `$${Number(value).toFixed(2)}`}
+                                            stroke={CHART_THEME.axis}
+                                            domain={['auto', 'auto']}
+                                            width={72}
+                                        />
+                                        <Tooltip
+                                            {...CHART_THEME.tooltip}
+                                            formatter={(value) => [`$${Number(value).toFixed(2)}`, 'Price']}
+                                            labelFormatter={(label) => longDate(String(label))}
+                                        />
+                                        <Line
+                                            type="monotone"
+                                            dataKey="value"
+                                            stroke="var(--primary)"
+                                            strokeWidth={2}
+                                            dot={false}
+                                            activeDot={{ r: 4, fill: 'var(--primary)' }}
+                                            animationDuration={300}
+                                        />
+                                        {dragArea}
+                                    </LineChart>
+                                )}
+                            </ResponsiveContainer>
                         </div>
-                        <div className="flex justify-end gap-3 mt-6">
-                            <button
-                                onClick={() => setShowPriceModal(false)}
-                                className="px-4 py-2 text-sm text-foreground-secondary hover:text-foreground transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={handleAddPrice}
-                                disabled={savingPrice || !newPrice.date || !newPrice.value}
-                                className="px-4 py-2 text-sm bg-primary hover:bg-primary-hover disabled:bg-primary/50 text-primary-foreground rounded-lg transition-colors"
-                            >
-                                {savingPrice ? 'Saving...' : 'Add Price'}
-                            </button>
-                        </div>
-                    </div>
+                    )}
+                    <p className="mt-2 text-xs text-foreground-secondary">Drag across the chart to zoom; scroll to zoom in and out.</p>
                 </div>
             )}
-        </div>
+        </section>
     );
 }

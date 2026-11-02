@@ -85,6 +85,16 @@ describe('InvestmentTransactionForm account pickers', () => {
         expect(visibleSelectors.map((props: { accountTypes?: string[] }) => props.accountTypes))
             .toEqual([['EXPENSE'], ['BANK', 'ASSET', 'CASH']]);
 
+        // A fee paid in shares: the redeemed shares' value goes straight to an
+        // expense account, so there is no cash picker and no commission field.
+        fireEvent.click(screen.getByRole('button', { name: 'Fee' }));
+        expect(screen.getByText(/Fee Amount/)).toBeInTheDocument();
+        expect(screen.queryByTestId('account-selector-Select cash/bank account...')).not.toBeInTheDocument();
+        expect(screen.queryByText(/Commission\/Fees/)).not.toBeInTheDocument();
+        visibleSelectors = accountSelectorMock.mock.calls.slice(-1).map(([props]) => props);
+        expect(visibleSelectors.map((props: { accountTypes?: string[] }) => props.accountTypes))
+            .toEqual([['EXPENSE']]);
+
         fireEvent.click(screen.getByRole('button', { name: 'Dividend' }));
         visibleSelectors = accountSelectorMock.mock.calls.slice(-2).map(([props]) => props);
         expect(visibleSelectors.map((props: { accountTypes?: string[] }) => props.accountTypes))

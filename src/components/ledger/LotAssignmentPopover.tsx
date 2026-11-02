@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Tip } from '@/components/ui/Tooltip';
 
 interface LotOption {
@@ -16,6 +16,13 @@ interface LotAssignmentPopoverProps {
   lots: LotOption[];
   onAssign: (splitGuid: string, lotGuid: string | null) => Promise<void>;
   onCreateAndAssign: (splitGuid: string, title: string) => Promise<void>;
+  /**
+   * Replaces the default trigger content (the lot title) with a compact chip,
+   * e.g. a LotBadge reading "L1 · 12/24/25". The chip carries its own hover
+   * detail, so no extra tooltip is added; `triggerAriaLabel` names the button.
+   */
+  trigger?: ReactNode;
+  triggerAriaLabel?: string;
 }
 
 export default function LotAssignmentPopover({
@@ -24,6 +31,8 @@ export default function LotAssignmentPopover({
   lots,
   onAssign,
   onCreateAndAssign,
+  trigger,
+  triggerAriaLabel,
 }: LotAssignmentPopoverProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -71,10 +80,21 @@ export default function LotAssignmentPopover({
 
   return (
     <div className="relative" ref={popoverRef}>
+      {trigger ? (
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        aria-label={triggerAriaLabel}
+        aria-expanded={isOpen}
+        className="inline-flex items-center whitespace-nowrap rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+      >
+        {trigger}
+      </button>
+      ) : (
       <Tip content={currentLot ? `Assigned to: ${currentLot.title}` : 'Assign to lot'}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`text-xs px-1.5 py-0.5 rounded border transition-colors ${
+        className={`text-xs whitespace-nowrap px-1.5 py-0.5 rounded border transition-colors ${
           currentLotGuid
             ? 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/20'
             : 'border-border/50 bg-background-secondary/20 text-foreground-muted hover:bg-background-secondary/40'
@@ -83,11 +103,12 @@ export default function LotAssignmentPopover({
         {currentLot ? currentLot.title : '+ Lot'}
       </button>
       </Tip>
+      )}
 
       {isOpen && (
         <div className="absolute z-50 top-full left-0 mt-1 w-56 bg-surface border border-border rounded-lg shadow-xl">
           <div className="p-2 space-y-1">
-            <div className="text-[10px] text-foreground-muted uppercase tracking-wider px-2 py-1">
+            <div className="text-xs text-foreground-secondary uppercase tracking-wider px-2 py-1">
               Assign to Lot
             </div>
 

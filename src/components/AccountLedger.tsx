@@ -26,7 +26,6 @@ import {
 import { getColumns, getInvestmentColumns } from './ledger/columns';
 import { useIsMobile } from '@/lib/hooks/useIsMobile';
 import { SwipeableTransactionCard } from '@/components/ledger/SwipeableTransactionCard';
-import { MobileCard } from './ui/MobileCard';
 import { parseTransactionsResponse, transformToInvestmentRow, isMultiSplitTransaction, InvestmentRowData } from './ledger/investment-utils';
 import { toLocalDateString } from '@/lib/datePresets';
 import { FilterPanel, AmountFilter, ReconcileFilter } from './filters';
@@ -61,6 +60,8 @@ import { Tip } from '@/components/ui/Tooltip';
 import { fetchWithUnreconcile } from '@/lib/reconciled-split-client';
 import { useUnreconcileConfirm } from './ui/UnreconcileConfirm';
 import { ReconcileStateButton } from './ledger/cells/ReconcileStateButton';
+import { CostBasisCoverageMark, BASIS_CONSEQUENCE } from '@/components/investments/CostBasisCoverageMark';
+import { MONEY_DISPLAY_EPSILON } from '@/lib/tolerances';
 
 export interface AccountTransaction extends Transaction {
     running_balance: string;
@@ -244,6 +245,48 @@ export function writeDoubleLinePreference(value: boolean): void {
     }
 }
 
+/**
+ * Quiet marker for a row matched to a bank statement line during manual
+ * reconciliation. Deliberately not a pill: it sits inline at the 12px floor in
+ * muted text so a register full of them stays readable.
+ */
+function BankVerifiedMark() {
+    return (
+        <span className="inline-flex items-center gap-0.5 text-xs font-normal text-foreground-muted whitespace-nowrap">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+            </svg>
+            Bank-verified
+        </span>
+    );
+}
+
+/**
+ * The row's running cost basis, with what it covers. Same rule as the edit
+ * row's CostBasisValue: under `unknown` coverage there is no figure to print,
+ * only the mark. A basis of exactly zero is shown as an en dash — on a ledger
+ * it means "no basis established" (no position yet, or shares that arrived
+ * without a traceable cost), and a bold "$0.00" on every row read as data.
+ */
+function LedgerCostBasis({ row }: { row: InvestmentRowData }) {
+    if (row.costBasisCoverage.status === 'unknown') {
+        return (
+            <span className="inline-flex items-center justify-end gap-1">
+                <span className="text-foreground-muted">&mdash;</span>
+                <CostBasisCoverageMark coverage={row.costBasisCoverage} consequence={BASIS_CONSEQUENCE} />
+            </span>
+        );
+    }
+    return (
+        <span className="inline-flex items-center justify-end gap-1">
+            {Math.abs(row.costBasis) < MONEY_DISPLAY_EPSILON
+                ? <span className="text-foreground-muted">&ndash;</span>
+                : formatCurrency(row.costBasis, row.currencyMnemonic)}
+            <CostBasisCoverageMark coverage={row.costBasisCoverage} consequence={BASIS_CONSEQUENCE} />
+        </span>
+    );
+}
+
 type HoldingPeriod = 'short_term' | 'long_term' | null;
 
 interface LotSummary {
@@ -254,10 +297,40 @@ interface LotSummary {
     totalCost: number;
     unrealizedGain: number | null;
     holdingPeriod: HoldingPeriod;
+    openDate?: string | null;
+    acquisitionDate?: string | null;
 }
 
-interface LotMapEntry extends Omit<LotSummary, 'guid'> {
+interface LotMapEntry extends Omit<LotSummary, 'guid' | 'openDate' | 'acquisitionDate'> {
     index: number;
+    /** Short acquisition date for the row chip ("12/24/25"), or null. */
+    shortDate: string | null;
+}
+
+/** "2025-12-24" → "12/24/25" (UTC, like the ledger's date column). */
+function lotShortDate(lot: Pick<LotSummary, 'openDate' | 'acquisitionDate'>): string | null {
+    const raw = lot.acquisitionDate || lot.openDate;
+    if (!raw) return null;
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleDateString('en-US', { timeZone: 'UTC', month: '2-digit', day: '2-digit', year: '2-digit' });
+}
+
+function buildLotMap(lots: LotSummary[]): Map<string, LotMapEntry> {
+    const map = new Map<string, LotMapEntry>();
+    lots.forEach((lot, i) => {
+        map.set(lot.guid, {
+            index: i + 1,
+            isClosed: lot.isClosed,
+            title: lot.title,
+            totalShares: lot.totalShares,
+            totalCost: lot.totalCost,
+            unrealizedGain: lot.unrealizedGain,
+            holdingPeriod: lot.holdingPeriod,
+            shortDate: lotShortDate(lot),
+        });
+    });
+    return map;
 }
 
 interface AccountLedgerProps {
@@ -278,6 +351,17 @@ interface AccountLedgerProps {
     /** Called with the latest running_balance of the newest transaction after any
      *  refetch, so the parent page can update its "Current Balance" header. */
     onCurrentBalanceChange?: (runningBalance: string | null) => void;
+    /** Rendered as the first item of the toolbar (desktop) and at the start of
+     *  the mobile top bar — e.g. the page's date-range picker. */
+    toolbarLeading?: React.ReactNode;
+    /** Human label for the active date range ("This Year"), used by the empty
+     *  state: "No transactions in This Year." */
+    rangeLabel?: string;
+    /** Widens the range to all dates. When given, the empty state offers a
+     *  "Show all dates" button. */
+    onShowAllDates?: () => void;
+    /** Open the Lots view (investment accounts only) — e.g. from `?view=lots`. */
+    requestLotsView?: boolean;
 }
 
 export default function AccountLedger({
@@ -295,6 +379,10 @@ export default function AccountLedger({
     initialShowSubaccounts = false,
     onEscape,
     onCurrentBalanceChange,
+    toolbarLeading,
+    rangeLabel,
+    onShowAllDates,
+    requestLotsView = false,
 }: AccountLedgerProps) {
     const { balanceReversal, defaultLedgerMode, ledgerViewStyle, setLedgerViewStyle, costBasisCarryOver, costBasisMethod } = useUserPreferences();
     const { success, error } = useToast();
@@ -429,6 +517,11 @@ export default function AccountLedger({
     const [lotMap, setLotMap] = useState<Map<string, LotMapEntry>>(new Map());
     const [accountCostBasisMethod, setAccountCostBasisMethod] = useState<string | null>(null);
 
+    // Deep link (`?view=lots`): open the Lots view when the parent asks for it.
+    useEffect(() => {
+        if (requestLotsView && isInvestmentAccount) setShowLotsView(true);
+    }, [requestLotsView, isInvestmentAccount]);
+
     const isSlimEditMode = isEditMode && (ledgerViewStyle === 'journal' || ledgerViewStyle === 'autosplit');
 
     // Double-line edit view (transaction notes + split memo on a second row).
@@ -449,6 +542,7 @@ export default function AccountLedger({
     useKeyboardShortcut('view-basic', 'v b', 'Basic Ledger view', () => setLedgerViewStyle('basic'), 'page');
     useKeyboardShortcut('view-journal', 'v j', 'Transaction Journal view', () => setLedgerViewStyle('journal'), 'page');
     useKeyboardShortcut('view-autosplit', 'v a', 'Auto-Split view', () => setLedgerViewStyle('autosplit'), 'page');
+    useKeyboardShortcut('ledger-reconcile', 'Alt+r', 'Reconcile this account', () => router.push(`/accounts/${accountGuid}/reconcile`), 'page');
 
     // Initialize edit mode from preference on mount (once preferences are loaded)
     useEffect(() => {
@@ -470,19 +564,7 @@ export default function AccountLedger({
             .then(res => res.json())
             .then(data => {
                 const lots: LotSummary[] = Array.isArray(data) ? data : data.lots || [];
-                const map = new Map<string, LotMapEntry>();
-                lots.forEach((lot, i) => {
-                    map.set(lot.guid, {
-                        index: i + 1,
-                        isClosed: lot.isClosed,
-                        title: lot.title,
-                        totalShares: lot.totalShares,
-                        totalCost: lot.totalCost,
-                        unrealizedGain: lot.unrealizedGain,
-                        holdingPeriod: lot.holdingPeriod,
-                    });
-                });
-                setLotMap(map);
+                setLotMap(buildLotMap(lots));
             })
             .catch((err) => { console.error('Failed to fetch lot data:', err); }); // Lot badges are optional, but log errors for debugging
     }, [isInvestmentAccount, accountGuid]);
@@ -492,19 +574,7 @@ export default function AccountLedger({
             .then(r => r.json())
             .then(data => {
                 const lots: LotSummary[] = Array.isArray(data) ? data : data.lots || [];
-                const map = new Map<string, LotMapEntry>();
-                lots.forEach((lot, i) => {
-                    map.set(lot.guid, {
-                        index: i + 1,
-                        isClosed: lot.isClosed,
-                        title: lot.title,
-                        totalShares: lot.totalShares,
-                        totalCost: lot.totalCost,
-                        unrealizedGain: lot.unrealizedGain,
-                        holdingPeriod: lot.holdingPeriod,
-                    });
-                });
-                setLotMap(map);
+                setLotMap(buildLotMap(lots));
             })
             .catch((err) => { console.error('Failed to refresh lot data:', err); });
     };
@@ -1568,9 +1638,22 @@ export default function AccountLedger({
         });
     }, [accountGuid, isEditMode, isInvestmentAccount, ledgerViewStyle]);
 
+    // A Cost Basis column that is a dash on every loaded row says nothing and
+    // costs the register ~100px it needs for Description; drop it (read mode
+    // only; the edit rows lay out their own cells).
+    const hideCostBasisColumn = useMemo(() => {
+        if (!isInvestmentAccount || isEditMode || !investmentRowMap || investmentRowMap.size === 0) return false;
+        for (const row of investmentRowMap.values()) {
+            if (row.costBasisCoverage.status === 'unknown' || Math.abs(row.costBasis) >= MONEY_DISPLAY_EPSILON) return false;
+        }
+        return true;
+    }, [isInvestmentAccount, isEditMode, investmentRowMap]);
+    const columnVisibility = useMemo(() => ({ costBasis: !hideCostBasisColumn }), [hideCostBasisColumn]);
+
     const table = useReactTable({
         data: displayTransactions,
         columns,
+        state: { columnVisibility },
         getCoreRowModel: getCoreRowModel(),
         // There is no pagination; without this, any row-model recompute queues
         // a resetPageIndex() whose state spread re-renders unconditionally.
@@ -1580,8 +1663,12 @@ export default function AccountLedger({
     const visibleColumnIds = useMemo(
         () => table.getVisibleFlatColumns().map(c => c.id),
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [columns],
+        [columns, columnVisibility],
     );
+    // From 1800px the last column takes the spare width so Description sizes
+    // to its text and the amounts stay beside it (DESIGN.md "Data surfaces").
+    const lastColumnId = visibleColumnIds[visibleColumnIds.length - 1];
+    const fillerClass = (id: string) => (id === lastColumnId ? ' min-[1800px]:w-full' : '');
 
     // Helper to create a blank new transaction at the top of the list
     const createNewTransaction = useCallback(() => {
@@ -2192,9 +2279,54 @@ export default function AccountLedger({
     const getReconcileIcon = (state: string) => {
         switch (state) {
             case 'y': return { icon: 'Y', color: 'text-primary bg-primary/10', label: 'Reconciled' };
+            case 'f': return { icon: 'F', color: 'text-primary bg-primary/10', label: 'Frozen' };
             case 'c': return { icon: 'C', color: 'text-warning bg-warning/10', label: 'Cleared' };
             default: return { icon: 'N', color: 'text-foreground-muted bg-surface/10', label: 'Not Reconciled' };
         }
+    };
+
+    /**
+     * The row's lot as ONE single-line chip ("L1 · 12/24/25") that also opens
+     * the lot-assignment popover; an unassigned split shows "+ Lot". The chip
+     * used to be a colored "L1" badge beside a second button carrying the full
+     * lot title, which wrapped to three lines in a narrow Description cell.
+     */
+    const renderLotControl = (tx: AccountTransaction) => {
+        const lotSplit = tx.splits?.find(s => s.lot_guid && s.account_guid === accountGuid);
+        const accountSplit = tx.splits?.find(s => s.account_guid === accountGuid);
+        const lotInfo = lotSplit?.lot_guid ? lotMap.get(lotSplit.lot_guid) : null;
+        return (
+            <LotAssignmentPopover
+                splitGuid={lotSplit?.guid || accountSplit?.guid || ''}
+                currentLotGuid={lotSplit?.lot_guid || null}
+                lots={Array.from(lotMap.entries()).map(([guid, info]) => ({
+                    guid,
+                    title: info.title,
+                    totalShares: info.totalShares,
+                    isClosed: info.isClosed,
+                }))}
+                onAssign={handleSplitLotAssign}
+                onCreateAndAssign={handleSplitCreateAndAssign}
+                trigger={lotInfo && lotSplit?.lot_guid ? (
+                    <LotBadge
+                        lotGuid={lotSplit.lot_guid}
+                        lotIndex={lotInfo.index}
+                        isClosed={lotInfo.isClosed}
+                        sharePrecision={sharePrecision}
+                        dateLabel={lotInfo.shortDate}
+                        tooltip={{
+                            title: lotInfo.title,
+                            shares: lotInfo.totalShares,
+                            costBasis: lotInfo.totalCost,
+                            unrealizedGain: lotInfo.unrealizedGain,
+                            holdingPeriod: lotInfo.holdingPeriod,
+                            currencyMnemonic: accountCurrency,
+                        }}
+                    />
+                ) : undefined}
+                triggerAriaLabel={lotInfo ? `Lot ${lotInfo.index}: ${lotInfo.title}. Change lot assignment` : undefined}
+            />
+        );
     };
 
     // Shared toolbar elements (rendered inline on desktop, inside FilterBar on mobile)
@@ -2214,11 +2346,12 @@ export default function AccountLedger({
     );
 
     const searchBox = (
-        <div className="relative flex-1 min-w-0">
+        <div className="relative flex-1 min-w-[8rem] md:min-w-[12rem]">
             <input
                 ref={searchInputRef}
                 type="text"
                 placeholder="Search or #tag... (press / to focus)"
+                aria-label="Search transactions"
                 className="w-full bg-input-bg border border-border rounded-lg px-4 py-2 text-sm text-foreground focus:outline-none focus:border-primary/50 transition-all pl-10"
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
@@ -2228,7 +2361,9 @@ export default function AccountLedger({
             </svg>
             {searchText && (
                 <button
+                    type="button"
                     onClick={() => setSearchText('')}
+                    aria-label="Clear search"
                     className="absolute right-1 top-1/2 -translate-y-1/2 text-foreground-muted hover:text-foreground-secondary min-h-[44px] min-w-[44px] flex items-center justify-center"
                 >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2245,14 +2380,20 @@ export default function AccountLedger({
             value={currentCostBasisMethod}
             onChange={async (e) => {
                 const method = e.target.value;
+                const previous = accountCostBasisMethod;
                 setAccountCostBasisMethod(method);
                 try {
-                    await fetch(`/api/accounts/${accountGuid}/preferences`, {
+                    const res = await fetch(`/api/accounts/${accountGuid}/preferences`, {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ cost_basis_method: method }),
                     });
-                } catch {}
+                    if (!res.ok) await throwErrorBody(res, 'Failed to save the cost basis method');
+                } catch (err) {
+                    // Revert the select so it never shows a method that was not saved.
+                    setAccountCostBasisMethod(previous);
+                    error(err instanceof Error ? err.message : 'Failed to save the cost basis method');
+                }
             }}
             className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border bg-background-secondary text-foreground hover:text-foreground transition-colors"
             aria-label="Cost basis method for this account"
@@ -2262,6 +2403,59 @@ export default function AccountLedger({
             <option value="average">Average</option>
         </select>
     ) : null;
+
+    // Footer under the rows: loading / more-to-load / a quiet end marker, or —
+    // when the range holds nothing at all — an empty state that says so and
+    // offers the way out, instead of an "end of records" that reads as data.
+    const narrowedBySearchOrFilters = debouncedSearch !== '' || activeFilterCount > 0 || showUnreviewedOnly;
+    // Desktop edit mode has its own "All caught up" state for an empty list.
+    const isEmpty = displayTransactions.length === 0 && !loading && !hasMore && !(isEditMode && !isMobile);
+    const ledgerFooter = (
+        <div ref={loader} className={`flex justify-center border-t border-border/50 ${isEmpty ? 'px-6 py-12' : 'p-6'}`}>
+            {loading ? (
+                <div className="flex items-center gap-3">
+                    <div className="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                    <span className="text-xs text-foreground-muted">Loading transactions…</span>
+                </div>
+            ) : hasMore ? (
+                <span className="text-xs text-foreground-muted">Scroll for older transactions</span>
+            ) : isEmpty ? (
+                narrowedBySearchOrFilters ? (
+                    <div className="text-center">
+                        <p className="text-sm text-foreground-secondary">No transactions match the current search or filters.</p>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setSearchText('');
+                                clearAllFilters();
+                                setShowUnreviewedOnly(false);
+                            }}
+                            className="mt-3 px-3 py-2 min-h-[44px] md:min-h-0 text-sm rounded-lg border border-border text-foreground-secondary hover:text-foreground hover:bg-surface-hover transition-colors"
+                        >
+                            Clear search and filters
+                        </button>
+                    </div>
+                ) : (
+                    <div className="text-center">
+                        <p className="text-sm text-foreground-secondary">
+                            {rangeLabel ? `No transactions in ${rangeLabel}.` : 'No transactions in this date range.'}
+                        </p>
+                        {onShowAllDates && (
+                            <button
+                                type="button"
+                                onClick={onShowAllDates}
+                                className="mt-3 px-3 py-2 min-h-[44px] md:min-h-0 text-sm rounded-lg border border-border text-foreground-secondary hover:text-foreground hover:bg-surface-hover transition-colors"
+                            >
+                                Show all dates
+                            </button>
+                        )}
+                    </div>
+                )
+            ) : displayTransactions.length > 0 ? (
+                <span className="text-xs text-foreground-muted">End of transactions</span>
+            ) : null}
+        </div>
+    );
 
     // Filter badge count on mobile includes the view toggles that act as filters
     const mobileFilterCount = activeFilterCount
@@ -2285,13 +2479,19 @@ export default function AccountLedger({
 
     return (
         <>
-        <div className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg overflow-clip shadow-2xl">
+        <div id="ledger" className="scroll-mt-4 bg-surface border border-border rounded-lg overflow-clip">
             {/* Inline-save failures are announced once, here; the per-row
                 RowSaveErrorRow shows the same text where it happened. */}
             <ErrorLiveRegion message={lastRowSaveError} />
             {/* Top Bar: mobile = search + Filters + overflow menu; desktop = inline toolbar */}
-            <div className="p-4 border-b border-border flex flex-col md:flex-row gap-3">
+            <div className="p-4 border-b border-border flex flex-col md:flex-row md:flex-wrap gap-3">
                 {isMobile ? (
+                    <>
+                    {/* A phone has no room for the leading control (the date
+                        range) beside search, so it leads on its own line. */}
+                    {toolbarLeading && (
+                        <div className="flex items-center min-w-0">{toolbarLeading}</div>
+                    )}
                     <div className="flex items-start gap-2 flex-1 min-w-0">
                         <FilterBar
                             className="flex-1 min-w-0"
@@ -2315,11 +2515,11 @@ export default function AccountLedger({
                             </CheckboxChip>
                             {isInvestmentAccount && (
                                 <div className="[&>select]:w-full">
-                                    <label className="block text-xs text-foreground-muted uppercase tracking-wider mb-2">
+                                    <label className="block text-xs text-foreground-secondary uppercase tracking-wider mb-2">
                                         Cost Basis Method
                                     </label>
                                     {costBasisSelect}
-                                    <p className="mt-1.5 text-[11px] text-foreground-muted">
+                                    <p className="mt-1.5 text-xs text-foreground-muted">
                                         <Abbr term="FIFO" /> sells the oldest shares first; <Abbr term="LIFO" /> the newest.
                                     </p>
                                 </div>
@@ -2348,10 +2548,14 @@ export default function AccountLedger({
                         </Tip>
                         <ActionMenu items={mobileActions} />
                     </div>
+                    </>
                 ) : (
                 <>
-                {/* Filters and Search */}
-                <div className="flex gap-2 items-center flex-1 min-w-0">
+                {/* Leading control (date range), Filters and Search. The group
+                    keeps room for a usable search box; when the actions do not
+                    fit beside it, they wrap to the next line instead. */}
+                <div className="flex gap-2 items-center flex-1 min-w-[min(100%,30rem)]">
+                    {toolbarLeading && <div className="flex items-center shrink-0">{toolbarLeading}</div>}
                     <FilterPanel
                         activeFilterCount={activeFilterCount}
                         onClearAll={clearAllFilters}
@@ -2362,7 +2566,7 @@ export default function AccountLedger({
                 </div>
 
                 {/* Action buttons - right aligned */}
-                <div className="flex flex-wrap gap-2 items-center md:justify-end">
+                <div className="flex flex-wrap gap-2 items-center md:justify-end md:ml-auto">
                     <Tip content={isReadonly ? READONLY_TOOLTIP : (isEditMode ? 'New Transaction (n)' : 'New Transaction')}>
                     <button
                         onClick={() => {
@@ -2370,7 +2574,7 @@ export default function AccountLedger({
                             setIsEditModalOpen(true);
                         }}
                         disabled={isReadonly}
-                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-foreground-muted"
+                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-secondary hover:text-foreground hover:bg-surface-hover transition-colors font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-foreground-secondary"
                     >
                         New Transaction
                     </button>
@@ -2386,11 +2590,13 @@ export default function AccountLedger({
                     />
                     {isInvestmentAccount && (
                         <button
+                            type="button"
                             onClick={() => setShowLotsView(!showLotsView)}
+                            aria-pressed={showLotsView}
                             className={`px-3 py-2 min-h-[44px] text-xs rounded-lg border transition-colors ${
                                 showLotsView
                                     ? 'bg-secondary/10 border-secondary/30 text-secondary'
-                                    : 'border-border text-foreground-muted hover:text-foreground hover:bg-surface-hover'
+                                    : 'border-border text-foreground-secondary hover:text-foreground hover:bg-surface-hover'
                             }`}
                         >
                             Lots
@@ -2415,7 +2621,7 @@ export default function AccountLedger({
                         className={`hidden md:inline-flex px-3 py-2 min-h-[44px] items-center text-xs rounded-lg border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                             isEditMode
                                 ? 'bg-primary/10 border-primary/30 text-primary'
-                                : 'border-border text-foreground-muted hover:text-foreground'
+                                : 'border-border text-foreground-secondary hover:text-foreground'
                         }`}
                     >
                         {isEditMode ? 'Exit Edit Mode' : 'Edit Mode'}
@@ -2440,7 +2646,7 @@ export default function AccountLedger({
                             <button
                                 onClick={handleBulkReview}
                                 disabled={editSelectedGuids.size === 0}
-                                className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-muted hover:text-foreground hover:bg-surface-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center"
+                                className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-secondary hover:text-foreground hover:bg-surface-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center"
                             >
                                 Mark Reviewed ({editSelectedGuids.size})
                             </button>
@@ -2450,7 +2656,7 @@ export default function AccountLedger({
                                     <Tip content="Move to Account (m)">
                                     <button
                                         onClick={() => setShowMoveDialog(true)}
-                                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-muted hover:text-secondary hover:border-secondary/30 hover:bg-secondary/10 transition-colors flex items-center"
+                                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-secondary hover:text-secondary hover:border-secondary/30 hover:bg-secondary/10 transition-colors flex items-center"
                                     >
                                         Move to Account ({editSelectedGuids.size})
                                     </button>
@@ -2458,7 +2664,7 @@ export default function AccountLedger({
                                     <Tip content="Delete Selected (x)">
                                     <button
                                         onClick={() => setBulkDeleteConfirmOpen(true)}
-                                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-muted hover:text-negative hover:border-negative/30 hover:bg-negative/10 transition-colors flex items-center"
+                                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-secondary hover:text-negative hover:border-negative/30 hover:bg-negative/10 transition-colors flex items-center"
                                     >
                                         Delete Selected ({editSelectedGuids.size})
                                     </button>
@@ -2466,7 +2672,7 @@ export default function AccountLedger({
                                     <Tip content="Edit description of selected transactions">
                                     <button
                                         onClick={() => setBulkDescOpen(true)}
-                                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors flex items-center"
+                                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-secondary hover:text-foreground hover:bg-surface-hover transition-colors flex items-center"
                                     >
                                         Edit Description ({editSelectedGuids.size})
                                     </button>
@@ -2474,7 +2680,7 @@ export default function AccountLedger({
                                     <Tip content="Recategorize the counter-split of selected transactions">
                                     <button
                                         onClick={() => setBulkRecatOpen(true)}
-                                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-muted hover:text-positive hover:border-positive/30 hover:bg-positive/10 transition-colors flex items-center"
+                                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-secondary hover:text-positive hover:border-positive/30 hover:bg-positive/10 transition-colors flex items-center"
                                     >
                                         Recategorize ({editSelectedGuids.size})
                                     </button>
@@ -2482,7 +2688,7 @@ export default function AccountLedger({
                                     <Tip content="Add or remove tags on selected transactions">
                                     <button
                                         onClick={() => setBulkTagsOpen(true)}
-                                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors flex items-center"
+                                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-secondary hover:text-foreground hover:bg-surface-hover transition-colors flex items-center"
                                     >
                                         Tags ({editSelectedGuids.size})
                                     </button>
@@ -2491,17 +2697,21 @@ export default function AccountLedger({
                             )}
                         </div>
                     )}
-                    {/* Reconcile: both entry points lead to the dedicated
-                        reconcile page; the old in-ledger panel flow is gone. */}
+                    {/* The account's one Reconcile entry point (also Alt+R and
+                        the mobile overflow menu); it opens the reconcile page. */}
+                    <Tip content="Reconcile this account against a statement (Alt+R)">
                     <button
+                        type="button"
                         onClick={() => router.push(`/accounts/${accountGuid}/reconcile`)}
-                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors flex items-center gap-2"
+                        className="px-3 py-2 min-h-[44px] text-xs rounded-lg border border-border text-foreground-secondary hover:text-foreground hover:bg-surface-hover transition-colors flex items-center gap-2"
                     >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
                         Reconcile
+                        <kbd className="font-mono text-[11px] text-foreground-muted">Alt+R</kbd>
                     </button>
+                    </Tip>
                 </div>
                 </>
                 )}
@@ -2542,7 +2752,7 @@ export default function AccountLedger({
                                 disabled={!isUnreviewed}
                                 onCommit={() => toggleReviewed(tx.guid)}
                             >
-                                <div className={`bg-surface/30 backdrop-blur p-3 space-y-2 border-b border-border/30 sm:border sm:border-border sm:rounded-lg ${isUnreviewed ? 'border-l-2 border-l-warning' : ''}`} onClick={() => { setSelectedTxGuid(tx.guid); setIsViewModalOpen(true); }}>
+                                <div className={`bg-surface p-3 space-y-2 border-b border-border/30 sm:border sm:border-border sm:rounded-lg ${isUnreviewed ? 'border-l-2 border-l-warning' : ''}`} onClick={() => { setSelectedTxGuid(tx.guid); setIsViewModalOpen(true); }}>
                                     <div className="flex justify-between items-start">
                                         <div>
                                             <div className="text-xs text-foreground-muted">
@@ -2553,49 +2763,8 @@ export default function AccountLedger({
                                                 {tx.description}
                                                 <ReceiptIndicator transactionGuid={tx.guid} transactionDescription={tx.description} receiptCount={tx.receipt_count ?? 0} />
                                                 <ExpenseReportBadge text={expenseBadges[tx.account_split_guid]} />
-                                                {tx.source && tx.source !== 'manual' && tx.match_type !== 'manual_reconciliation' && (
-                                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-warning/10 text-warning border border-warning/20 uppercase tracking-wider font-bold">Imported</span>
-                                                )}
-                                                {tx.match_type === 'manual_reconciliation' && (
-                                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 uppercase tracking-wider font-bold">Bank-verified</span>
-                                                )}
-                                                {(() => {
-                                                    const mLotSplit = tx.splits?.find(s => s.lot_guid && s.account_guid === accountGuid);
-                                                    const mAccountSplit = tx.splits?.find(s => s.account_guid === accountGuid);
-                                                    const mLotInfo = mLotSplit?.lot_guid ? lotMap.get(mLotSplit.lot_guid) : null;
-                                                    return (
-                                                        <>
-                                                            {mLotInfo && mLotSplit?.lot_guid && (
-                                                                <LotBadge
-                                                                    lotGuid={mLotSplit.lot_guid}
-                                                                    lotIndex={mLotInfo.index}
-                                                                    isClosed={mLotInfo.isClosed}
-                                                                    sharePrecision={sharePrecision}
-                                                                    tooltip={{
-                                                                        title: mLotInfo.title,
-                                                                        shares: mLotInfo.totalShares,
-                                                                        costBasis: mLotInfo.totalCost,
-                                                                        unrealizedGain: mLotInfo.unrealizedGain,
-                                                                        holdingPeriod: mLotInfo.holdingPeriod,
-                                                                        currencyMnemonic: accountCurrency,
-                                                                    }}
-                                                                />
-                                                            )}
-                                                            <LotAssignmentPopover
-                                                                splitGuid={mLotSplit?.guid || mAccountSplit?.guid || ''}
-                                                                currentLotGuid={mLotSplit?.lot_guid || null}
-                                                                lots={Array.from(lotMap.entries()).map(([guid, info]) => ({
-                                                                    guid,
-                                                                    title: info.title,
-                                                                    totalShares: info.totalShares,
-                                                                    isClosed: info.isClosed,
-                                                                }))}
-                                                                onAssign={handleSplitLotAssign}
-                                                                onCreateAndAssign={handleSplitCreateAndAssign}
-                                                            />
-                                                        </>
-                                                    );
-                                                })()}
+                                                {tx.match_type === 'manual_reconciliation' && <BankVerifiedMark />}
+                                                {renderLotControl(tx)}
                                             </div>
                                             <div className="text-xs text-foreground-muted">{invRow.transferAccount}</div>
                                         </div>
@@ -2637,7 +2806,7 @@ export default function AccountLedger({
                                             </span>
                                         )}
                                         <span>Bal: {invRow.shareBalance.toFixed(sharePrecision)}</span>
-                                        <span>Cost: {formatCurrency(invRow.costBasis, invRow.currencyMnemonic)}</span>
+                                        <span className="inline-flex items-center gap-1">Cost: <LedgerCostBasis row={invRow} /></span>
                                     </div>
                                 </div>
                             </SwipeableTransactionCard>
@@ -2647,47 +2816,73 @@ export default function AccountLedger({
                                 disabled={!isUnreviewed}
                                 onCommit={() => toggleReviewed(tx.guid)}
                             >
-                                <MobileCard
+                                {/* Compact two-line card, same shape as the investment
+                                    card: description + signed amount, then date \u00b7
+                                    transfer with the running balance on the right. The
+                                    receipt and R state are glyphs; attaching a receipt
+                                    and changing the R state live in the detail modal. */}
+                                <div
                                     onClick={() => { setSelectedTxGuid(tx.guid); setIsViewModalOpen(true); }}
-                                    className={isUnreviewed ? 'border-l-2 border-l-warning' : ''}
-                                    fields={[
-                                        { label: 'Date', value: new Date(tx.post_date).toLocaleDateString('en-US', { timeZone: 'UTC' }) },
-                                        { label: 'Receipts', value: <ReceiptIndicator transactionGuid={tx.guid} transactionDescription={tx.description} receiptCount={tx.receipt_count ?? 0} /> },
-                                        { label: 'Description', value: <span className="font-medium flex items-center gap-2">{tx.description}{tx.source && tx.source !== 'manual' && tx.match_type !== 'manual_reconciliation' && <span className="text-[9px] px-1.5 py-0.5 rounded bg-warning/10 text-warning border border-warning/20 uppercase tracking-wider font-bold">Imported</span>}{tx.match_type === 'manual_reconciliation' && <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 uppercase tracking-wider font-bold">Bank-verified</span>}</span> },
-                                        { label: 'Transfer', value: transferName },
-                                        ...(amount >= 0
-                                            ? [{ label: 'Debit', value: <span className="text-primary font-mono">{formatCurrency(amount, tx.commodity_mnemonic)}</span> }]
-                                            : [{ label: 'Credit', value: <span className="text-negative font-mono">{formatCurrency(Math.abs(amount), tx.commodity_mnemonic)}</span> }]
-                                        ),
-                                        { label: balancesIncludeAllActivity ? 'Balance (all activity)' : 'Balance', value: balanceValue !== null
-                                            ? <span className={`font-mono font-bold ${balanceValue < 0 ? 'text-negative' : 'text-positive'}`}>{formatCurrency(balanceValue, tx.commodity_mnemonic)}</span>
-                                            : <span className="text-foreground-muted">{'\u2014'}</span>
-                                        },
-                                        { label: 'Reconcile', value: <span className={`inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold ${reconcileInfo.color}`}>{reconcileInfo.icon}</span> },
-                                    ]}
-                                />
+                                    className={`bg-surface px-4 py-3 border-b border-border cursor-pointer active:bg-surface-hover ${isUnreviewed ? 'border-l-2 border-l-warning' : ''}`}
+                                >
+                                    <div className="flex items-baseline justify-between gap-3">
+                                        <span className="text-sm font-medium text-foreground truncate min-w-0">
+                                            {tx.description || <span className="text-foreground-muted">No description</span>}
+                                        </span>
+                                        <span className={`text-sm font-mono shrink-0 ${amount > 0 ? 'text-positive' : amount < 0 ? 'text-negative' : 'text-foreground-muted'}`}>
+                                            {amount > 0 ? '+' : ''}{formatCurrency(amount, tx.commodity_mnemonic)}
+                                        </span>
+                                    </div>
+                                    <div className="mt-1 flex items-center justify-between gap-3 text-xs">
+                                        <span className="flex items-center gap-1.5 min-w-0 text-foreground-secondary">
+                                            <span className="font-mono shrink-0">
+                                                {new Date(tx.post_date).toLocaleDateString('en-US', { timeZone: 'UTC' })}
+                                            </span>
+                                            {transferName && (
+                                                <>
+                                                    <span aria-hidden="true" className="text-foreground-muted">&middot;</span>
+                                                    <span className="truncate">{transferName}</span>
+                                                </>
+                                            )}
+                                            {tx.match_type === 'manual_reconciliation' && <BankVerifiedMark />}
+                                        </span>
+                                        <span className="flex items-center gap-1.5 shrink-0">
+                                            {(tx.receipt_count ?? 0) > 0 && (
+                                                <span className="inline-flex items-center text-primary">
+                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" />
+                                                    </svg>
+                                                    <span className="sr-only">{tx.receipt_count} receipt{tx.receipt_count !== 1 ? 's' : ''} attached</span>
+                                                </span>
+                                            )}
+                                            {tx.account_split_reconcile_state && tx.account_split_reconcile_state !== 'n' && (
+                                                <span className={`inline-flex items-center justify-center w-5 h-5 rounded text-xs font-bold ${reconcileInfo.color}`}>
+                                                    <span aria-hidden="true">{reconcileInfo.icon}</span>
+                                                    <span className="sr-only">{reconcileInfo.label}</span>
+                                                </span>
+                                            )}
+                                            {balanceValue !== null ? (
+                                                <span className={`font-mono ${balanceValue < 0 ? 'text-negative' : balanceValue > 0 ? 'text-positive' : 'text-foreground-muted'}`}>
+                                                    <span className="sr-only">{balancesIncludeAllActivity ? 'Balance, including activity hidden by filters: ' : 'Balance: '}</span>
+                                                    {formatCurrency(balanceValue, tx.commodity_mnemonic)}
+                                                </span>
+                                            ) : (
+                                                <span className="text-foreground-muted" aria-hidden="true">{'\u2014'}</span>
+                                            )}
+                                        </span>
+                                    </div>
+                                </div>
                             </SwipeableTransactionCard>
                         );
                     })}
-                    <div ref={loader} className="p-8 flex justify-center border-t border-border/50">
-                        {loading ? (
-                            <div className="flex items-center gap-3">
-                                <div className="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-                                <span className="text-xs text-foreground-muted uppercase tracking-widest">Updating Ledger...</span>
-                            </div>
-                        ) : hasMore ? (
-                            <span className="text-xs text-foreground-muted uppercase tracking-widest animate-pulse">Scroll for history</span>
-                        ) : (
-                            <span className="text-xs text-foreground-muted uppercase tracking-widest font-bold">End of Records</span>
-                        )}
-                    </div>
+                    {ledgerFooter}
                 </div>
             ) : (
             <div className="overflow-x-auto">
                 <table ref={tableRef} className="w-full text-left border-collapse">
                     <thead>
                         {table.getHeaderGroups().map(headerGroup => (
-                            <tr key={headerGroup.id} className="bg-background-secondary/50 text-foreground-secondary text-[10px] uppercase tracking-[0.2em] font-bold">
+                            <tr key={headerGroup.id} className="bg-background-secondary/50 text-foreground-secondary text-xs uppercase tracking-wider font-semibold">
                                 {headerGroup.headers.map(header => {
                                     const colId = header.column.id;
                                     if (colId === 'select') return (
@@ -2708,20 +2903,20 @@ export default function AccountLedger({
                                     );
                                     if (colId === 'expand') return <th key={header.id} className="px-1 py-2 w-7"></th>;
                                     if (colId === 'reconcile') return <th key={header.id} className="px-3 py-2 w-10">R</th>;
-                                    if (colId === 'date') return <th key={header.id} className="px-4 py-2">Date</th>;
+                                    if (colId === 'date') return <th key={header.id} className="px-3 py-2">Date</th>;
                                     if (colId === 'description') return <th key={header.id} className="px-4 py-2">Description</th>;
-                                    if (colId === 'transfer') return <th key={header.id} className="px-4 py-2">{isInvestmentAccount ? 'Transfer' : 'Transfer / Splits'}</th>;
+                                    if (colId === 'transfer') return <th key={header.id} className={isInvestmentAccount && !showSubaccounts ? 'px-3 py-2' : 'px-4 py-2'}>{isInvestmentAccount ? 'Transfer' : 'Transfer / Splits'}</th>;
                                     if (colId === 'debit') return <th key={header.id} className="px-4 py-2 text-right">Debit</th>;
                                     if (colId === 'credit') return <th key={header.id} className="px-4 py-2 text-right">Credit</th>;
                                     if (colId === 'balance') return <th key={header.id} className="px-4 py-2 text-right">{balancesIncludeAllActivity ? <>Balance (all activity)<span className="sr-only">. Balances include transactions hidden by the active filters.</span></> : 'Balance'}</th>;
-                                    if (colId === 'shares') return <th key={header.id} className="px-4 py-2 text-right">Shares</th>;
-                                    if (colId === 'price') return <th key={header.id} className="px-4 py-2 text-right">Price</th>;
-                                    if (colId === 'buy') return <th key={header.id} className="px-4 py-2 text-right">Buy</th>;
-                                    if (colId === 'sell') return <th key={header.id} className="px-4 py-2 text-right">Sell</th>;
-                                    if (colId === 'shareBalance') return <th key={header.id} className="px-4 py-2 text-right">Share Bal</th>;
-                                    if (colId === 'costBasis') return <th key={header.id} className="px-4 py-2 text-right">Cost Basis</th>;
-                                    if (colId === 'receipt') return <th key={header.id} className="px-2 py-2 w-10"></th>;
-                                    if (colId === 'actions') return <th key={header.id} className="px-2 py-2 w-10"></th>;
+                                    if (colId === 'shares') return <th key={header.id} className="px-3 py-2 text-right whitespace-nowrap">Shares</th>;
+                                    if (colId === 'price') return <th key={header.id} className="px-3 py-2 text-right whitespace-nowrap">Price</th>;
+                                    if (colId === 'buy') return <th key={header.id} className="px-3 py-2 text-right whitespace-nowrap">Buy</th>;
+                                    if (colId === 'sell') return <th key={header.id} className="px-3 py-2 text-right whitespace-nowrap">Sell</th>;
+                                    if (colId === 'shareBalance') return <th key={header.id} className="px-3 py-2 text-right whitespace-nowrap">Share Bal</th>;
+                                    if (colId === 'costBasis') return <th key={header.id} className="px-3 py-2 text-right whitespace-nowrap">Cost Basis</th>;
+                                    if (colId === 'receipt') return <th key={header.id} className={`px-2 py-2 w-10${fillerClass(colId)}`}></th>;
+                                    if (colId === 'actions') return <th key={header.id} className={`px-2 py-2 w-10${fillerClass(colId)}`}></th>;
                                     return <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>;
                                 })}
                             </tr>
@@ -3104,7 +3299,7 @@ export default function AccountLedger({
 
                                             if (colId === 'date') {
                                                 return (
-                                                    <td key={cell.id} className="px-4 py-2 whitespace-nowrap text-[11px] text-foreground-secondary align-middle font-mono">
+                                                    <td key={cell.id} className="px-3 py-2 whitespace-nowrap text-xs text-foreground-secondary align-middle font-mono">
                                                         {new Date(tx.post_date).toLocaleDateString('en-US', { timeZone: 'UTC' })}
                                                     </td>
                                                 );
@@ -3112,70 +3307,40 @@ export default function AccountLedger({
 
                                             if (colId === 'description') {
                                                 const descInvRow = isInvestmentAccount ? investmentRowMap?.get(tx.guid) : null;
-                                                const lotSplit = isInvestmentAccount ? tx.splits?.find(s => s.lot_guid && s.account_guid === accountGuid) : null;
-                                                const accountSplit = isInvestmentAccount ? tx.splits?.find(s => s.account_guid === accountGuid) : null;
-                                                const lotInfo = lotSplit?.lot_guid ? lotMap.get(lotSplit.lot_guid) : null;
+                                                // One line per row: the description truncates (full
+                                                // text in the Tip) and the chips keep their size. On
+                                                // the investment table (eleven columns) Description
+                                                // takes only the width the numeric columns leave
+                                                // (w-full + max-w-0), so Share Bal / Cost Basis never
+                                                // scroll off a ~1118px container; the bank ledger has
+                                                // room for a plain cap.
                                                 return (
-                                                    <td key={cell.id} className="px-4 py-2 text-sm text-foreground align-middle leading-tight">
-                                                        <div className="flex items-center gap-2">
+                                                    <td key={cell.id} className="px-4 py-2 text-sm text-foreground align-middle leading-tight w-full max-w-0 min-[1800px]:w-auto min-[1800px]:max-w-none">
+                                                        <div className="flex items-center gap-2 min-w-0 min-[1800px]:max-w-[36rem]">
                                                             {descInvRow && (
-                                                                <TransactionTypeIcon type={descInvRow.transactionType} className="mr-0.5" />
+                                                                <TransactionTypeIcon type={descInvRow.transactionType} className="mr-0.5 shrink-0" />
                                                             )}
-                                                            <span className="font-medium">{tx.description}</span>
+                                                            {isInvestmentAccount && (
+                                                                <span className="shrink-0">{renderLotControl(tx)}</span>
+                                                            )}
+                                                            <Tip content={tx.description || undefined}>
+                                                            <span className="font-medium truncate min-w-0">{tx.description}</span>
+                                                            </Tip>
+                                                            {tx.num && <span className="text-xs text-foreground-muted font-mono shrink-0">#{tx.num}</span>}
                                                             {tx.tags && tx.tags.length > 0 && tx.tags.map(tag => (
-                                                                <TagChip key={tag.id} name={tag.name} color={tag.color} title={`#${tag.name}`} />
+                                                                <TagChip key={tag.id} name={tag.name} color={tag.color} size="sm" className="shrink-0" title={`#${tag.name}`} />
                                                             ))}
                                                             <CommentCountBadge count={commentCounts[tx.guid] ?? 0} />
                                                             <ExpenseReportBadge text={expenseBadges[tx.account_split_guid]} />
-                                                            {tx.source && tx.source !== 'manual' && tx.match_type !== 'manual_reconciliation' && (
-                                                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-warning/10 text-warning border border-warning/20 uppercase tracking-wider font-bold">
-                                                                    Imported
-                                                                </span>
-                                                            )}
-                                                            {tx.match_type === 'manual_reconciliation' && (
-                                                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 uppercase tracking-wider font-bold">
-                                                                    Bank-verified
-                                                                </span>
-                                                            )}
-                                                            {lotInfo && lotSplit?.lot_guid && (
-                                                                <LotBadge
-                                                                    lotGuid={lotSplit.lot_guid}
-                                                                    lotIndex={lotInfo.index}
-                                                                    isClosed={lotInfo.isClosed}
-                                                                    sharePrecision={sharePrecision}
-                                                                    tooltip={{
-                                                                        title: lotInfo.title,
-                                                                        shares: lotInfo.totalShares,
-                                                                        costBasis: lotInfo.totalCost,
-                                                                        unrealizedGain: lotInfo.unrealizedGain,
-                                                                        holdingPeriod: lotInfo.holdingPeriod,
-                                                                        currencyMnemonic: accountCurrency,
-                                                                    }}
-                                                                />
-                                                            )}
-                                                            {isInvestmentAccount && (
-                                                                <LotAssignmentPopover
-                                                                    splitGuid={lotSplit?.guid || accountSplit?.guid || ''}
-                                                                    currentLotGuid={lotSplit?.lot_guid || null}
-                                                                    lots={Array.from(lotMap.entries()).map(([guid, info]) => ({
-                                                                        guid,
-                                                                        title: info.title,
-                                                                        totalShares: info.totalShares,
-                                                                        isClosed: info.isClosed,
-                                                                    }))}
-                                                                    onAssign={handleSplitLotAssign}
-                                                                    onCreateAndAssign={handleSplitCreateAndAssign}
-                                                                />
-                                                            )}
+                                                            {tx.match_type === 'manual_reconciliation' && <BankVerifiedMark />}
                                                         </div>
                                                         {originalPayeeLine(tx) && (
                                                             <Tip content={originalPayeeLine(tx) ?? undefined}>
-                                                            <div className="text-[11px] text-foreground-muted truncate">
+                                                            <div className="text-xs text-foreground-muted truncate min-[1800px]:max-w-[36rem]">
                                                                 Imported as &ldquo;{originalPayeeLine(tx)}&rdquo;
                                                             </div>
                                                             </Tip>
                                                         )}
-                                                        {tx.num && <span className="text-[10px] text-foreground-muted font-mono">#{tx.num}</span>}
                                                     </td>
                                                 );
                                             }
@@ -3185,9 +3350,13 @@ export default function AccountLedger({
                                                     const invRow = investmentRowMap?.get(tx.guid);
                                                     const jumpSplit = otherSplits[0];
                                                     return (
-                                                        <td key={cell.id} className="px-4 py-2 text-sm text-foreground-secondary align-middle leading-tight">
-                                                            <span className="flex items-center gap-1 text-xs whitespace-normal break-words min-w-0">
-                                                                {invRow?.transferAccount || '\u2014'}
+                                                        <td key={cell.id} className="px-3 py-2 text-sm text-foreground-secondary align-middle leading-tight">
+                                                            <span className="flex items-center gap-1 text-xs min-w-0 max-w-[9rem] min-[1800px]:max-w-[16rem]">
+                                                                {invRow?.transferAccount ? (
+                                                                    <Tip content={formatDisplayAccountPath(invRow.transferAccount)}>
+                                                                    <span className="truncate min-w-0">{formatDisplayAccountPath(invRow.transferAccount)}</span>
+                                                                    </Tip>
+                                                                ) : '\u2014'}
                                                                 {jumpSplit && jumpSplit.account_guid !== accountGuid && (
                                                                     <JumpToAccountButton
                                                                         accountGuid={jumpSplit.account_guid}
@@ -3202,12 +3371,14 @@ export default function AccountLedger({
                                                 // Sub-accounts mode: always show all splits with amounts
                                                 if (showSubaccounts) {
                                                     return (
-                                                        <td key={cell.id} className="px-4 py-2 text-sm align-middle">
+                                                        <td key={cell.id} className="px-4 py-2 text-sm align-middle max-w-[20rem]">
                                                             <div className="space-y-1">
                                                                 {otherSplits.map((split) => (
                                                                     <div key={split.guid} className="flex justify-between items-center text-xs">
-                                                                        <span className="flex items-center gap-1 text-foreground-secondary whitespace-normal break-words min-w-0">
-                                                                            {formatDisplayAccountPath(split.account_fullname, split.account_name)}
+                                                                        <span className="flex items-center gap-1 text-foreground-secondary min-w-0">
+                                                                            <Tip content={formatDisplayAccountPath(split.account_fullname, split.account_name)}>
+                                                                            <span className="truncate min-w-0">{formatDisplayAccountPath(split.account_fullname, split.account_name)}</span>
+                                                                            </Tip>
                                                                             {split.account_guid !== accountGuid && (
                                                                                 <JumpToAccountButton
                                                                                     accountGuid={split.account_guid}
@@ -3227,20 +3398,23 @@ export default function AccountLedger({
 
                                                 return (
                                                     <td key={cell.id} className="px-4 py-2 text-sm align-middle">
+                                                        <div className="max-w-[14rem] min-[1800px]:max-w-[20rem]">
                                                         {isMultiSplit && !isExpanded ? (
                                                             <button
                                                                 onClick={() => toggleExpand(tx.guid)}
                                                                 className="text-foreground-muted hover:text-primary transition-colors flex items-center gap-1 italic text-xs"
                                                             >
-                                                                <span>-- Multiple Splits --</span>
-                                                                <span className="text-[10px]">&#9660;</span>
+                                                                <span className="whitespace-nowrap">-- Multiple Splits --</span>
+                                                                <span className="text-xs" aria-hidden="true">&#9660;</span>
                                                             </button>
                                                         ) : (
                                                             <div className="space-y-1">
                                                                 {otherSplits.map((split) => (
                                                                     <div key={split.guid} className="flex justify-between items-center text-xs">
-                                                                        <span className="flex items-center gap-1 text-foreground-secondary whitespace-normal break-words min-w-0">
-                                                                            {formatDisplayAccountPath(split.account_fullname, split.account_name)}
+                                                                        <span className="flex items-center gap-1 text-foreground-secondary min-w-0">
+                                                                            <Tip content={formatDisplayAccountPath(split.account_fullname, split.account_name)}>
+                                                                            <span className="truncate min-w-0">{formatDisplayAccountPath(split.account_fullname, split.account_name)}</span>
+                                                                            </Tip>
                                                                             {split.account_guid !== accountGuid && (
                                                                                 <JumpToAccountButton
                                                                                     accountGuid={split.account_guid}
@@ -3258,20 +3432,21 @@ export default function AccountLedger({
                                                                 {isMultiSplit && isExpanded && (
                                                                     <button
                                                                         onClick={() => toggleExpand(tx.guid)}
-                                                                        className="text-primary/50 hover:text-primary transition-colors text-[10px] mt-1"
+                                                                        className="text-primary/70 hover:text-primary transition-colors text-xs mt-1"
                                                                     >
                                                                         &#9650; Show less
                                                                     </button>
                                                                 )}
                                                             </div>
                                                         )}
+                                                        </div>
                                                     </td>
                                                 );
                                             }
 
                                             if (colId === 'debit') {
                                                 return (
-                                                    <td key={cell.id} className="px-4 py-2 text-sm font-mono text-right align-middle text-positive">
+                                                    <td key={cell.id} className="px-4 py-2 text-sm font-mono text-right align-middle whitespace-nowrap text-positive">
                                                         {amount >= 0 ? formatCurrency(amount, tx.commodity_mnemonic) : ''}
                                                     </td>
                                                 );
@@ -3279,16 +3454,20 @@ export default function AccountLedger({
 
                                             if (colId === 'credit') {
                                                 return (
-                                                    <td key={cell.id} className="px-4 py-2 text-sm font-mono text-right align-middle text-negative">
+                                                    <td key={cell.id} className="px-4 py-2 text-sm font-mono text-right align-middle whitespace-nowrap text-negative">
                                                         {amount < 0 ? formatCurrency(Math.abs(amount), tx.commodity_mnemonic) : ''}
                                                     </td>
                                                 );
                                             }
 
                                             if (colId === 'balance') {
+                                                // Positive green, negative red, exactly zero muted.
+                                                const balance = tx.running_balance
+                                                    ? applyBalanceReversal(parseFloat(tx.running_balance), accountType, balanceReversal)
+                                                    : null;
                                                 return (
-                                                    <td key={cell.id} className={`px-4 py-2 text-sm font-mono text-right align-middle font-bold ${tx.running_balance ? (applyBalanceReversal(parseFloat(tx.running_balance), accountType, balanceReversal) < 0 ? 'text-negative' : 'text-positive') : 'text-foreground-muted'}`}>
-                                                        {tx.running_balance ? formatCurrency(applyBalanceReversal(parseFloat(tx.running_balance), accountType, balanceReversal), tx.commodity_mnemonic) : '\u2014'}
+                                                    <td key={cell.id} className={`px-4 py-2 text-sm font-mono text-right align-middle whitespace-nowrap font-semibold ${balance === null || balance === 0 ? 'text-foreground-muted' : balance < 0 ? 'text-negative' : 'text-positive'}`}>
+                                                        {balance !== null ? formatCurrency(balance, tx.commodity_mnemonic) : '\u2014'}
                                                     </td>
                                                 );
                                             }
@@ -3299,7 +3478,7 @@ export default function AccountLedger({
 
                                                 if (colId === 'shares') {
                                                     return (
-                                                        <td key={cell.id} className="px-4 py-2 text-sm font-mono text-right align-middle">
+                                                        <td key={cell.id} className="px-3 py-2 text-sm font-mono text-right align-middle whitespace-nowrap">
                                                             {invRow?.shares != null ? (
                                                                 <span className={invRow.shares > 0 ? 'text-positive' : 'text-negative'}>
                                                                     {invRow.shares.toFixed(sharePrecision)}
@@ -3313,7 +3492,7 @@ export default function AccountLedger({
 
                                                 if (colId === 'price') {
                                                     return (
-                                                        <td key={cell.id} className="px-4 py-2 text-sm font-mono text-right align-middle">
+                                                        <td key={cell.id} className="px-3 py-2 text-sm font-mono text-right align-middle whitespace-nowrap">
                                                             {invRow?.price != null ? (
                                                                 <span className="text-foreground">
                                                                     {formatCurrency(invRow.price, invRow.currencyMnemonic)}
@@ -3333,7 +3512,7 @@ export default function AccountLedger({
                                                         && invRow.gainAmount !== null && invRow.gainAmount >= 0
                                                         ? invRow.gainAmount : null;
                                                     return (
-                                                        <td key={cell.id} className="px-4 py-2 text-sm font-mono text-right align-middle">
+                                                        <td key={cell.id} className="px-3 py-2 text-sm font-mono text-right align-middle whitespace-nowrap">
                                                             {invRow?.buyAmount != null ? (
                                                                 <span className="text-positive">
                                                                     {formatCurrency(invRow.buyAmount, invRow.currencyMnemonic)}
@@ -3356,7 +3535,7 @@ export default function AccountLedger({
                                                         && invRow.gainAmount !== null && invRow.gainAmount < 0
                                                         ? Math.abs(invRow.gainAmount) : null;
                                                     return (
-                                                        <td key={cell.id} className="px-4 py-2 text-sm font-mono text-right align-middle">
+                                                        <td key={cell.id} className="px-3 py-2 text-sm font-mono text-right align-middle whitespace-nowrap">
                                                             {invRow?.sellAmount != null ? (
                                                                 <span className="text-negative">
                                                                     {formatCurrency(invRow.sellAmount, invRow.currencyMnemonic)}
@@ -3376,7 +3555,7 @@ export default function AccountLedger({
 
                                                 if (colId === 'shareBalance') {
                                                     return (
-                                                        <td key={cell.id} className="px-4 py-2 text-sm font-mono text-right align-middle font-bold text-foreground">
+                                                        <td key={cell.id} className="px-3 py-2 text-sm font-mono text-right align-middle whitespace-nowrap font-semibold text-foreground">
                                                             {invRow ? invRow.shareBalance.toFixed(sharePrecision) : '\u2014'}
                                                         </td>
                                                     );
@@ -3384,8 +3563,8 @@ export default function AccountLedger({
 
                                                 if (colId === 'costBasis') {
                                                     return (
-                                                        <td key={cell.id} className="px-4 py-2 text-sm font-mono text-right align-middle font-bold text-foreground">
-                                                            {invRow ? formatCurrency(invRow.costBasis, invRow.currencyMnemonic) : '\u2014'}
+                                                        <td key={cell.id} className="px-3 py-2 text-sm font-mono text-right align-middle whitespace-nowrap text-foreground">
+                                                            {invRow ? <LedgerCostBasis row={invRow} /> : <span className="text-foreground-muted">&ndash;</span>}
                                                         </td>
                                                     );
                                                 }
@@ -3393,7 +3572,10 @@ export default function AccountLedger({
 
                                             if (colId === 'receipt') {
                                                 return (
-                                                    <td key={cell.id} className="px-1 py-1 align-middle" onClick={(e) => e.stopPropagation()}>
+                                                    // The indicator is a 44px touch target; on the desktop
+                                                    // register that alone set a ~53px row pitch, so it is
+                                                    // trimmed to 28px here (mobile cards don't use it).
+                                                    <td key={cell.id} className={`px-1 py-0 align-middle [&>button]:min-h-7 [&>button]:min-w-7${fillerClass(colId)}`} onClick={(e) => e.stopPropagation()}>
                                                         <ReceiptIndicator
                                                             transactionGuid={tx.guid}
                                                             transactionDescription={tx.description}
@@ -3403,7 +3585,7 @@ export default function AccountLedger({
                                                 );
                                             }
 
-                                            return <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>;
+                                            return <td key={cell.id} className={fillerClass(colId).trim() || undefined}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>;
                                         })}
                                     </tr>
                                     {showSplitRows && tx.splits && tx.splits.length > 0 && (
@@ -3452,18 +3634,7 @@ export default function AccountLedger({
                     </div>
                 )}
 
-                <div ref={loader} className="p-8 flex justify-center border-t border-border/50">
-                    {loading ? (
-                        <div className="flex items-center gap-3">
-                            <div className="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-                            <span className="text-xs text-foreground-muted uppercase tracking-widest">Updating Ledger...</span>
-                        </div>
-                    ) : hasMore ? (
-                        <span className="text-xs text-foreground-muted uppercase tracking-widest animate-pulse">Scroll for history</span>
-                    ) : (
-                        <span className="text-xs text-foreground-muted uppercase tracking-widest font-bold">End of Records</span>
-                    )}
-                </div>
+                {ledgerFooter}
             </div>
             )}
 
@@ -3646,7 +3817,7 @@ export default function AccountLedger({
                             }
                             setImbalanceDialogTx(null);
                         }}
-                        className="px-3 py-2 text-sm rounded-lg border border-border text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors"
+                        className="px-3 py-2 text-sm rounded-lg border border-border text-foreground-secondary hover:text-foreground hover:bg-surface-hover transition-colors"
                     >
                         Revert Changes
                     </button>

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { generatePeriods } from '@/lib/datePresets';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { DATE_PRESETS, generatePeriods } from '@/lib/datePresets';
 
 describe('generatePeriods', () => {
   it('generates monthly periods across a full year', () => {
@@ -46,5 +46,25 @@ describe('generatePeriods', () => {
     const periods = generatePeriods(start, end, 'month');
     expect(periods.map(p => p.label)).toEqual(['Apr 2026', 'May 2026', 'Jun 2026']);
     expect(periods[0].startDate).toBe('2026-04-01');
+  });
+});
+
+describe('DATE_PRESETS', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('offers trailing 2, 3 and 5 year windows ending today', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-02T12:00:00'));
+    const byShort = new Map(DATE_PRESETS.map(p => [p.short, p]));
+    expect(byShort.get('2Y')?.getValue()).toEqual({ startDate: '2024-11-03', endDate: '2026-11-02' });
+    expect(byShort.get('3Y')?.getValue()).toEqual({ startDate: '2023-11-03', endDate: '2026-11-02' });
+    expect(byShort.get('5Y')?.getValue()).toEqual({ startDate: '2021-11-03', endDate: '2026-11-02' });
+    expect(byShort.get('5Y')?.label).toBe('Last 5 Years');
+  });
+
+  it('gives every preset a unique compact label', () => {
+    const shorts = DATE_PRESETS.map(p => p.short);
+    expect(new Set(shorts).size).toBe(shorts.length);
+    expect(shorts.every(s => s.length > 0 && s.length <= 4)).toBe(true);
   });
 });

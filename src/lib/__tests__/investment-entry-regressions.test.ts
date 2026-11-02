@@ -128,6 +128,31 @@ describe('investment split construction', () => {
         expect(splits.reduce((sum, split) => sum + valueOf(split), 0)).toBe(0);
     });
 
+    it('builds a fee paid in shares as a sell whose proceeds are the expense, with no cash split', () => {
+        // Mirrors a real 401k participant fee: 0.0370 FXAIX redeemed for $10.00.
+        const splits = buildInvestmentSplits({
+            ...BASE_INPUT,
+            action: 'Fee',
+            commodityFraction: 10_000,
+            shares: 0.037,
+            total: 10,
+            commission: 5, // ignored: a fee has no separate commission leg
+        });
+
+        expect(splits).toHaveLength(2);
+        expect(splits.find((split) => split.account_guid === 'cash')).toBeUndefined();
+        expect(splits.find((split) => split.account_guid === 'stock')).toMatchObject({
+            action: 'Sell',
+            quantity_num: -370,
+            quantity_denom: 10_000,
+            value_num: -1_000,
+            value_denom: 100,
+        });
+        expect(valueOf(splits.find((split) => split.account_guid === 'fees')!)).toBe(10);
+        expect(splits.reduce((sum, split) => sum + valueOf(split), 0)).toBe(0);
+        expect(() => assertValueBalanced(withTradingSplits(splits))).not.toThrow();
+    });
+
     it('builds a reinvested dividend as shares bought from income with no cash split', () => {
         const splits = buildInvestmentSplits({
             ...BASE_INPUT,

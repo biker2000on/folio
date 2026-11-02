@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { resolveFeatureForPath } from '@/lib/docs-reference';
+import { Tip } from '@/components/ui/Tooltip';
 
 export function ContextualHelpLink() {
   const pathname = usePathname();
@@ -11,12 +12,12 @@ export function ContextualHelpLink() {
   const label = feature ? `Help for ${feature.title}` : 'Open documentation';
 
   return (
+    <Tip content={label} describedBy={false}>
     <Link
       href={href}
       target="_blank"
       rel="noreferrer"
       aria-label={label}
-      title={label}
       className="inline-flex min-h-9 items-center gap-2 rounded-md border border-border px-2.5 text-sm font-medium text-foreground-secondary transition-colors duration-150 hover:border-border-hover hover:bg-surface-hover hover:text-foreground"
     >
       <svg
@@ -33,5 +34,6 @@ export function ContextualHelpLink() {
       </svg>
       <span className="hidden lg:inline">Help</span>
     </Link>
+    </Tip>
   );
 }

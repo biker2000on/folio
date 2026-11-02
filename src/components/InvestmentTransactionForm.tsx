@@ -16,7 +16,7 @@ import { ErrorLiveRegion } from '@/components/a11y/LiveRegion';
 import { extractErrorMessage } from '@/lib/api-error';
 import { Tip } from '@/components/ui/Tooltip';
 
-export type InvestmentAction = 'Buy' | 'Sell' | 'Dividend' | 'Reinvest' | 'ReturnOfCapital' | 'Split';
+export type InvestmentAction = 'Buy' | 'Sell' | 'Fee' | 'Dividend' | 'Reinvest' | 'ReturnOfCapital' | 'Split';
 
 export interface InvestmentSplitInput {
     action: InvestmentAction;
@@ -76,6 +76,7 @@ const INITIAL_FORM_STATE: FormState = {
 const ACTION_OPTIONS: { value: InvestmentAction; label: string; description: string }[] = [
     { value: 'Buy', label: 'Buy', description: 'Purchase shares' },
     { value: 'Sell', label: 'Sell', description: 'Sell shares' },
+    { value: 'Fee', label: 'Fee', description: 'Shares redeemed to pay a fee (e.g. a 401k participant fee)' },
     { value: 'Dividend', label: 'Dividend', description: 'Cash dividend received' },
     { value: 'Reinvest', label: 'Reinvest', description: 'Dividend reinvested in shares (DRIP)' },
     { value: 'ReturnOfCapital', label: 'Return of Capital', description: 'Reduce cost basis' },
@@ -87,7 +88,8 @@ const ACTION_OPTIONS: { value: InvestmentAction; label: string; description: str
  *
  * Value signs follow double-entry accounting independently from quantity:
  * buying increases the security asset and decreases cash; selling decreases
- * the security asset and increases cash.
+ * the security asset and increases cash. A fee is a sale whose proceeds go
+ * straight to an expense account instead of cash.
  */
 export function buildInvestmentSplits(input: InvestmentSplitInput): CreateTransactionRequest['splits'] {
     const {
@@ -178,6 +180,31 @@ export function buildInvestmentSplits(input: InvestmentSplitInput): CreateTransa
                     value_denom: commDenom,
                 });
             }
+            break;
+        }
+
+        // Fee paid in shares (401k participant/admin fees): a Sell of the
+        // security whose proceeds are the expense — no cash leg. Lot handling
+        // and realized gain/loss are the same as any other Sell.
+        case 'Fee': {
+            const { num: valueNum, denom: valueDenom } = toNumDenom(total);
+            splits.push({
+                account_guid: accountGuid,
+                action: 'Sell',
+                quantity_num: -Math.round(shares * commodityFraction),
+                quantity_denom: commodityFraction,
+                value_num: -valueNum,
+                value_denom: valueDenom,
+                memo: memo || undefined,
+            });
+            splits.push({
+                account_guid: expenseAccountGuid,
+                action: '',
+                quantity_num: valueNum,
+                quantity_denom: valueDenom,
+                value_num: valueNum,
+                value_denom: valueDenom,
+            });
             break;
         }
 
@@ -462,7 +489,8 @@ export function InvestmentTransactionForm({
 
         switch (form.action) {
             case 'Buy':
-            case 'Sell': {
+            case 'Sell':
+            case 'Fee': {
                 const shares = parseFloat(form.shares);
                 if (!form.shares || shares <= 0) {
                     errs.push('Shares must be a positive number');
@@ -474,18 +502,24 @@ export function InvestmentTransactionForm({
                 if (total <= 0) {
                     errs.push('Total must be a positive number');
                 }
-                if (!form.cashAccountGuid) {
-                    errs.push('Cash account is required');
-                }
-                if ((parseFloat(form.commission) || 0) > 0 && !form.expenseAccountGuid) {
-                    errs.push('An expense account is required when commission or fees are entered');
+                if (form.action === 'Fee') {
+                    if (!form.expenseAccountGuid) {
+                        errs.push('Fee expense account is required');
+                    }
+                } else {
+                    if (!form.cashAccountGuid) {
+                        errs.push('Cash account is required');
+                    }
+                    if ((parseFloat(form.commission) || 0) > 0 && !form.expenseAccountGuid) {
+                        errs.push('An expense account is required when commission or fees are entered');
+                    }
                 }
                 if (
-                    form.action === 'Sell'
+                    form.action !== 'Buy'
                     && shares > Math.max(0, currentShares) + (0.5 / commodityFraction)
                 ) {
                     errs.push(
-                        `Cannot sell ${shares.toFixed(sharePrecision)} shares; `
+                        `Cannot ${form.action === 'Fee' ? 'redeem' : 'sell'} ${shares.toFixed(sharePrecision)} shares; `
                         + `${Math.max(0, currentShares).toFixed(sharePrecision)} are available`,
                     );
                 }
@@ -592,6 +626,9 @@ export function InvestmentTransactionForm({
                 break;
             case 'Sell':
                 description = `Sell ${form.shares} ${commoditySymbol} @ ${form.pricePerShare}`;
+                break;
+            case 'Fee':
+                description = `Fee: ${form.shares} ${commoditySymbol} @ ${form.pricePerShare}`;
                 break;
             case 'Dividend':
                 description = `Dividend: ${commoditySymbol}`;
@@ -707,7 +744,7 @@ export function InvestmentTransactionForm({
                 <label className="block text-xs text-foreground-muted uppercase tracking-wider mb-2">
                     Transaction Type
                 </label>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {ACTION_OPTIONS.map(option => (
                         <Tip content={option.description} key={option.value}>
                         <button
@@ -756,7 +793,7 @@ export function InvestmentTransactionForm({
             </div>
 
             {/* Buy/Sell/Reinvest Fields */}
-            {(form.action === 'Buy' || form.action === 'Sell' || form.action === 'Reinvest') && (
+            {(form.action === 'Buy' || form.action === 'Sell' || form.action === 'Fee' || form.action === 'Reinvest') && (
                 <>
                     <FieldGrid>
                         <div>
@@ -825,7 +862,7 @@ export function InvestmentTransactionForm({
                                     ? 'text-primary'
                                     : 'text-foreground-muted'
                             }`}>
-                                {form.action === 'Reinvest' ? 'Dividend Amount' : 'Total'} {getCalculatedField() === 'total' && '(auto)'}
+                                {form.action === 'Reinvest' ? 'Dividend Amount' : form.action === 'Fee' ? 'Fee Amount' : 'Total'} {getCalculatedField() === 'total' && '(auto)'}
                             </label>
                             <input
                                 type="number"
@@ -853,6 +890,18 @@ export function InvestmentTransactionForm({
                                 onChange={(guid) => handleAccountSelect('incomeAccountGuid', guid)}
                                 placeholder="Select income account..."
                                 accountTypes={['INCOME']}
+                            />
+                        </div>
+                    ) : form.action === 'Fee' ? (
+                        <div>
+                            <label className="block text-xs text-foreground-muted uppercase tracking-wider mb-1">
+                                Fee Expense Account
+                            </label>
+                            <AccountSelector
+                                value={form.expenseAccountGuid}
+                                onChange={(guid) => handleAccountSelect('expenseAccountGuid', guid)}
+                                placeholder="Select expense account..."
+                                accountTypes={['EXPENSE']}
                             />
                         </div>
                     ) : (

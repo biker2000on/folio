@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
     ColumnDef,
@@ -15,7 +15,7 @@ import {
 } from '@tanstack/react-table';
 import { AccountWithChildren } from '@/lib/types';
 import { useIsMobile } from '@/lib/hooks/useIsMobile';
-import { formatCurrency, applyBalanceReversal, BalanceReversal } from '@/lib/format';
+import { formatCurrency, applyBalanceReversal, amountToneClass, BalanceReversal } from '@/lib/format';
 import { formatDateForDisplay } from '@/lib/date-format';
 import { useUserPreferences } from '@/contexts/UserPreferencesContext';
 import { useInvalidateAccounts } from '@/lib/hooks/useAccounts';
@@ -24,7 +24,9 @@ import { useReviewStatus } from '@/lib/hooks/useReviewStatus';
 import { useHouseholdNames } from '@/lib/hooks/useHouseholdNames';
 import type { ReviewStatusMap } from '@/app/api/accounts/review-status/route';
 import { Modal } from './ui/Modal';
-import { FilterBar } from './ui/FilterBar';
+import { inputClass, TNUM } from './ui/form';
+import { CheckboxBox } from './ui/CheckboxChip';
+import { Segmented } from './investments/ui';
 import { AccountForm } from './AccountForm';
 import SimpleFinSyncIndicator from './SimpleFinSyncIndicator';
 import { TransactionContextMenu, type TransactionContextMenuItem } from '@/components/ledger/TransactionContextMenu';
@@ -39,6 +41,19 @@ interface TagWithAccounts extends Tag {
 }
 
 type SortKey = 'name' | 'total_balance' | 'period_balance';
+type SortDir = 'asc' | 'desc';
+
+/** Column header → sort key, for the columns that sort on click. */
+const SORT_KEY_BY_COLUMN: Partial<Record<string, SortKey>> = {
+    accountName: 'name',
+    periodBalance: 'period_balance',
+    totalBalanceUsd: 'total_balance',
+};
+
+/** Names read A→Z first; balances read largest first. */
+function defaultSortDir(key: SortKey): SortDir {
+    return key === 'name' ? 'asc' : 'desc';
+}
 
 type ColumnId =
     | 'accountName'
@@ -87,7 +102,7 @@ const DEFAULT_COLUMN_VISIBILITY: VisibilityState = {
     accountName: true,
     periodBalance: true,
     totalBalanceUsd: true,
-    totalBalanceCommodity: true,
+    totalBalanceCommodity: false,
     lastReconcileDate: false,
     reconciledUsd: false,
     owner: false,
@@ -136,21 +151,22 @@ function getSortValue(account: AccountWithChildren, sortKey: SortKey): number | 
     return parseFloat(account.period_balance || '0');
 }
 
-function sortTree(accounts: AccountWithChildren[], sortKey: SortKey): AccountWithChildren[] {
+function sortTree(accounts: AccountWithChildren[], sortKey: SortKey, sortDir: SortDir): AccountWithChildren[] {
+    const direction = sortDir === 'asc' ? 1 : -1;
     return [...accounts]
         .sort((a, b) => {
             const aValue = getSortValue(a, sortKey);
             const bValue = getSortValue(b, sortKey);
 
             if (typeof aValue === 'string' && typeof bValue === 'string') {
-                return aValue.localeCompare(bValue);
+                return aValue.localeCompare(bValue) * direction;
             }
 
-            return Number(bValue) - Number(aValue);
+            return (Number(aValue) - Number(bValue)) * direction;
         })
         .map((account) => ({
             ...account,
-            children: sortTree(account.children, sortKey),
+            children: sortTree(account.children, sortKey, sortDir),
         }));
 }
 
@@ -342,9 +358,28 @@ const EMPTY_TAGS: TagWithAccounts[] = [];
 interface AccountHierarchyProps {
     accounts: AccountWithChildren[];
     onRefresh?: () => void;
+    /** Rendered on the header row, before New Account (date range, view toggles). */
+    headerActions?: ReactNode;
+    /** Open an account in place (split view) instead of navigating to its ledger. */
+    onOpenAccount?: (guid: string) => void;
+    /** Account shown in the split-view ledger pane; its row is highlighted. */
+    selectedGuid?: string | null;
+    /** Narrow pane: name and balance only, no column customisation. */
+    compact?: boolean;
 }
 
-export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarchyProps) {
+/** Expand-to-depth presets; `Infinity` is stored as 'all'. */
+const DEPTH_OPTIONS = [
+    { value: '0', label: 'Collapse', hint: 'Top-level accounts only' },
+    { value: '1', label: '1', hint: 'Expand one level' },
+    { value: '2', label: '2', hint: 'Expand two levels' },
+    { value: '3', label: '3', hint: 'Expand three levels' },
+    { value: 'all', label: 'All', hint: 'Expand every level' },
+];
+
+const COMPACT_COLUMN_VISIBILITY: VisibilityState = MOBILE_CONDENSED_COLUMN_VISIBILITY;
+
+export default function AccountHierarchy({ accounts, onRefresh, headerActions, onOpenAccount, selectedGuid = null, compact = false }: AccountHierarchyProps) {
     const isMobile = useIsMobile();
     const { balanceReversal, dateFormat } = useUserPreferences();
     const invalidateAccounts = useInvalidateAccounts();
@@ -412,6 +447,14 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
         }
         return 'name';
     });
+    const [sortDir, setSortDir] = useState<SortDir>(() => {
+        if (typeof window !== 'undefined') {
+            const saved = localStorage.getItem('accountHierarchy.sortDir');
+            if (saved === 'asc' || saved === 'desc') return saved;
+            return defaultSortDir((localStorage.getItem('accountHierarchy.sortKey') as SortKey) || 'name');
+        }
+        return 'asc';
+    });
     const [expandToDepth, setExpandToDepth] = useState<number>(() => {
         if (typeof window !== 'undefined') {
             const saved = localStorage.getItem('accountHierarchy.expandToDepth');
@@ -430,8 +473,8 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
     const [columnOrder, setColumnOrder] = useState<ColumnId[]>(DEFAULT_COLUMN_ORDER);
     const [columnPrefsLoaded, setColumnPrefsLoaded] = useState(false);
     const [draggedColumnId, setDraggedColumnId] = useState<ColumnId | null>(null);
-    const [isColumnsMenuOpen, setIsColumnsMenuOpen] = useState(false);
-    const columnsMenuRef = useRef<HTMLDivElement | null>(null);
+    const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
+    const viewMenuRef = useRef<HTMLDivElement | null>(null);
 
     const [modalOpen, setModalOpen] = useState(false);
     const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
@@ -442,6 +485,7 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
     const [deleteError, setDeleteError] = useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; account: DerivedAccount } | null>(null);
     const filterInputRef = useRef<HTMLInputElement>(null);
+    const rootRef = useRef<HTMLDivElement>(null);
 
     // Keyboard navigation
     const router = useRouter();
@@ -460,7 +504,8 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
 
     useEffect(() => {
         localStorage.setItem('accountHierarchy.sortKey', sortKey);
-    }, [sortKey]);
+        localStorage.setItem('accountHierarchy.sortDir', sortDir);
+    }, [sortKey, sortDir]);
 
     useEffect(() => {
         localStorage.setItem(
@@ -474,17 +519,27 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
     }, [manualExpanded]);
 
     useEffect(() => {
-        if (!isColumnsMenuOpen) return;
+        if (!isViewMenuOpen) return;
 
         const handlePointerDown = (event: MouseEvent) => {
-            if (columnsMenuRef.current && !columnsMenuRef.current.contains(event.target as Node)) {
-                setIsColumnsMenuOpen(false);
+            if (viewMenuRef.current && !viewMenuRef.current.contains(event.target as Node)) {
+                setIsViewMenuOpen(false);
+            }
+        };
+        const handleKey = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                event.stopPropagation();
+                setIsViewMenuOpen(false);
             }
         };
 
         document.addEventListener('mousedown', handlePointerDown);
-        return () => document.removeEventListener('mousedown', handlePointerDown);
-    }, [isColumnsMenuOpen]);
+        document.addEventListener('keydown', handleKey, true);
+        return () => {
+            document.removeEventListener('mousedown', handlePointerDown);
+            document.removeEventListener('keydown', handleKey, true);
+        };
+    }, [isViewMenuOpen]);
 
     useEffect(() => {
         let cancelled = false;
@@ -550,7 +605,16 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
         [reconcileSummary]
     );
 
-    const sortedAccounts = useMemo(() => sortTree(accounts, sortKey), [accounts, sortKey]);
+    const sortedAccounts = useMemo(() => sortTree(accounts, sortKey, sortDir), [accounts, sortKey, sortDir]);
+
+    const handleSortColumn = useCallback((key: SortKey) => {
+        if (key === sortKey) {
+            setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+        } else {
+            setSortKey(key);
+            setSortDir(defaultSortDir(key));
+        }
+    }, [sortKey]);
     const derivedAccounts = useMemo(
         () => deriveTree(sortedAccounts, statusMap, reconcileMap, balanceReversal),
         [sortedAccounts, statusMap, reconcileMap, balanceReversal]
@@ -749,16 +813,17 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
     const columns = useMemo<ColumnDef<DerivedAccount>[]>(() => [
         {
             id: 'accountName',
-            header: 'Account Name',
+            header: 'Account',
             cell: ({ row }) => {
                 const account = row.original;
                 const canExpand = row.getCanExpand();
                 const isExpanded = row.getIsExpanded();
-                const indent = row.depth * (isMobile ? 10 : 20) + 12;
+                const indent = row.depth * (isMobile || compact ? 12 : 20) + 8;
+                const tags = accountTagsMap.get(account.guid) ?? [];
 
                 return (
                     <div
-                        className={`group flex w-full min-w-0 md:min-w-[18rem] items-center gap-1.5 py-2.5 sm:py-1 px-2 sm:px-1.5 rounded-l-lg transition-colors ${
+                        className={`flex w-full min-w-0 items-center gap-1.5 py-2.5 pr-2 md:py-1.5 ${compact ? '' : 'md:min-w-[18rem]'} ${
                             account.hidden ? 'opacity-50 grayscale' : ''
                         }`}
                         style={{ paddingLeft: `${indent}px` }}
@@ -770,35 +835,50 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
                                     event.stopPropagation();
                                     handleRowToggle(account.guid, isExpanded);
                                 }}
-                                className={`text-[10px] transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
-                                aria-label={isExpanded ? 'Collapse account' : 'Expand account'}
+                                className="-ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-foreground-muted hover:bg-surface-hover hover:text-foreground"
+                                aria-label={isExpanded ? `Collapse ${account.name}` : `Expand ${account.name}`}
+                                aria-expanded={isExpanded}
                             >
-                                ▶
+                                <svg aria-hidden="true" viewBox="0 0 16 16" className={`h-3.5 w-3.5 transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 3.5 10.5 8 6 12.5" />
+                                </svg>
                             </button>
                         ) : (
-                            <span className="w-3" />
+                            <span className="-ml-1 w-6 shrink-0" />
                         )}
                         <Link
                             href={`/accounts/${account.guid}`}
-                            className={`min-w-0 max-md:text-sm text-foreground-secondary font-medium truncate hover:text-primary transition-colors ${
+                            className={`min-w-0 truncate text-sm transition-colors hover:text-primary ${
+                                row.depth === 0 ? 'font-semibold text-foreground' : 'text-foreground'
+                            } ${
                                 filterText && account.name.toLowerCase().includes(filterText.toLowerCase())
                                     ? 'text-primary underline underline-offset-4 decoration-primary/50'
                                     : ''
                             }`}
-                            onClick={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                if (onOpenAccount && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+                                    event.preventDefault();
+                                    onOpenAccount(account.guid);
+                                }
+                            }}
                         >
                             {account.name}
                         </Link>
-                        {(accountTagsMap.get(account.guid) ?? []).map(tag => (
-                            <TagChip
-                                key={tag.id}
-                                name={tag.name}
-                                color={tag.color}
-                                title={`Show transactions tagged #${tag.name}`}
-                                onClick={() => router.push(`/ledger?search=${encodeURIComponent(`#${tag.name}`)}`)}
-                                className="flex-shrink-0"
-                            />
-                        ))}
+                        {tags.length > 0 && !compact && (
+                            <span className="hidden md:contents">
+                                {tags.map(tag => (
+                                    <TagChip
+                                        key={tag.id}
+                                        name={tag.name}
+                                        color={tag.color}
+                                        title={`Show transactions tagged #${tag.name}`}
+                                        onClick={() => router.push(`/ledger?search=${encodeURIComponent(`#${tag.name}`)}`)}
+                                        className="flex-shrink-0"
+                                    />
+                                ))}
+                            </span>
+                        )}
                         {account.hasSimpleFin && (
                             <SimpleFinSyncIndicator
                                 status={account.simpleFinSyncStatus}
@@ -807,79 +887,44 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
                             />
                         )}
                         {account.aggregatedUnreviewed > 0 && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-warning/10 text-warning border border-warning/20 font-bold flex-shrink-0">
-                                {account.aggregatedUnreviewed}
-                            </span>
+                            <Tip content={`${account.aggregatedUnreviewed} transaction${account.aggregatedUnreviewed === 1 ? '' : 's'} to review${canExpand ? ' here and below' : ''}`}>
+                                <span className="shrink-0 rounded-sm bg-warning/10 px-1.5 font-mono text-xs leading-5 text-warning" style={TNUM}>
+                                    {account.aggregatedUnreviewed}
+                                </span>
+                            </Tip>
                         )}
                         {account.hidden === 1 && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-background-tertiary text-foreground-muted border border-border-hover">
-                                HIDDEN
+                            <span className="shrink-0 rounded-sm border border-border px-1.5 text-xs leading-5 text-foreground-muted">
+                                Hidden
                             </span>
                         )}
-                        <Link
-                            href={`/accounts/${account.guid}`}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 min-h-[24px] min-w-[24px] hidden md:flex items-center justify-center hover:bg-border-hover rounded text-foreground-muted hover:text-primary ml-0.5"
-                            title="View Ledger"
-                            onClick={(event) => event.stopPropagation()}
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                            </svg>
-                        </Link>
-                        <div className="opacity-0 group-hover:opacity-100 hidden md:flex gap-0 ml-0.5 transition-opacity">
-                            <Tip content="Add Child Account" describedBy={false}>
+                        <Tip content="Account actions" describedBy={false}>
                             <button
+                                type="button"
                                 onClick={(event) => {
                                     event.stopPropagation();
-                                    handleNewChild(account);
+                                    const rect = event.currentTarget.getBoundingClientRect();
+                                    setContextMenu({ x: rect.left, y: rect.bottom + 4, account });
                                 }}
-                                className="p-1 min-h-[24px] min-w-[24px] flex items-center justify-center rounded hover:bg-primary/20 text-foreground-muted hover:text-primary transition-colors"
-                                aria-label="Add Child Account"
+                                className="ml-auto hidden h-6 w-6 shrink-0 items-center justify-center rounded-sm text-foreground-muted opacity-0 transition-opacity hover:bg-surface-hover hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 md:flex"
+                                aria-label={`Actions for ${account.name}`}
+                                aria-haspopup="menu"
                             >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="currentColor">
+                                    <circle cx="3.5" cy="8" r="1.25" /><circle cx="8" cy="8" r="1.25" /><circle cx="12.5" cy="8" r="1.25" />
                                 </svg>
                             </button>
-                            </Tip>
-                            <Tip content="Edit Account" describedBy={false}>
-                            <button
-                                onClick={(event) => {
-                                    event.stopPropagation();
-                                    handleEdit(account);
-                                }}
-                                className="p-1 min-h-[24px] min-w-[24px] flex items-center justify-center rounded hover:bg-primary/20 text-foreground-muted hover:text-primary transition-colors"
-                                aria-label="Edit Account"
-                            >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                </svg>
-                            </button>
-                            </Tip>
-                            <Tip content="Delete Account" describedBy={false}>
-                            <button
-                                onClick={(event) => {
-                                    event.stopPropagation();
-                                    handleDeleteConfirm(account);
-                                }}
-                                className="p-1 min-h-[24px] min-w-[24px] flex items-center justify-center rounded hover:bg-negative/20 text-foreground-muted hover:text-negative transition-colors"
-                                aria-label="Delete Account"
-                            >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                </svg>
-                            </button>
-                            </Tip>
-                        </div>
+                        </Tip>
                     </div>
                 );
             },
         },
         {
             id: 'periodBalance',
-            header: 'Period Balance',
+            header: 'Period',
             cell: ({ row }) => (
-                <div className="text-right py-1 px-3 font-mono leading-tight">
-                    <span className={`text-sm ${row.original.periodBalanceUsd < 0 ? 'text-negative' : 'text-positive'}`}>
+                <div className="whitespace-nowrap px-3 py-1.5 text-right font-mono text-sm leading-tight" style={TNUM}>
+                    <span className={amountToneClass(row.original.periodBalanceUsd)}>
                         {formatCurrency(row.original.periodBalanceUsd, 'USD')}
                     </span>
                 </div>
@@ -887,10 +932,10 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
         },
         {
             id: 'totalBalanceUsd',
-            header: isMobile ? 'Balance' : 'Total Balance $',
+            header: 'Balance',
             cell: ({ row }) => (
-                <div className="text-right py-1 px-2 md:px-3 font-mono leading-tight whitespace-nowrap">
-                    <span className={`text-xs md:text-sm font-bold ${row.original.totalBalanceUsd < 0 ? 'text-negative' : 'text-positive'}`}>
+                <div className="whitespace-nowrap px-3 py-1.5 text-right font-mono text-sm leading-tight" style={TNUM}>
+                    <span className={`${row.depth === 0 ? 'font-semibold' : 'font-medium'} ${amountToneClass(row.original.totalBalanceUsd)}`}>
                         {isMobile
                             ? new Intl.NumberFormat('en-US', {
                                 style: 'currency',
@@ -904,31 +949,42 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
         },
         {
             id: 'totalBalanceCommodity',
-            header: 'Balance in Commodity',
-            cell: ({ row }) => (
-                <div className="text-right py-1 px-3 font-mono leading-tight">
-                    <span className="text-sm text-foreground-secondary">
-                        {row.original.ownCommodityBalanceLabel} {row.original.commodity_mnemonic || ''}
-                    </span>
-                </div>
-            ),
+            header: 'Units',
+            cell: ({ row }) => {
+                const account = row.original;
+                // Only worth a cell when it says something the USD total does
+                // not: shares, or cash held in another currency.
+                const showsUnits = Boolean(account.commodity_mnemonic && account.commodity_mnemonic !== 'USD')
+                    && account.ownCommodityBalance !== 0;
+                return (
+                    <div className="whitespace-nowrap px-3 py-1.5 text-right font-mono text-sm leading-tight text-foreground-secondary" style={TNUM}>
+                        {showsUnits ? (
+                            <Tip content={account.children.length > 0
+                                ? `${account.name}'s own balance in ${account.commodity_mnemonic}, not including sub-accounts`
+                                : `Balance in ${account.commodity_mnemonic}`}>
+                                <span>{account.ownCommodityBalanceLabel} <span className="text-foreground-muted">{account.commodity_mnemonic}</span></span>
+                            </Tip>
+                        ) : null}
+                    </div>
+                );
+            },
         },
         {
             id: 'lastReconcileDate',
-            header: 'Last Reconcile Date',
+            header: 'Last Reconciled',
             cell: ({ row }) => (
-                <div className="px-3 py-1 text-sm leading-tight text-right text-foreground-secondary">
+                <div className="whitespace-nowrap px-3 py-1.5 text-right font-mono text-sm leading-tight text-foreground-secondary">
                     {row.original.lastReconcileDate
                         ? formatDateForDisplay(row.original.lastReconcileDate, dateFormat)
-                        : '—'}
+                        : <span className="text-foreground-muted">—</span>}
                 </div>
             ),
         },
         {
             id: 'reconciledUsd',
-            header: 'Reconciled (USD)',
+            header: 'Reconciled',
             cell: ({ row }) => (
-                <div className="px-3 py-1 text-sm leading-tight text-right font-mono text-foreground-secondary">
+                <div className="whitespace-nowrap px-3 py-1.5 text-right font-mono text-sm leading-tight text-foreground-secondary" style={TNUM}>
                     {formatCurrency(row.original.reconciledUsd, 'USD')}
                 </div>
             ),
@@ -943,13 +999,11 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
                         ?? OWNER_BADGE_LABELS[owner]
                     : undefined;
                 return (
-                    <div className="px-3 py-1 leading-tight text-right">
+                    <div className="px-3 py-1.5 text-right text-sm leading-tight">
                         {label ? (
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-background-tertiary text-foreground-muted border border-border-hover">
-                                {label}
-                            </span>
+                            <span className="text-foreground-secondary">{label}</span>
                         ) : (
-                            <span className="text-sm text-foreground-muted">—</span>
+                            <span className="text-foreground-muted">—</span>
                         )}
                     </div>
                 );
@@ -959,18 +1013,16 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
             id: 'placeholderBadge',
             header: 'Placeholder',
             cell: ({ row }) => (
-                <div className="px-3 py-1 leading-tight text-right">
+                <div className="px-3 py-1.5 text-right text-sm leading-tight">
                     {row.original.placeholder === 1 ? (
-                        <span className="text-[10px] px-2 py-1 rounded-full bg-primary/10 text-primary-hover border border-primary/20 uppercase tracking-wide">
-                            Placeholder
-                        </span>
+                        <span className="text-xs text-foreground-secondary">Placeholder</span>
                     ) : (
-                        <span className="text-sm text-foreground-muted">—</span>
+                        <span className="text-foreground-muted">—</span>
                     )}
                 </div>
             ),
         },
-    ], [accountTagsMap, dateFormat, filterText, handleDeleteConfirm, handleEdit, handleNewChild, handleRowToggle, isMobile, router, selfName, spouseName]);
+    ], [accountTagsMap, compact, dateFormat, filterText, handleRowToggle, isMobile, onOpenAccount, router, selfName, spouseName]);
 
     const normalizedVisibility = useMemo(() => normalizeVisibility(columnVisibility), [columnVisibility]);
     const normalizedOrder = useMemo(() => normalizeColumnOrder(columnOrder), [columnOrder]);
@@ -978,8 +1030,8 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
     // viewport without horizontal scrolling. Saved column prefs still apply on
     // desktop.
     const effectiveVisibility = useMemo(
-        () => (isMobile ? { ...MOBILE_CONDENSED_COLUMN_VISIBILITY } : normalizedVisibility),
-        [isMobile, normalizedVisibility]
+        () => (isMobile ? { ...MOBILE_CONDENSED_COLUMN_VISIBILITY } : compact ? { ...COMPACT_COLUMN_VISIBILITY } : normalizedVisibility),
+        [compact, isMobile, normalizedVisibility]
     );
 
     const table = useReactTable({
@@ -1021,6 +1073,9 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
             // Don't handle keys when focus is inside a popover/dropdown (e.g. BookSwitcher)
             if (target?.closest?.('[data-popover]')) return;
 
+            // Split view: the ledger pane owns the page's keys unless focus is in the tree.
+            if (selectedGuid && !rootRef.current?.contains(target)) return;
+
             // Handle Esc in filter input: clear text first, then blur
             if (isInInput && e.key === 'Escape' && e.target === filterInputRef.current) {
                 e.preventDefault();
@@ -1061,7 +1116,8 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
                 case 'Enter': {
                     if (focusedRowIndex < 0 || focusedRowIndex >= rows.length) break;
                     e.preventDefault();
-                    router.push(`/accounts/${rows[focusedRowIndex].original.guid}`);
+                    if (onOpenAccount) onOpenAccount(rows[focusedRowIndex].original.guid);
+                    else router.push(`/accounts/${rows[focusedRowIndex].original.guid}`);
                     break;
                 }
                 case 'ArrowRight':
@@ -1101,7 +1157,7 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [focusedRowIndex, modalOpen, deleteConfirm, contextMenu, table, handleRowToggle, router, filterText]);
+    }, [focusedRowIndex, modalOpen, deleteConfirm, contextMenu, table, handleRowToggle, router, filterText, onOpenAccount, selectedGuid]);
 
     // Auto-scroll focused row into view
     useEffect(() => {
@@ -1146,269 +1202,286 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [focusGuid, expanded, accounts]);
 
+    const depthValue = expandToDepth === Infinity ? 'all' : String(expandToDepth);
+    // On very wide screens a full-width name column strands the balances
+    // ~1,000px from their names; a trailing filler column packs the numbers
+    // beside the names instead (DESIGN.md "Data surfaces").
+    const packWide = !isMobile && !compact;
+    const viewFilterCount = (showToReview ? 1 : 0) + (showHidden ? 1 : 0);
+
     return (
-        <div className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg p-3 sm:p-6 shadow-2xl">
-            <div className="flex flex-col gap-4 mb-6 sm:mb-8 pb-4 border-b border-border/50">
-                <div className="flex items-center justify-between gap-3">
-                    <h2 className="text-lg sm:text-xl font-semibold text-foreground flex items-center gap-2 min-w-0">
-                        <span className="w-2 h-6 bg-primary rounded-full shrink-0" />
-                        <span className="truncate">Account Assets & Liabilities</span>
-                    </h2>
+        <div ref={rootRef} className="space-y-4">
+            <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+                <h1 className="text-2xl font-semibold text-foreground">Accounts</h1>
+                <div className="flex flex-wrap items-center gap-2">
+                    {headerActions}
                     <Tip content={isReadonly ? READONLY_TOOLTIP : undefined}>
                     <button
+                        type="button"
                         onClick={handleNewAccount}
                         disabled={isReadonly}
-                        className="shrink-0 flex items-center justify-center gap-2 px-3 sm:px-4 py-2 text-sm bg-primary hover:bg-primary-hover text-primary-foreground rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                         </svg>
                         New<span className="hidden sm:inline"> Account</span>
                     </button>
                     </Tip>
                 </div>
+            </header>
 
-                <FilterBar
-                    activeCount={(showToReview ? 1 : 0) + (showHidden ? 1 : 0)}
-                    primary={
-                        <div className="relative flex-1">
-                            <input
-                                ref={filterInputRef}
-                                type="text"
-                                placeholder="Filter accounts... (press / to focus)"
-                                className="w-full bg-input-bg border border-border rounded-lg px-4 py-2 text-sm text-foreground focus:outline-none focus:border-primary/50 transition-all"
-                                value={filterText}
-                                onChange={(event) => setFilterText(event.target.value)}
-                            />
-                            {filterText && (
-                                <button
-                                    onClick={() => setFilterText('')}
-                                    className="absolute right-1 top-1/2 -translate-y-1/2 text-foreground-muted hover:text-foreground-secondary min-h-[44px] min-w-[44px] flex items-center justify-center"
-                                >
-                                    ✕
-                                </button>
-                            )}
-                        </div>
-                    }
-                >
-                    <div className="flex items-center justify-between md:justify-start gap-3">
-                        <span className="text-sm text-foreground-secondary">To Review</span>
-                        <button
-                            onClick={() => setShowToReview(!showToReview)}
-                            className={`w-14 h-8 min-h-[44px] rounded-full p-1 transition-colors duration-200 ease-in-out ${showToReview ? 'bg-warning' : 'bg-border-hover'}`}
-                        >
-                            <div className={`w-6 h-6 rounded-full bg-primary-foreground transition-transform duration-200 ease-in-out ${showToReview ? 'translate-x-6' : 'translate-x-0'}`} />
-                        </button>
-                    </div>
-                    <div className="flex items-center justify-between md:justify-start gap-3">
-                        <span className="text-sm text-foreground-secondary">Show Hidden</span>
-                        <button
-                            onClick={() => setShowHidden(!showHidden)}
-                            className={`w-14 h-8 min-h-[44px] rounded-full p-1 transition-colors duration-200 ease-in-out ${showHidden ? 'bg-primary' : 'bg-border-hover'}`}
-                        >
-                            <div className={`w-6 h-6 rounded-full bg-primary-foreground transition-transform duration-200 ease-in-out ${showHidden ? 'translate-x-6' : 'translate-x-0'}`} />
-                        </button>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                        <span className="text-xs text-foreground-muted uppercase tracking-widest font-bold">Expand</span>
-                        <div className="flex gap-1">
-                            <Tip content="Collapse All">
+            <section className="-mx-4 border-y border-border bg-surface sm:mx-0 sm:rounded-lg sm:border-x">
+                <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5 sm:px-4">
+                    <div className={`relative w-full ${compact ? '' : 'sm:w-auto sm:min-w-[14rem] sm:max-w-[28rem] sm:flex-[1_1_18rem]'}`}>
+                        <svg aria-hidden="true" viewBox="0 0 16 16" className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-foreground-muted" fill="none" stroke="currentColor" strokeWidth={1.75}>
+                            <circle cx="7" cy="7" r="4.25" />
+                            <path strokeLinecap="round" d="m10.25 10.25 3 3" />
+                        </svg>
+                        <input
+                            ref={filterInputRef}
+                            type="search"
+                            aria-label="Filter accounts"
+                            placeholder="Filter accounts"
+                            className={inputClass({ extra: 'h-9 py-0 pl-8 pr-9 [&::-webkit-search-cancel-button]:hidden' })}
+                            value={filterText}
+                            onChange={(event) => setFilterText(event.target.value)}
+                        />
+                        {filterText ? (
                             <button
-                                onClick={() => {
-                                    setExpandToDepth(0);
-                                    setManualExpanded({});
-                                }}
-                                className="bg-input-bg border border-border rounded-lg px-3 py-2 min-h-[44px] text-xs text-foreground-secondary hover:bg-surface-hover hover:border-primary/50 transition-all flex items-center"
+                                type="button"
+                                onClick={() => setFilterText('')}
+                                aria-label="Clear filter"
+                                className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-sm text-foreground-muted hover:bg-surface-hover hover:text-foreground"
                             >
-                                Collapse All
+                                <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" d="m4 4 8 8M12 4l-8 8" />
+                                </svg>
                             </button>
-                            </Tip>
-                            <Tip content="Expand All">
-                            <button
-                                onClick={() => {
-                                    setExpandToDepth(Infinity);
-                                    setManualExpanded({});
-                                }}
-                                className="bg-input-bg border border-border rounded-lg px-3 py-2 min-h-[44px] text-xs text-foreground-secondary hover:bg-surface-hover hover:border-primary/50 transition-all flex items-center"
-                            >
-                                Expand All
-                            </button>
-                            </Tip>
-                        </div>
-                        <select
-                            className="bg-input-bg border border-border rounded-lg px-3 py-2 min-h-[44px] text-xs text-foreground focus:outline-none focus:border-primary/50 transition-all cursor-pointer"
-                            value={expandToDepth === Infinity ? 'all' : expandToDepth}
-                            onChange={(event) => {
-                                setExpandToDepth(event.target.value === 'all' ? Infinity : parseInt(event.target.value, 10));
-                                setManualExpanded({});
-                            }}
-                            aria-label="Expand to Depth"
-                        >
-                            <option value="0">Level 0</option>
-                            <option value="1">Level 1</option>
-                            <option value="2">Level 2</option>
-                            <option value="3">Level 3</option>
-                            <option value="4">Level 4</option>
-                            <option value="5">Level 5</option>
-                            <option value="all">All Levels</option>
-                        </select>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                        <span className="text-xs text-foreground-muted uppercase tracking-widest font-bold">Sort By</span>
-                        <select
-                            className="bg-input-bg border border-border rounded-lg px-3 py-2 min-h-[44px] text-sm text-foreground focus:outline-none focus:border-primary/50 transition-all cursor-pointer"
-                            value={sortKey}
-                            onChange={(event) => setSortKey(event.target.value as SortKey)}
-                        >
-                            <option value="name">Name</option>
-                            <option value="total_balance">Total Balance</option>
-                            <option value="period_balance">Period Balance</option>
-                        </select>
-                    </div>
-
-                    {/* Column customization targets the desktop table; the phone view is a fixed condensed layout */}
-                    <div className="relative hidden md:block" ref={columnsMenuRef}>
-                        <button
-                            type="button"
-                            onClick={() => setIsColumnsMenuOpen((prev) => !prev)}
-                            className="list-none bg-input-bg border border-border rounded-lg px-3 py-2 min-h-[44px] text-sm text-foreground-secondary hover:bg-surface-hover transition-all cursor-pointer flex items-center"
-                        >
-                            Columns
-                        </button>
-                        {isColumnsMenuOpen && (
-                        <div className="absolute right-0 z-20 mt-2 w-64 rounded-lg border border-border bg-surface shadow-2xl p-3 space-y-2">
-                            {table.getAllLeafColumns().map((column) => {
-                                const isRequired = ALWAYS_VISIBLE_COLUMNS.includes(column.id as ColumnId);
-                                const label = String(column.columnDef.header);
-                                const draggable = column.id !== 'accountName';
-
-                                return (
-                                    <label key={column.id} className={`flex items-center gap-2 text-sm ${isRequired ? 'text-foreground-muted' : 'text-foreground-secondary cursor-pointer'}`}>
-                                        <Tip content={draggable ? 'Drag to reorder column' : 'Account Name stays first'}>
-                                        <span
-                                            draggable={draggable}
-                                            onDragStart={() => {
-                                                if (draggable) setDraggedColumnId(column.id as ColumnId);
-                                            }}
-                                            onDragEnd={() => setDraggedColumnId(null)}
-                                            onDragOver={(event) => {
-                                                if (!draggable || !draggedColumnId) return;
-                                                event.preventDefault();
-                                            }}
-                                            onDrop={(event) => {
-                                                if (!draggable || !draggedColumnId) return;
-                                                event.preventDefault();
-                                                moveColumn(draggedColumnId, column.id as ColumnId);
-                                                setDraggedColumnId(null);
-                                            }}
-                                            className={`text-xs ${draggable ? 'cursor-grab text-foreground-muted' : 'text-foreground-muted/40'}`}
-                                        >
-                                            ≡
-                                        </span>
-                                        </Tip>
-                                        <input
-                                            type="checkbox"
-                                            checked={column.getIsVisible()}
-                                            disabled={isRequired}
-                                            onChange={column.getToggleVisibilityHandler()}
-                                            className="w-4 h-4 rounded border-border bg-background-tertiary disabled:opacity-50"
-                                        />
-                                        {label}
-                                    </label>
-                                );
-                            })}
-                        </div>
+                        ) : (
+                            <kbd aria-hidden="true" className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 rounded-sm border border-border px-1.5 font-mono text-[11px] leading-4 text-foreground-muted sm:block">
+                                /
+                            </kbd>
                         )}
                     </div>
-                </FilterBar>
-            </div>
 
-            <div className="overflow-x-auto">
-                <table className="w-full md:min-w-[980px] table-auto">
-                    <thead className="border-b border-border/60">
-                        {table.getHeaderGroups().map((headerGroup) => (
-                            <tr key={headerGroup.id}>
-                                {headerGroup.headers.map((header) => (
-                                    <Tip content={!header.isPlaceholder && header.column.id !== 'accountName' ? 'Drag to reorder column' : undefined} key={header.id}>
-                                    <th
-                                        key={header.id}
-                                        draggable={!header.isPlaceholder && header.column.id !== 'accountName'}
-                                        onDragStart={() => {
-                                            if (!header.isPlaceholder && header.column.id !== 'accountName') {
-                                                setDraggedColumnId(header.column.id as ColumnId);
+                    <Segmented
+                        ariaLabel="Expand to depth"
+                        options={DEPTH_OPTIONS}
+                        value={depthValue}
+                        onChange={(value) => {
+                            setExpandToDepth(value === 'all' ? Infinity : parseInt(value, 10));
+                            setManualExpanded({});
+                        }}
+                    />
+
+                    {showToReview && (
+                        <button
+                            type="button"
+                            onClick={() => setShowToReview(false)}
+                            className="flex h-9 items-center gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2.5 text-xs font-medium text-warning hover:bg-warning/15 sm:h-8"
+                            aria-label="Showing accounts with transactions to review. Show all accounts"
+                        >
+                            To review only
+                            <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" d="m4 4 8 8M12 4l-8 8" />
+                            </svg>
+                        </button>
+                    )}
+
+                    <div className="relative ml-auto" ref={viewMenuRef}>
+                        <button
+                            type="button"
+                            onClick={() => setIsViewMenuOpen((prev) => !prev)}
+                            aria-haspopup="true"
+                            aria-expanded={isViewMenuOpen}
+                            className={`flex h-9 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors sm:h-8 ${
+                                isViewMenuOpen || viewFilterCount > 0
+                                    ? 'border-primary/40 bg-primary-light text-primary'
+                                    : 'border-border text-foreground-secondary hover:bg-surface-hover hover:text-foreground'
+                            }`}
+                        >
+                            View
+                            {viewFilterCount > 0 && (
+                                <span className="font-mono" style={TNUM}>· {viewFilterCount}</span>
+                            )}
+                            <svg aria-hidden="true" viewBox="0 0 16 16" className={`h-3 w-3 transition-transform duration-150 ${isViewMenuOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m4 6 4 4 4-4" />
+                            </svg>
+                        </button>
+                        {isViewMenuOpen && (
+                            <div className="absolute right-0 z-30 mt-1 w-64 rounded-lg border border-border bg-surface-elevated py-1 shadow-lg">
+                                <ViewMenuCheck
+                                    checked={showToReview}
+                                    onChange={setShowToReview}
+                                    label="To review only"
+                                    hint="Accounts with unreviewed imported transactions"
+                                />
+                                <ViewMenuCheck
+                                    checked={showHidden}
+                                    onChange={setShowHidden}
+                                    label="Show hidden accounts"
+                                />
+                                {/* Column customisation targets the desktop table; phones and the split pane use a fixed name + balance layout. */}
+                                {!isMobile && !compact && (
+                                    <>
+                                        <div className="mx-3 my-1 border-t border-border" />
+                                        <div className="px-3 pb-1 pt-1.5 text-xs font-medium text-foreground-secondary">
+                                            Columns <span className="font-normal text-foreground-muted">· drag to reorder</span>
+                                        </div>
+                                        {table.getAllLeafColumns().map((column) => {
+                                            const isRequired = ALWAYS_VISIBLE_COLUMNS.includes(column.id as ColumnId);
+                                            const label = String(column.columnDef.header);
+                                            const draggable = column.id !== 'accountName';
+                                            const visible = column.getIsVisible();
+
+                                            return (
+                                                <div
+                                                    key={column.id}
+                                                    draggable={draggable}
+                                                    onDragStart={() => {
+                                                        if (draggable) setDraggedColumnId(column.id as ColumnId);
+                                                    }}
+                                                    onDragEnd={() => setDraggedColumnId(null)}
+                                                    onDragOver={(event) => {
+                                                        if (!draggable || !draggedColumnId) return;
+                                                        event.preventDefault();
+                                                    }}
+                                                    onDrop={(event) => {
+                                                        if (!draggable || !draggedColumnId) return;
+                                                        event.preventDefault();
+                                                        moveColumn(draggedColumnId, column.id as ColumnId);
+                                                        setDraggedColumnId(null);
+                                                    }}
+                                                    className={`flex items-center gap-1 pr-3 ${draggedColumnId === column.id ? 'opacity-50' : ''}`}
+                                                >
+                                                    <span aria-hidden="true" className={`w-5 shrink-0 pl-2 text-xs ${draggable ? 'cursor-grab text-foreground-muted' : 'text-transparent'}`}>
+                                                        ⋮⋮
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        role="checkbox"
+                                                        aria-checked={visible}
+                                                        disabled={isRequired}
+                                                        onClick={() => column.toggleVisibility(!visible)}
+                                                        className="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-1.5 text-left text-sm text-foreground-secondary hover:bg-surface-hover hover:text-foreground disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+                                                    >
+                                                        <CheckboxBox checked={visible} />
+                                                        <span className="truncate">{label}</span>
+                                                    </button>
+                                                </div>
+                                            );
+                                        })}
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                    <table className={`w-full ${isMobile || compact ? 'table-fixed' : 'table-auto md:min-w-[760px]'}`}>
+                        {(isMobile || compact) && (
+                            <colgroup>
+                                <col />
+                                <col className="w-32" />
+                            </colgroup>
+                        )}
+                        <thead className="border-b border-border">
+                            {table.getHeaderGroups().map((headerGroup) => (
+                                <tr key={headerGroup.id}>
+                                    {headerGroup.headers.map((header) => {
+                                        const columnId = header.column.id;
+                                        const sortColumnKey = SORT_KEY_BY_COLUMN[columnId];
+                                        const isSorted = sortColumnKey !== undefined && sortColumnKey === sortKey;
+                                        const isNumeric = columnId !== 'accountName';
+                                        const label = header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext());
+                                        return (
+                                            <th
+                                                key={header.id}
+                                                scope="col"
+                                                aria-sort={isSorted ? (sortDir === 'asc' ? 'ascending' : 'descending') : undefined}
+                                                className={`px-3 py-2 text-xs font-medium uppercase tracking-wider text-foreground-secondary ${
+                                                    isNumeric ? 'whitespace-nowrap text-right' : `w-full text-left ${packWide ? 'min-[1800px]:w-auto min-[1800px]:min-w-[32rem]' : ''}`
+                                                } ${columnId === 'accountName' ? 'pl-4' : ''}`}
+                                            >
+                                                {sortColumnKey ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleSortColumn(sortColumnKey)}
+                                                        className={`inline-flex items-center gap-1 uppercase tracking-wider transition-colors hover:text-foreground ${isSorted ? 'text-foreground' : ''}`}
+                                                    >
+                                                        {label}
+                                                        <svg aria-hidden="true" viewBox="0 0 16 16" className={`h-3 w-3 ${isSorted ? '' : 'opacity-0'} ${isSorted && sortDir === 'desc' ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth={2}>
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="m4 10 4-4 4 4" />
+                                                        </svg>
+                                                    </button>
+                                                ) : label}
+                                            </th>
+                                        );
+                                    })}
+                                    {packWide && <th aria-hidden="true" className="hidden w-full p-0 min-[1800px]:table-cell" />}
+                                </tr>
+                            ))}
+                        </thead>
+                        <tbody className="divide-y divide-border/50">
+                            {table.getRowModel().rows.map((row, rowIndex) => {
+                                const isSelected = selectedGuid === row.original.guid;
+                                return (
+                                    <tr
+                                        key={row.id}
+                                        ref={(el) => {
+                                            if (el) rowRefs.current.set(rowIndex, el);
+                                            else rowRefs.current.delete(rowIndex);
+                                        }}
+                                        aria-selected={onOpenAccount ? isSelected : undefined}
+                                        className={`group transition-colors ${row.getCanExpand() ? 'cursor-pointer' : ''} ${
+                                            isSelected ? 'bg-primary-light' : 'hover:bg-surface-hover/60'
+                                        } ${rowIndex === focusedRowIndex ? 'outline outline-2 -outline-offset-2 outline-primary/60' : ''}`}
+                                        onClick={() => {
+                                            setFocusedRowIndex(rowIndex);
+                                            if (row.getCanExpand()) {
+                                                handleRowToggle(row.original.guid, row.getIsExpanded());
+                                            } else if (onOpenAccount) {
+                                                onOpenAccount(row.original.guid);
                                             }
                                         }}
-                                        onDragEnd={() => setDraggedColumnId(null)}
-                                        onDragOver={(event) => {
-                                            if (header.isPlaceholder || header.column.id === 'accountName' || !draggedColumnId) return;
-                                            event.preventDefault();
+                                        onContextMenu={(e) => {
+                                            setFocusedRowIndex(rowIndex);
+                                            openContextMenu(e, row.original);
                                         }}
-                                        onDrop={(event) => {
-                                            if (header.isPlaceholder || header.column.id === 'accountName' || !draggedColumnId) return;
-                                            event.preventDefault();
-                                            moveColumn(draggedColumnId, header.column.id as ColumnId);
-                                            setDraggedColumnId(null);
-                                        }}
-                                        className={`px-2 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-foreground-muted ${
-                                            header.column.id === 'accountName' ? 'w-full' : 'whitespace-nowrap'
-                                        } ${
-                                            !header.isPlaceholder && header.column.id !== 'accountName' ? 'cursor-grab select-none' : ''
-                                        } ${
-                                            draggedColumnId && draggedColumnId === header.column.id ? 'opacity-50' : ''
-                                        }`}
                                     >
-                                        {header.isPlaceholder ? null : (
-                                            <div className="flex items-center gap-1.5">
-                                                {header.column.id !== 'accountName' && (
-                                                    <span className="text-[10px] text-foreground-muted/80">≡</span>
-                                                )}
-                                                <span>{flexRender(header.column.columnDef.header, header.getContext())}</span>
-                                            </div>
-                                        )}
-                                    </th>
-                                    </Tip>
-                                ))}
-                            </tr>
-                        ))}
-                    </thead>
-                    <tbody className="divide-y divide-border/40">
-                        {table.getRowModel().rows.map((row, rowIndex) => (
-                            <tr
-                                key={row.id}
-                                ref={(el) => {
-                                    if (el) rowRefs.current.set(rowIndex, el);
-                                    else rowRefs.current.delete(rowIndex);
-                                }}
-                                className={`group hover:bg-surface-hover/20 transition-colors ${row.getCanExpand() ? 'cursor-pointer' : ''} ${rowIndex === focusedRowIndex ? 'ring-2 ring-primary/50 ring-inset bg-primary/5' : ''}`}
-                                onClick={() => {
-                                    setFocusedRowIndex(rowIndex);
-                                    if (row.getCanExpand()) {
-                                        handleRowToggle(row.original.guid, row.getIsExpanded());
-                                    }
-                                }}
-                                onContextMenu={(e) => {
-                                    setFocusedRowIndex(rowIndex);
-                                    openContextMenu(e, row.original);
-                                }}
-                            >
-                                {row.getVisibleCells().map((cell) => (
-                                    <td key={cell.id} className="align-middle">
-                                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                                    </td>
-                                ))}
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-
-            {table.getRowModel().rows.length === 0 && (
-                <div className="py-12 text-center text-foreground-secondary">
-                    No accounts match the current filters.
+                                        {row.getVisibleCells().map((cell) => (
+                                            <td key={cell.id} className="min-w-0 align-middle">
+                                                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                            </td>
+                                        ))}
+                                        {packWide && <td aria-hidden="true" className="hidden p-0 min-[1800px]:table-cell" />}
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
                 </div>
-            )}
+
+                {table.getRowModel().rows.length === 0 && (
+                    <div className="px-4 py-12 text-center text-sm text-foreground-secondary">
+                        No accounts match the current filters.
+                        {(filterText || showToReview) && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setFilterText('');
+                                    setShowToReview(false);
+                                }}
+                                className="ml-2 font-medium text-primary hover:text-primary-hover"
+                            >
+                                Clear filters
+                            </button>
+                        )}
+                    </div>
+                )}
+            </section>
 
             <TransactionContextMenu
                 isOpen={!!contextMenu}
@@ -1488,5 +1561,29 @@ export default function AccountHierarchy({ accounts, onRefresh }: AccountHierarc
                 </div>
             </Modal>
         </div>
+    );
+}
+
+/** A checkbox row in the View menu. */
+function ViewMenuCheck({ checked, onChange, label, hint }: {
+    checked: boolean;
+    onChange: (next: boolean) => void;
+    label: string;
+    hint?: string;
+}) {
+    return (
+        <button
+            type="button"
+            role="checkbox"
+            aria-checked={checked}
+            onClick={() => onChange(!checked)}
+            className="flex w-full items-start gap-2.5 px-3 py-2 text-left hover:bg-surface-hover"
+        >
+            <span className="mt-0.5"><CheckboxBox checked={checked} /></span>
+            <span className="min-w-0">
+                <span className="block text-sm text-foreground">{label}</span>
+                {hint && <span className="block text-xs text-foreground-secondary">{hint}</span>}
+            </span>
+        </button>
     );
 }

@@ -38,7 +38,7 @@ export function GlobalShortcuts() {
   useKeyboardShortcut('nav-goals', 'g o', 'Go to Goals', () => router.push('/goals'))
   useKeyboardShortcut('nav-tags', 'g t', 'Go to Tags', () => router.push('/tags'))
   useKeyboardShortcut('nav-tools', 'g w', 'Go to Tools', () => router.push('/tools'))
-  useKeyboardShortcut('nav-settings', 'g s', 'Go to Settings', () => router.push('/settings'))
+  useKeyboardShortcut('nav-settings', 'g s', 'Go to Administration', () => router.push('/settings'))
 
   // Quick switchers
   useKeyboardShortcut('command-palette', 'Ctrl+k', 'Command palette', () => {

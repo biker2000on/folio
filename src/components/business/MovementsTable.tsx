@@ -38,13 +38,14 @@ function PostedMark({ txnGuid }: { txnGuid: string | null }) {
 function InvoiceLink({ invoiceGuid }: { invoiceGuid: string | null }) {
     if (!invoiceGuid) return null;
     return (
+        <Tip content="Open invoice">
         <Link
             href={`/business/invoices/${invoiceGuid}`}
             className="text-primary hover:text-primary-hover transition-colors text-xs"
-            title="Open invoice"
         >
             Invoice
         </Link>
+        </Tip>
     );
 }
 
