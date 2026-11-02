@@ -105,9 +105,11 @@ The one carve-out is the marketing surface's *material textures* (knob knurling,
 - **Max content width:** 1400px for dashboards, reports, forms and section pages.
 - **Data surfaces: 1920px.** Registers you scan row by row (the account tree at `/accounts`, the account
   ledgers at `/accounts/[guid]`) cap at `max-w-[1920px]` (`DATA_SURFACE_MAX_WIDTH` in
-  `src/components/ui/layout-widths.ts`). Inside one, keep the elastic text column bounded (Description
-  about 60ch) so amounts stay next to what they belong to. The optional Accounts split view (tree beside
-  ledger, from 1920px up) is the only layout that may run wider.
+  `src/components/ui/layout-widths.ts`), centered. Inside one, the text column (account name,
+  Description) takes the spare width and the figures end flush with the container's right edge, under the
+  header balance; no trailing filler columns. Truncate long text inside its cell rather than pushing
+  amounts off-screen. The optional Accounts split view (tree beside ledger, from 1920px up) is the only
+  layout that may run wider.
 - **Border radius:** sm: 4px, md: 6px, lg: 10px, full: 9999px (avatars only)
   - The scale is closed. `rounded-xl` (12px), `rounded-2xl` (16px) and `rounded-3xl` (24px) are **not**
     on it and are banned everywhere — including cards, panels and modals, which use `rounded-lg`.

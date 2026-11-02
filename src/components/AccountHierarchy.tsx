@@ -35,6 +35,7 @@ import type { Tag } from '@/lib/tags';
 import { useCurrentUser, READONLY_TOOLTIP } from '@/hooks/useCurrentUser';
 import { extractErrorMessage } from '@/lib/api-error';
 import { Tip } from '@/components/ui/Tooltip';
+import { ACCOUNT_TYPES } from './filters/AccountTypeFilter';
 
 interface TagWithAccounts extends Tag {
     account_guids?: string[];
@@ -62,8 +63,20 @@ type ColumnId =
     | 'totalBalanceCommodity'
     | 'lastReconcileDate'
     | 'reconciledUsd'
+    | 'unreconciledUsd'
+    | 'toReview'
+    | 'accountCode'
+    | 'accountType'
+    | 'accountDescription'
     | 'owner'
     | 'placeholderBadge';
+
+/** Text columns: left-aligned, unlike the right-aligned figures. */
+const TEXT_COLUMNS: ReadonlySet<string> = new Set(['accountName', 'accountCode', 'accountType', 'accountDescription']);
+
+const ACCOUNT_TYPE_LABELS: Record<string, string> = Object.fromEntries(
+    ACCOUNT_TYPES.map((t) => [t.value, t.label]),
+);
 
 interface ReconcileSummaryRow {
     guid: string;
@@ -90,11 +103,16 @@ const COLUMN_ORDER_KEY = 'account_hierarchy.column_order';
 const ALWAYS_VISIBLE_COLUMNS: ColumnId[] = ['accountName'];
 const DEFAULT_COLUMN_ORDER: ColumnId[] = [
     'accountName',
+    'accountCode',
+    'accountType',
+    'accountDescription',
     'periodBalance',
     'totalBalanceUsd',
     'totalBalanceCommodity',
     'lastReconcileDate',
     'reconciledUsd',
+    'unreconciledUsd',
+    'toReview',
     'owner',
     'placeholderBadge',
 ];
@@ -105,6 +123,11 @@ const DEFAULT_COLUMN_VISIBILITY: VisibilityState = {
     totalBalanceCommodity: false,
     lastReconcileDate: false,
     reconciledUsd: false,
+    accountCode: false,
+    accountType: false,
+    accountDescription: false,
+    unreconciledUsd: false,
+    toReview: false,
     owner: false,
     placeholderBadge: false,
 };
@@ -115,6 +138,11 @@ const MOBILE_DEFAULT_COLUMN_VISIBILITY: VisibilityState = {
     totalBalanceCommodity: false,
     lastReconcileDate: false,
     reconciledUsd: false,
+    accountCode: false,
+    accountType: false,
+    accountDescription: false,
+    unreconciledUsd: false,
+    toReview: false,
     owner: false,
     placeholderBadge: false,
 };
@@ -127,6 +155,11 @@ const MOBILE_CONDENSED_COLUMN_VISIBILITY: VisibilityState = {
     totalBalanceCommodity: false,
     lastReconcileDate: false,
     reconciledUsd: false,
+    accountCode: false,
+    accountType: false,
+    accountDescription: false,
+    unreconciledUsd: false,
+    toReview: false,
     owner: false,
     placeholderBadge: false,
 };
@@ -990,6 +1023,70 @@ export default function AccountHierarchy({ accounts, onRefresh, headerActions, o
             ),
         },
         {
+            id: 'unreconciledUsd',
+            header: 'Unreconciled',
+            cell: ({ row }) => {
+                // What a reconcile still has to account for: the balance less
+                // what is already reconciled (sub-accounts included).
+                const value = row.original.totalBalanceUsd - row.original.reconciledUsd;
+                return (
+                    <div className="whitespace-nowrap px-3 py-1.5 text-right font-mono text-sm leading-tight" style={TNUM}>
+                        <span className={Math.abs(value) < 0.005 ? 'text-foreground-muted' : 'text-foreground-secondary'}>
+                            {formatCurrency(value, 'USD')}
+                        </span>
+                    </div>
+                );
+            },
+        },
+        {
+            id: 'toReview',
+            header: 'To Review',
+            cell: ({ row }) => (
+                <div className="whitespace-nowrap px-3 py-1.5 text-right font-mono text-sm leading-tight" style={TNUM}>
+                    {row.original.aggregatedUnreviewed > 0
+                        ? <span className="text-warning">{row.original.aggregatedUnreviewed}</span>
+                        : <span className="text-foreground-muted">—</span>}
+                </div>
+            ),
+        },
+        {
+            id: 'accountCode',
+            header: 'Code',
+            cell: ({ row }) => (
+                <div className="whitespace-nowrap px-3 py-1.5 font-mono text-sm leading-tight text-foreground-secondary">
+                    {row.original.code || <span className="text-foreground-muted">—</span>}
+                </div>
+            ),
+        },
+        {
+            id: 'accountType',
+            header: 'Type',
+            cell: ({ row }) => (
+                <div className="whitespace-nowrap px-3 py-1.5 text-sm leading-tight text-foreground-secondary">
+                    {ACCOUNT_TYPE_LABELS[row.original.account_type]
+                        ?? row.original.account_type.charAt(0) + row.original.account_type.slice(1).toLowerCase()}
+                </div>
+            ),
+        },
+        {
+            id: 'accountDescription',
+            header: 'Description',
+            cell: ({ row }) => {
+                const description = row.original.description?.trim();
+                return (
+                    <div className="px-3 py-1.5 text-sm leading-tight text-foreground-secondary">
+                        {description ? (
+                            <Tip content={description}>
+                                <span className="block max-w-[24rem] truncate">{description}</span>
+                            </Tip>
+                        ) : (
+                            <span className="text-foreground-muted">—</span>
+                        )}
+                    </div>
+                );
+            },
+        },
+        {
             id: 'owner',
             header: 'Owner',
             cell: ({ row }) => {
@@ -1203,10 +1300,6 @@ export default function AccountHierarchy({ accounts, onRefresh, headerActions, o
     }, [focusGuid, expanded, accounts]);
 
     const depthValue = expandToDepth === Infinity ? 'all' : String(expandToDepth);
-    // On very wide screens a full-width name column strands the balances
-    // ~1,000px from their names; a trailing filler column packs the numbers
-    // beside the names instead (DESIGN.md "Data surfaces").
-    const packWide = !isMobile && !compact;
     const viewFilterCount = (showToReview ? 1 : 0) + (showHidden ? 1 : 0);
 
     return (
@@ -1394,7 +1487,7 @@ export default function AccountHierarchy({ accounts, onRefresh, headerActions, o
                                         const columnId = header.column.id;
                                         const sortColumnKey = SORT_KEY_BY_COLUMN[columnId];
                                         const isSorted = sortColumnKey !== undefined && sortColumnKey === sortKey;
-                                        const isNumeric = columnId !== 'accountName';
+                                        const isText = TEXT_COLUMNS.has(columnId);
                                         const label = header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext());
                                         return (
                                             <th
@@ -1402,8 +1495,8 @@ export default function AccountHierarchy({ accounts, onRefresh, headerActions, o
                                                 scope="col"
                                                 aria-sort={isSorted ? (sortDir === 'asc' ? 'ascending' : 'descending') : undefined}
                                                 className={`px-3 py-2 text-xs font-medium uppercase tracking-wider text-foreground-secondary ${
-                                                    isNumeric ? 'whitespace-nowrap text-right' : `w-full text-left ${packWide ? 'min-[1800px]:w-auto min-[1800px]:min-w-[32rem]' : ''}`
-                                                } ${columnId === 'accountName' ? 'pl-4' : ''}`}
+                                                    !isText ? 'whitespace-nowrap text-right' : columnId === 'accountName' ? 'w-full text-left pl-4' : 'whitespace-nowrap text-left'
+                                                }`}
                                             >
                                                 {sortColumnKey ? (
                                                     <button
@@ -1420,7 +1513,6 @@ export default function AccountHierarchy({ accounts, onRefresh, headerActions, o
                                             </th>
                                         );
                                     })}
-                                    {packWide && <th aria-hidden="true" className="hidden w-full p-0 min-[1800px]:table-cell" />}
                                 </tr>
                             ))}
                         </thead>
@@ -1456,7 +1548,6 @@ export default function AccountHierarchy({ accounts, onRefresh, headerActions, o
                                                 {flexRender(cell.column.columnDef.cell, cell.getContext())}
                                             </td>
                                         ))}
-                                        {packWide && <td aria-hidden="true" className="hidden p-0 min-[1800px]:table-cell" />}
                                     </tr>
                                 );
                             })}

@@ -164,6 +164,48 @@ describe('AccountHierarchy', () => {
      * query resolved (or forever, if it errored). This pins "commits settle
      * while the queries are still in flight".
      */
+    it('offers and renders the Code, Type, Description, Unreconciled and To Review columns', async () => {
+        const handler = installFetch({ hang: false });
+        handler.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            const body = url.startsWith('/api/user/preferences')
+                ? {
+                    preferences: {
+                        'account_hierarchy.column_visibility': {
+                            accountCode: true,
+                            accountType: true,
+                            accountDescription: true,
+                            unreconciledUsd: true,
+                            toReview: true,
+                        },
+                    },
+                }
+                : [];
+            return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        });
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        const checking = {
+            ...makeAccount('checking', 'Checking', [], 'assets'),
+            account_type: 'BANK',
+            code: 'CHK-1',
+            description: 'Everyday checking',
+        };
+        render(
+            <QueryClientProvider client={queryClient}>
+                <AccountHierarchy accounts={[makeAccount('assets', 'Assets', [checking])]} />
+            </QueryClientProvider>
+        );
+
+        // Saved preferences load asynchronously; allow for a busy test run.
+        for (const header of ['Code', 'Type', 'Description', 'Unreconciled', 'To Review']) {
+            expect(await screen.findByRole('columnheader', { name: header }, { timeout: 10000 })).toBeInTheDocument();
+        }
+        expect(screen.getByText('CHK-1')).toBeInTheDocument();
+        expect(screen.getByText('Bank')).toBeInTheDocument();
+        expect(screen.getByText('Everyday checking')).toBeInTheDocument();
+        await flushSettleWindow();
+    });
+
     it('settles after mount while its queries are still pending', async () => {
         installFetch({ hang: true });
         const { commitCount } = renderHierarchy();

@@ -183,7 +183,7 @@ export function InlineEditRow({
 
             {/* Date */}
             <td className="px-2 py-1 align-middle">
-                <div className="relative">
+                <div className="relative min-w-[8rem]">
                     <input
                         ref={dateRef}
                         type="text"

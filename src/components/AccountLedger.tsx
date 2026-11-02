@@ -1665,10 +1665,6 @@ export default function AccountLedger({
         // eslint-disable-next-line react-hooks/exhaustive-deps
         [columns, columnVisibility],
     );
-    // From 1800px the last column takes the spare width so Description sizes
-    // to its text and the amounts stay beside it (DESIGN.md "Data surfaces").
-    const lastColumnId = visibleColumnIds[visibleColumnIds.length - 1];
-    const fillerClass = (id: string) => (id === lastColumnId ? ' min-[1800px]:w-full' : '');
 
     // Helper to create a blank new transaction at the top of the list
     const createNewTransaction = useCallback(() => {
@@ -2904,7 +2900,9 @@ export default function AccountLedger({
                                     if (colId === 'expand') return <th key={header.id} className="px-1 py-2 w-7"></th>;
                                     if (colId === 'reconcile') return <th key={header.id} className="px-3 py-2 w-10">R</th>;
                                     if (colId === 'date') return <th key={header.id} className="px-3 py-2">Date</th>;
-                                    if (colId === 'description') return <th key={header.id} className="px-4 py-2">Description</th>;
+                                    // Description takes the spare width in view AND edit mode, so
+                                    // the amounts end at the container's right edge.
+                                    if (colId === 'description') return <th key={header.id} className="px-4 py-2 w-full">Description</th>;
                                     if (colId === 'transfer') return <th key={header.id} className={isInvestmentAccount && !showSubaccounts ? 'px-3 py-2' : 'px-4 py-2'}>{isInvestmentAccount ? 'Transfer' : 'Transfer / Splits'}</th>;
                                     if (colId === 'debit') return <th key={header.id} className="px-4 py-2 text-right">Debit</th>;
                                     if (colId === 'credit') return <th key={header.id} className="px-4 py-2 text-right">Credit</th>;
@@ -2915,8 +2913,8 @@ export default function AccountLedger({
                                     if (colId === 'sell') return <th key={header.id} className="px-3 py-2 text-right whitespace-nowrap">Sell</th>;
                                     if (colId === 'shareBalance') return <th key={header.id} className="px-3 py-2 text-right whitespace-nowrap">Share Bal</th>;
                                     if (colId === 'costBasis') return <th key={header.id} className="px-3 py-2 text-right whitespace-nowrap">Cost Basis</th>;
-                                    if (colId === 'receipt') return <th key={header.id} className={`px-2 py-2 w-10${fillerClass(colId)}`}></th>;
-                                    if (colId === 'actions') return <th key={header.id} className={`px-2 py-2 w-10${fillerClass(colId)}`}></th>;
+                                    if (colId === 'receipt') return <th key={header.id} className="px-2 py-2 w-10"></th>;
+                                    if (colId === 'actions') return <th key={header.id} className="px-2 py-2 w-10"></th>;
                                     return <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>;
                                 })}
                             </tr>
@@ -3308,15 +3306,15 @@ export default function AccountLedger({
                                             if (colId === 'description') {
                                                 const descInvRow = isInvestmentAccount ? investmentRowMap?.get(tx.guid) : null;
                                                 // One line per row: the description truncates (full
-                                                // text in the Tip) and the chips keep their size. On
-                                                // the investment table (eleven columns) Description
-                                                // takes only the width the numeric columns leave
-                                                // (w-full + max-w-0), so Share Bal / Cost Basis never
-                                                // scroll off a ~1118px container; the bank ledger has
-                                                // room for a plain cap.
+                                                // text in the Tip) and the chips keep their size.
+                                                // Description takes only the width the
+                                                // other columns leave (w-full + max-w-0): Share Bal /
+                                                // Cost Basis never scroll off a narrow container, and
+                                                // on wide screens the amounts end at the container's
+                                                // right edge, under the header balance.
                                                 return (
-                                                    <td key={cell.id} className="px-4 py-2 text-sm text-foreground align-middle leading-tight w-full max-w-0 min-[1800px]:w-auto min-[1800px]:max-w-none">
-                                                        <div className="flex items-center gap-2 min-w-0 min-[1800px]:max-w-[36rem]">
+                                                    <td key={cell.id} className="px-4 py-2 text-sm text-foreground align-middle leading-tight w-full max-w-0">
+                                                        <div className="flex items-center gap-2 min-w-0">
                                                             {descInvRow && (
                                                                 <TransactionTypeIcon type={descInvRow.transactionType} className="mr-0.5 shrink-0" />
                                                             )}
@@ -3336,7 +3334,7 @@ export default function AccountLedger({
                                                         </div>
                                                         {originalPayeeLine(tx) && (
                                                             <Tip content={originalPayeeLine(tx) ?? undefined}>
-                                                            <div className="text-xs text-foreground-muted truncate min-[1800px]:max-w-[36rem]">
+                                                            <div className="text-xs text-foreground-muted truncate">
                                                                 Imported as &ldquo;{originalPayeeLine(tx)}&rdquo;
                                                             </div>
                                                             </Tip>
@@ -3575,7 +3573,7 @@ export default function AccountLedger({
                                                     // The indicator is a 44px touch target; on the desktop
                                                     // register that alone set a ~53px row pitch, so it is
                                                     // trimmed to 28px here (mobile cards don't use it).
-                                                    <td key={cell.id} className={`px-1 py-0 align-middle [&>button]:min-h-7 [&>button]:min-w-7${fillerClass(colId)}`} onClick={(e) => e.stopPropagation()}>
+                                                    <td key={cell.id} className="px-1 py-0 align-middle [&>button]:min-h-7 [&>button]:min-w-7" onClick={(e) => e.stopPropagation()}>
                                                         <ReceiptIndicator
                                                             transactionGuid={tx.guid}
                                                             transactionDescription={tx.description}
@@ -3585,7 +3583,7 @@ export default function AccountLedger({
                                                 );
                                             }
 
-                                            return <td key={cell.id} className={fillerClass(colId).trim() || undefined}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>;
+                                            return <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>;
                                         })}
                                     </tr>
                                     {showSplitRows && tx.splits && tx.splits.length > 0 && (

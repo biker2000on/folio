@@ -65,7 +65,9 @@ export function DateCell({ value, onChange, autoFocus, onEnter, onArrowUp, onArr
     };
 
     return (
-        <div className="relative">
+        // min-w fits MM/DD/YYYY plus the weekday hint even when the
+        // Description column claims every spare pixel (split view).
+        <div className="relative min-w-[8rem]">
         <input
             ref={ref}
             type="text"
