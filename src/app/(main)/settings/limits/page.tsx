@@ -6,6 +6,7 @@ import { useToast } from '@/contexts/ToastContext';
 import { useIsMobile } from '@/lib/hooks/useIsMobile';
 import { MobileCard } from '@/components/ui/MobileCard';
 import { Tip } from '@/components/ui/Tooltip';
+import { PageHeader } from '@/components/ui/PageHeader';
 
 const EARLIEST_YEAR = 2024;
 
@@ -395,13 +396,12 @@ export default function ContributionLimitsPage() {
   );
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl">
+    <div className="max-w-5xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Contribution Limits</h1>
-        <p className="text-sm text-foreground-secondary mt-1">
-          IRS contribution limits per tax year. Values come from built-in defaults; edits are stored as
-          overrides in the database and take precedence.
-        </p>
+        <PageHeader
+          title="Contribution Limits"
+          subtitle="IRS contribution limits per tax year. Values come from built-in defaults; your edits are stored as overrides and take precedence."
+        />
       </div>
 
       {/* Toolbar */}

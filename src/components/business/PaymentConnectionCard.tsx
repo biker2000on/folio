@@ -90,8 +90,9 @@ export function PaymentConnectionCard() {
       </div>
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <div>
-          <label className="mb-1 block text-xs text-foreground-secondary">Stripe secret key</label>
+          <label htmlFor="stripe-secret-key" className="mb-1 block text-xs text-foreground-secondary">Stripe secret key</label>
           <input
+            id="stripe-secret-key"
             type="password"
             value={secretKey}
             onChange={event => setSecretKey(event.target.value)}
@@ -101,8 +102,9 @@ export function PaymentConnectionCard() {
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs text-foreground-secondary">Webhook signing secret</label>
+          <label htmlFor="stripe-webhook-secret" className="mb-1 block text-xs text-foreground-secondary">Webhook signing secret</label>
           <input
+            id="stripe-webhook-secret"
             type="password"
             value={webhookSecret}
             onChange={event => setWebhookSecret(event.target.value)}
@@ -112,8 +114,9 @@ export function PaymentConnectionCard() {
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs text-foreground-secondary">Processor clearing / deposit account</label>
+          <p className="mb-1 block text-xs text-foreground-secondary">Processor clearing / deposit account</p>
           <AccountSelector
+            ariaLabel="Processor clearing / deposit account"
             value={transferAccountGuid}
             onChange={guid => setTransferAccountGuid(guid)}
             accountTypes={['BANK', 'CASH', 'ASSET']}
@@ -121,8 +124,9 @@ export function PaymentConnectionCard() {
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs text-foreground-secondary">Processor fee expense account</label>
+          <p className="mb-1 block text-xs text-foreground-secondary">Processor fee expense account</p>
           <AccountSelector
+            ariaLabel="Processor fee expense account"
             value={feeAccountGuid}
             onChange={guid => setFeeAccountGuid(guid)}
             accountTypes={['EXPENSE']}

@@ -34,6 +34,7 @@ export async function GET() {
         is_investment: true,
         last_balance: true,
         last_balance_date: true,
+        is_ignored: true,
       },
       orderBy: [
         { simplefin_institution: 'asc' },
@@ -58,6 +59,7 @@ export async function GET() {
         isMapped: !!mapping.gnucash_account_guid,
         hasHoldings: false,
         isInvestment: mapping.is_investment,
+        isIgnored: mapping.is_ignored,
         isLive: false,
         isStored: true,
         liveMissing: true,
@@ -69,7 +71,8 @@ export async function GET() {
       // Fetch accounts from SimpleFin (no date range = just accounts, no transactions)
       const accountSet = await fetchAccounts(accessUrl);
       const simplefinWarnings = accountSet.errors.filter(isNonFatalSimpleFinWarning);
-      const simplefinErrors = accountSet.errors.filter(error => !isNonFatalSimpleFinWarning(error));
+      // The bridge repeats a connection's notice once per affected account.
+      const simplefinErrors = [...new Set(accountSet.errors.filter(error => !isNonFatalSimpleFinWarning(error)))];
       const liveError = simplefinErrors.length > 0 ? simplefinErrors.join('\n') : null;
       const now = new Date();
 
@@ -136,6 +139,7 @@ export async function GET() {
           isMapped: !!stored?.gnucashAccountGuid,
           hasHoldings: Array.isArray(acc.holdings) && acc.holdings.length > 0,
           isInvestment: stored?.isInvestment ?? false,
+          isIgnored: stored?.isIgnored ?? false,
           isLive: true,
           isStored: !!stored,
           liveMissing: false,

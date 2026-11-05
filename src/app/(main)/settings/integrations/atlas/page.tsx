@@ -81,9 +81,9 @@ export default function AtlasSettingsPage() {
         : { label: 'Not set up', className: 'border-border bg-background-tertiary text-foreground-secondary' };
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6">
       <PageHeader
-        title="Atlas"
+        title="Atlas Sync"
         subtitle="Two-way sync with your Atlas hive-management install (formerly beez-trackz)"
         actions={
           state && (

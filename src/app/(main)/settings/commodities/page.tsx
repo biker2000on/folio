@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ColumnDef,
@@ -19,6 +18,7 @@ import { verifySymbol, verifySymbolsBulk } from '@/lib/hooks/useYahooSymbolVerif
 import { useIsMobile } from '@/lib/hooks/useIsMobile';
 import { MobileCard } from '@/components/ui/MobileCard';
 import { Tip } from '@/components/ui/Tooltip';
+import { PageHeader } from '@/components/ui/PageHeader';
 
 const COL_ORDER = ['namespace', 'mnemonic', 'fullname', 'cusip', 'fraction', 'quoteFlag', 'quoteSource', 'quoteTz'] as const;
 type ColKey = typeof COL_ORDER[number];
@@ -635,20 +635,10 @@ export default function CommodityPriceSettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-foreground">Commodity Quote Settings</h1>
-          <p className="text-foreground-muted mt-1">
-            Add, edit, and manage commodities, fractions, and price source metadata.
-          </p>
-        </div>
-        <Link
-          href="/settings"
-          className="px-4 py-2 text-sm bg-background-tertiary text-foreground-secondary hover:bg-surface-hover rounded-lg transition-colors"
-        >
-          Back to Settings
-        </Link>
-      </div>
+      <PageHeader
+        title="Commodities"
+        subtitle="Securities and currencies: their fractions, and where their price quotes come from."
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-surface rounded-lg border border-border p-4">

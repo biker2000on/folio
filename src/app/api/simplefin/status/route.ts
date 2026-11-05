@@ -57,6 +57,7 @@ export async function GET() {
       gnucash_account_guid: string | null;
       last_sync_at: Date | null;
       is_investment: boolean;
+      is_ignored: boolean;
       last_balance: number | null;
       last_balance_date: Date | null;
     }[]>`
@@ -68,6 +69,7 @@ export async function GET() {
         gnucash_account_guid,
         last_sync_at,
         is_investment,
+        is_ignored,
         last_balance,
         last_balance_date
       FROM gnucash_web_simplefin_account_map
@@ -108,6 +110,7 @@ export async function GET() {
         isMapped: !!account.gnucash_account_guid,
         hasHoldings: false,
         isInvestment: account.is_investment,
+        isIgnored: account.is_ignored,
         isLive: false,
         isStored: true,
         liveMissing: true,

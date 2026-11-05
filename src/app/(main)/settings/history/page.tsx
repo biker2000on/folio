@@ -22,7 +22,7 @@ const PAGE_SIZE = 50;
 const ACTION_STYLES: Record<string, string> = {
     CREATE: 'bg-positive/10 text-positive border-positive/20',
     UPDATE: 'bg-warning/10 text-warning border-warning/20',
-    DELETE: 'bg-negative/10 text-negative border-negative/20',
+    DELETE: 'bg-error/10 text-error border-error/20',
 };
 
 const UNDO_LABEL: Record<string, string> = {
@@ -86,7 +86,7 @@ export default function HistoryPage() {
     };
 
     return (
-        <div className="space-y-6">
+        <div className="max-w-5xl mx-auto space-y-6">
             <PageHeader
                 title="Change History"
                 subtitle="Every recorded mutation, newest first. Transaction entries can be undone."

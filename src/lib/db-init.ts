@@ -937,6 +937,13 @@ async function createExtensionTables() {
         ADD COLUMN IF NOT EXISTS relink_floor TIMESTAMP;
     `;
 
+    // An account the owner chose not to import (a joint account already fed
+    // by the other login, a closed card). Lets "unlinked" mean "undecided".
+    const simpleFinAccountMapAddIgnoredDDL = `
+        ALTER TABLE gnucash_web_simplefin_account_map
+        ADD COLUMN IF NOT EXISTS is_ignored BOOLEAN NOT NULL DEFAULT FALSE;
+    `;
+
     const transactionMetaAddMatchColumnsDDL = `
         ALTER TABLE gnucash_web_transaction_meta
         ADD COLUMN IF NOT EXISTS match_type VARCHAR(30),
@@ -2996,6 +3003,7 @@ async function createExtensionTables() {
         await query(transactionMetaNullableGuidDDL);
         await query(simpleFinAccountMapAddBalanceDDL);
         await query(simpleFinAccountMapAddRelinkDDL);
+        await query(simpleFinAccountMapAddIgnoredDDL);
         await query(transactionMetaAddMatchColumnsDDL);
         await query(transactionMetaAddOriginalDescriptionDDL);
         await query(toolConfigTableDDL);

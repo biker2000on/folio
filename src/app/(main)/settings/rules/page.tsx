@@ -5,6 +5,7 @@ import { useToast } from '@/contexts/ToastContext';
 import AccountPickerDialog from '@/components/AccountPickerDialog';
 import ApplyHistoryModal from './ApplyHistoryModal';
 import { Tip } from '@/components/ui/Tooltip';
+import { PageHeader } from '@/components/ui/PageHeader';
 
 type MatchType = 'contains' | 'exact' | 'regex';
 
@@ -273,13 +274,12 @@ export default function CategorizationRulesPage() {
   };
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl">
+    <div className="max-w-5xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Categorization Rules</h1>
-        <p className="text-sm text-foreground-secondary mt-1">
-          Explicit rules that assign a category account to bank-sync imports by description.
-          Rules are checked before the history-based guess; higher priority wins.
-        </p>
+        <PageHeader
+          title="Categorization Rules"
+          subtitle="Rules that assign a category account to bank-feed imports by description. They are checked before the history-based guess, and the higher priority wins."
+        />
       </div>
 
       {/* Add / edit rule form */}
@@ -425,7 +425,7 @@ export default function CategorizationRulesPage() {
                       </button>
                       <button
                         onClick={() => void deleteRule(rule)}
-                        className="px-2 py-1 text-xs text-foreground-secondary hover:text-negative hover:bg-surface-hover rounded transition-colors"
+                        className="px-2 py-1 text-xs text-foreground-secondary hover:text-error hover:bg-surface-hover rounded transition-colors"
                       >
                         Delete
                       </button>
@@ -451,6 +451,7 @@ export default function CategorizationRulesPage() {
             value={testInput}
             onChange={e => setTestInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') void runTest(); }}
+            aria-label="Description to test"
             placeholder="e.g. KING SOOPERS #0123 DENVER CO"
             className="flex-1 min-w-64 px-3 py-2 text-sm bg-background-tertiary border border-border rounded-md text-foreground focus:outline-none focus:border-border-hover"
           />

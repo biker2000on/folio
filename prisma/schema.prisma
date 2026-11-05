@@ -1043,6 +1043,7 @@ model gnucash_web_simplefin_account_map {
   relinked_from           String?   @db.VarChar(255)
   relinked_at             DateTime?
   relink_floor            DateTime?
+  is_ignored              Boolean   @default(false)
 
   connection              gnucash_web_simplefin_connections @relation(fields: [connection_id], references: [id], onDelete: Cascade)
 

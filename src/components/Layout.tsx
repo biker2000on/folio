@@ -355,7 +355,7 @@ const navItems: NavItem[] = [
 // App-operator pages appended to Administration for admins only; the routes
 // enforce admin themselves, this just keeps them out of everyone else's nav.
 const ADMIN_NAV_CHILDREN: Array<{ name: string; href: string }> = [
-    { name: 'Feedback Review', href: '/admin/feedback' },
+    { name: 'Feedback Inbox', href: '/admin/feedback' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -632,7 +632,7 @@ function LayoutShell({ children }: { children: ReactNode }) {
             }
         });
         // effectiveNavItems depends on isBusinessBook and on the admin status
-        // (which arrives after mount and adds Feedback Review); re-run on each.
+        // (which arrives after mount and adds Feedback Inbox); re-run on each.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [pathname, isBusinessBook, isAppAdmin]);
 
@@ -693,10 +693,15 @@ function LayoutShell({ children }: { children: ReactNode }) {
     // -----------------------------------------------------------------------
 
     function renderNavItem(item: NavItem) {
-        const isActive = pathname === item.href || (item.href !== '/' && pathname?.startsWith(item.href + '/'));
         const activeChildHref = item.children
             ? resolveActiveChildHref(item.children, pathname, searchParams ?? new URLSearchParams())
             : null;
+        // The operator pages live outside /settings but belong to Administration.
+        // (Children borrowed across groups, like Business's Schedule C, stay
+        // owned by their home group.)
+        const isActive = pathname === item.href
+            || (item.href !== '/' && pathname?.startsWith(item.href + '/'))
+            || ADMIN_NAV_CHILDREN.some(child => child.href === activeChildHref);
         const Icon = iconMap[item.icon];
         const isSectionExpanded = expandedSections.has(item.name);
         const isCollapsed = collapsed && hydrated;
@@ -821,9 +826,9 @@ function LayoutShell({ children }: { children: ReactNode }) {
                     ${collapsed && hydrated ? 'justify-center px-2 py-4' : 'justify-between px-6 py-4'}`}>
                     {/* Title (hidden when collapsed) */}
                     {!(collapsed && hydrated) && (
-                        <h1 className="truncate text-primary">
+                        <div className="truncate text-primary">
                             <BrandLockup size={24} compact />
-                        </h1>
+                        </div>
                     )}
                     <button
                         onClick={toggleCollapsed}
@@ -903,9 +908,9 @@ function LayoutShell({ children }: { children: ReactNode }) {
             >
                 {/* Mobile header */}
                 <div className="flex items-center justify-between px-6 py-4 border-b border-sidebar-border">
-                    <h1 className="text-base text-foreground">
+                    <div className="text-base text-foreground">
                         <BrandLockup size={32} />
-                    </h1>
+                    </div>
                     <button
                         onClick={() => setMobileSidebarState({ open: false, pathname })}
                         className="p-2.5 rounded-lg text-sidebar-text hover:bg-sidebar-hover hover:text-foreground transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"

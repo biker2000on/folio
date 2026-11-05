@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { Account } from '@/lib/types';
 import { useAccounts } from '@/lib/hooks/useAccounts';
@@ -22,6 +22,14 @@ interface AccountSelectorProps {
     onShiftTab?: () => void;
     accountTypes?: string[];
     compact?: boolean;
+    /** Accessible name; the placeholder alone does not name the control. */
+    ariaLabel?: string;
+    /**
+     * Tab commits the highlighted option (default), which entry grids rely on.
+     * Pass false where every change saves immediately, so tabbing past the
+     * field can never write one.
+     */
+    commitOnTab?: boolean;
 }
 
 export function AccountSelector({
@@ -40,8 +48,11 @@ export function AccountSelector({
     onShiftTab,
     accountTypes,
     compact = false,
+    ariaLabel,
+    commitOnTab = true,
 }: AccountSelectorProps) {
     const [isOpen, setIsOpen] = useState(false);
+    const listboxId = useId();
     const [search, setSearch] = useState('');
     const [selectedName, setSelectedName] = useState('');
     const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
@@ -243,7 +254,7 @@ export function AccountSelector({
                 }
                 break;
             case 'Tab':
-                if (focusedIndex !== null && flatOptions[focusedIndex]) {
+                if (commitOnTab && focusedIndex !== null && flatOptions[focusedIndex]) {
                     handleSelect(flatOptions[focusedIndex]);
                 }
                 break;
@@ -273,6 +284,13 @@ export function AccountSelector({
                     }}
                     onFocus={handleInputFocus}
                     onKeyDown={handleKeyDown}
+                    role="combobox"
+                    aria-expanded={isOpen}
+                    aria-haspopup="listbox"
+                    aria-controls={listboxId}
+                    aria-activedescendant={isOpen && focusedIndex !== null ? `${listboxId}-${focusedIndex}` : undefined}
+                    aria-autocomplete="list"
+                    aria-label={ariaLabel}
                     placeholder={placeholder}
                     disabled={disabled}
                     className={`flex-1 bg-transparent ${compact ? 'text-xs' : 'text-sm'} text-foreground placeholder-foreground-muted focus:outline-none`}
@@ -290,6 +308,8 @@ export function AccountSelector({
             {isOpen && typeof document !== 'undefined' && createPortal(
                 <div
                     data-account-dropdown
+                    id={listboxId}
+                    role="listbox"
                     style={dropdownStyle}
                     className="bg-background-secondary border border-border rounded-lg shadow-xl max-h-64 overflow-y-auto"
                 >
@@ -305,8 +325,8 @@ export function AccountSelector({
                         (() => {
                             let globalIndex = 0;
                             return Object.entries(groupedAccounts).map(([type, typeAccounts]) => (
-                                <div key={type}>
-                                    <div className="px-3 py-2 text-xs font-semibold text-foreground-muted uppercase tracking-wider bg-input-bg sticky top-0">
+                                <div key={type} role="group" aria-label={type}>
+                                    <div aria-hidden className="px-3 py-2 text-xs font-semibold text-foreground-muted uppercase tracking-wider bg-input-bg sticky top-0">
                                         {type}
                                     </div>
                                     {typeAccounts.map(account => {
@@ -314,6 +334,9 @@ export function AccountSelector({
                                         return (
                                             <div
                                                 key={account.guid}
+                                                id={`${listboxId}-${currentIndex}`}
+                                                role="option"
+                                                aria-selected={account.guid === value}
                                                 ref={el => { itemRefs.current[currentIndex] = el; }}
                                                 className={`px-3 py-2 cursor-pointer text-foreground hover:bg-surface-hover/50 ${
                                                     currentIndex === focusedIndex

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '@/contexts/ToastContext';
 import { useBooks } from '@/contexts/BookContext';
 import { Field, FieldGrid, INPUT } from '@/components/ui/form';
+import { PageHeader } from '@/components/ui/PageHeader';
 
 interface BookUser {
     userId: number;
@@ -16,11 +17,20 @@ interface BookUser {
 
 const ROLE_OPTIONS = ['readonly', 'edit', 'admin', 'timekeeper'] as const;
 
-function authMethodBadges(authMethod: string): string[] {
-    if (authMethod === 'both') return ['password', 'OIDC'];
-    if (authMethod === 'oidc') return ['OIDC'];
-    return ['password'];
+const ROLE_LABELS: Record<string, string> = {
+    readonly: 'Read only',
+    edit: 'Edit',
+    admin: 'Admin',
+    timekeeper: 'Timekeeper',
+};
+
+function signInMethod(authMethod: string): string {
+    if (authMethod === 'both') return 'Signs in with a password or single sign-on';
+    if (authMethod === 'oidc') return 'Signs in with single sign-on';
+    return 'Signs in with a password';
 }
+
+const USERS_SUBTITLE = 'Who can open this book, and whether they can view, edit, or administer it.';
 
 interface Invitation {
     id: number;
@@ -177,7 +187,7 @@ export default function UsersPage() {
             <div className="max-w-3xl mx-auto">
                 <div className="flex items-center gap-3">
                     <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-                    <span className="text-foreground-secondary">Loading user management...</span>
+                    <span className="text-foreground-secondary">Loading users…</span>
                 </div>
             </div>
         );
@@ -185,8 +195,8 @@ export default function UsersPage() {
 
     if (userRole === 'non-admin') {
         return (
-            <div className="max-w-3xl mx-auto">
-                <h1 className="text-2xl font-bold text-foreground mb-4">User Management</h1>
+            <div className="max-w-3xl mx-auto space-y-6">
+                <PageHeader title="Users" subtitle={USERS_SUBTITLE} />
                 <div className="bg-surface rounded-lg border border-border p-6">
                     <p className="text-foreground-muted">You need admin access to manage users and invitations.</p>
                 </div>
@@ -199,7 +209,7 @@ export default function UsersPage() {
 
     return (
         <div className="max-w-3xl mx-auto space-y-6">
-            <h1 className="text-2xl font-bold text-foreground">User Management</h1>
+            <PageHeader title="Users" subtitle={USERS_SUBTITLE} />
 
             {/* Current Users */}
             {users.length > 0 && (() => {
@@ -213,34 +223,20 @@ export default function UsersPage() {
                                 return (
                                     <div key={u.userId} className="flex items-center justify-between gap-3 py-2 px-3 bg-background-tertiary rounded-lg">
                                         <div className="min-w-0 flex-1">
-                                            <div className="flex items-center gap-2 flex-wrap">
-                                                <span className="text-sm font-medium text-foreground">{u.username}</span>
-                                                {authMethodBadges(u.authMethod).map((badge) => (
-                                                    <span
-                                                        key={badge}
-                                                        className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                                                            badge === 'OIDC'
-                                                                ? 'bg-secondary-light text-secondary'
-                                                                : 'bg-foreground-muted/20 text-foreground-muted'
-                                                        }`}
-                                                    >
-                                                        {badge}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                            {u.email && (
-                                                <p className="text-xs text-foreground-muted truncate">{u.email}</p>
-                                            )}
+                                            <span className="text-sm font-medium text-foreground">{u.username}</span>
+                                            <p className="text-xs text-foreground-muted truncate">
+                                                {u.email ? `${u.email} · ` : ''}{signInMethod(u.authMethod)}
+                                            </p>
                                         </div>
                                         <select
                                             value={u.role}
                                             onChange={(e) => handleRoleChange(u.userId, e.target.value)}
                                             disabled={isLastAdmin}
-                                            aria-label={isLastAdmin ? 'Cannot demote the last admin' : undefined}
+                                            aria-label={isLastAdmin ? `Role for ${u.username} (the last admin cannot be demoted)` : `Role for ${u.username}`}
                                             className="bg-input-bg border border-border rounded-lg px-2.5 py-2 text-sm text-foreground focus:outline-none focus:border-primary/50 disabled:opacity-60 disabled:cursor-not-allowed"
                                         >
                                             {ROLE_OPTIONS.map((r) => (
-                                                <option key={r} value={r}>{r}</option>
+                                                <option key={r} value={r}>{ROLE_LABELS[r]}</option>
                                             ))}
                                         </select>
                                     </div>
@@ -331,7 +327,7 @@ export default function UsersPage() {
                                             inv.role === 'edit' ? 'bg-primary/20 text-primary' :
                                             'bg-foreground-muted/20 text-foreground-muted'
                                         }`}>
-                                            {inv.role}
+                                            {ROLE_LABELS[inv.role] ?? inv.role}
                                         </span>
                                     </div>
                                     <p className="text-xs text-foreground-muted mt-1">

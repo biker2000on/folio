@@ -69,8 +69,8 @@ Restrained. One accent color + navy/slate neutrals. Color is rare and meaningful
 | `--foreground` | `#0f172a` | Primary text |
 | `--foreground-secondary` | `#475569` | Secondary text |
 | `--foreground-muted` | `#64748b` | Muted text (4.8:1 on `--surface`) |
-| `--primary` | `#0d9488` | Accent (teal-600, darker for white bg contrast) |
-| `--primary-hover` | `#0f766e` | Accent hover |
+| `--primary` | `#0f766e` | Accent (teal-700; 5.5:1 on white, AA for text and for white text on it) |
+| `--primary-hover` | `#115e59` | Accent hover |
 | `--primary-light` | `rgba(13,148,136,0.08)` | Accent background tint |
 | `--primary-foreground` | `#ffffff` | Text on accent background |
 | `--positive` | `#16a34a` | Positive amounts |
@@ -240,3 +240,4 @@ ignores the app's light/dark toggle. Strategy and copy rules live in PRODUCT.md 
 | 2026-11-02 | 1920px data-surface width tier for the account tree and ledgers | Owner feedback #9: Accounts was held to 1152px on a 2560 screen while the ledger ran unbounded (amounts 1,500px from their description). 1400px is a dashboard measure, not a register measure |
 | 2026-11-02 | `--foreground-muted` brightened (dark `#8090a6`, light `#64748b`) | The old values measured 3.6:1 (dark) and 2.6:1 (light) on `--surface`, below WCAG AA for the 11–12px labels the token is actually used for |
 | 2026-11-02 | Balances keep sign colour; zero is muted | Owner: positive = green, negative = red. A wall of green `$0.00` made zeros read as gains |
+| 2026-11-05 | Light `--primary` teal-600 → teal-700 (`#0f766e`) | teal-600 measured 3.7:1 on white and on the white text of primary buttons, failing AA on every active nav item, link and button in the light theme. One step darker clears 4.5:1 everywhere it is used |

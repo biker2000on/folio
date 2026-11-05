@@ -19,6 +19,7 @@ import { ShareLinksSection } from '@/components/settings/ShareLinksSection';
 import { CalendarFeedSection } from '@/components/settings/CalendarFeedSection';
 import { EmailIngestSection } from '@/components/settings/EmailIngestSection';
 import { PageHeader } from '@/components/ui/PageHeader';
+import { SettingsLinkRow } from '@/components/ui/SettingsLinkRow';
 import { Field, FieldGrid, INPUT, RecordCard } from '@/components/ui/form';
 import { useUserPreferences, type CostBasisMethod, type HomeScreen } from '@/contexts/UserPreferencesContext';
 import type { DateFormat } from '@/lib/date-format';
@@ -691,7 +692,7 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-3xl mx-auto space-y-8">
-      <PageHeader title="General Settings" />
+      <PageHeader title="General" subtitle="Preferences, backups, email, access tokens, and security." />
 
       {/* ── Book & Entity ─────────────────────────────────────────────── */}
       <section className="space-y-3">
@@ -975,43 +976,11 @@ export default function SettingsPage() {
       {/* Book links (business books link to household books; households see incoming links) */}
       <BookLinksSection />
 
-      <CollapsibleConfigSection
-        title="IRS Contribution Limits"
-        summary="Annual limits for tax tools"
-        configured
-        storageKey="settings.irsLimitsOpen"
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <p className="text-sm text-foreground-muted">
-            Review and update annual contribution limits used by the tax estimator and contribution tracking.
-          </p>
-          <Link
-            href="/settings/limits"
-            className="inline-flex items-center justify-center px-4 py-2 text-sm bg-primary hover:bg-primary-hover text-primary-foreground rounded-lg transition-colors shrink-0"
-          >
-            Open Limits Editor
-          </Link>
-        </div>
-      </CollapsibleConfigSection>
-
-      <CollapsibleConfigSection
-        title="Categorization Rules"
-        summary="Bank-import auto-categorization"
-        configured
-        storageKey="settings.categorizationRulesOpen"
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <p className="text-sm text-foreground-muted">
-            Manage auto-categorization rules applied to bank-sync imports, with learned suggestions from your history.
-          </p>
-          <Link
-            href="/settings/rules"
-            className="inline-flex items-center justify-center px-4 py-2 text-sm bg-primary hover:bg-primary-hover text-primary-foreground rounded-lg transition-colors shrink-0"
-          >
-            Open Rules Editor
-          </Link>
-        </div>
-      </CollapsibleConfigSection>
+      <div className="space-y-2">
+        <SettingsLinkRow href="/settings/connections" title="Connections" summary="Bank feeds and account links" />
+        <SettingsLinkRow href="/settings/rules" title="Categorization Rules" summary="How imported transactions are categorized" />
+        <SettingsLinkRow href="/settings/limits" title="Contribution Limits" summary="Annual IRS limits used by tax tools" />
+      </div>
 
       {/* Inventory for household books (business books always have it) */}
       {entity && entity.entityType === 'household' && (

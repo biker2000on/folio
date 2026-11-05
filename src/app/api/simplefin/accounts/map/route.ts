@@ -29,19 +29,26 @@ export async function PUT(request: NextRequest) {
 
     // Upsert each mapping
     for (const mapping of mappings) {
-      const { simpleFinAccountId, simpleFinAccountName, simpleFinInstitution, simpleFinLast4, gnucashAccountGuid, isInvestment } = mapping;
+      const { simpleFinAccountId, simpleFinAccountName, simpleFinInstitution, simpleFinLast4, gnucashAccountGuid, isInvestment, isIgnored } = mapping;
 
       if (!simpleFinAccountId) continue;
 
+      // Linking an account is the opposite decision to ignoring it; otherwise
+      // an omitted flag leaves the stored one alone.
+      const ignored: boolean | null = typeof isIgnored === 'boolean'
+        ? isIgnored && !gnucashAccountGuid
+        : gnucashAccountGuid ? false : null;
+
       await prisma.$executeRaw`
         INSERT INTO gnucash_web_simplefin_account_map
-          (connection_id, simplefin_account_id, simplefin_account_name, simplefin_institution, simplefin_last4, gnucash_account_guid, is_investment)
+          (connection_id, simplefin_account_id, simplefin_account_name, simplefin_institution, simplefin_last4, gnucash_account_guid, is_investment, is_ignored)
         VALUES
-          (${connectionId}, ${simpleFinAccountId}, ${simpleFinAccountName || null}, ${simpleFinInstitution || null}, ${simpleFinLast4 || null}, ${gnucashAccountGuid || null}, ${isInvestment ?? false})
+          (${connectionId}, ${simpleFinAccountId}, ${simpleFinAccountName || null}, ${simpleFinInstitution || null}, ${simpleFinLast4 || null}, ${gnucashAccountGuid || null}, ${isInvestment ?? false}, ${ignored ?? false})
         ON CONFLICT (connection_id, simplefin_account_id)
         DO UPDATE SET
           gnucash_account_guid = ${gnucashAccountGuid || null},
           is_investment = ${isInvestment ?? false},
+          is_ignored = COALESCE(${ignored}::boolean, gnucash_web_simplefin_account_map.is_ignored),
           simplefin_account_name = COALESCE(${simpleFinAccountName || null}, gnucash_web_simplefin_account_map.simplefin_account_name),
           simplefin_institution = COALESCE(${simpleFinInstitution || null}, gnucash_web_simplefin_account_map.simplefin_institution),
           simplefin_last4 = COALESCE(${simpleFinLast4 || null}, gnucash_web_simplefin_account_map.simplefin_last4)

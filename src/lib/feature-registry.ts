@@ -243,11 +243,11 @@ export const FEATURES: Feature[] = [
 
     // ── Settings ─────────────────────────────────────────────────────────
     { id: 'nav-settings', title: 'Settings', navTitle: 'General', description: 'Preferences, connections, backups, email, tokens, and security.', href: '/settings', domain: 'settings', task: 'Configuration', kind: 'page', shortcut: 'g s', nav: true },
-    { id: 'nav-settings-connections', title: 'Connections', description: 'SimpleFIN bank sync connections.', href: '/settings/connections', domain: 'settings', task: 'Configuration', kind: 'page', keywords: 'simplefin bank sync', nav: true },
+    { id: 'nav-settings-connections', title: 'Connections', description: 'SimpleFin bank feeds and account links, plus Stripe invoice payments.', href: '/settings/connections', domain: 'settings', task: 'Configuration', kind: 'page', keywords: 'simplefin bank sync', nav: true },
     { id: 'nav-settings-rules', title: 'Categorization Rules', description: 'Auto-categorization for imports, with retroactive application.', href: '/settings/rules', domain: 'settings', task: 'Configuration', kind: 'page', keywords: 'categorization auto', nav: true },
     { id: 'nav-settings-commodities', title: 'Commodities', description: 'Securities, currencies, and price quote configuration.', href: '/settings/commodities', domain: 'settings', task: 'Configuration', kind: 'page', keywords: 'securities prices quotes', nav: true },
     { id: 'nav-settings-history', title: 'Change History', description: 'The audit trail — every mutation, with one-click undo.', href: '/settings/history', domain: 'settings', task: 'Configuration', kind: 'page', keywords: 'audit log undo restore trail', nav: true },
-    { id: 'nav-settings-users', title: 'Users', description: 'Per-book roles: readonly, edit, admin.', href: '/settings/users', domain: 'settings', task: 'Configuration', kind: 'page', keywords: 'permissions roles', nav: true },
+    { id: 'nav-settings-users', title: 'Users', description: 'Who can open this book, and whether they can view, edit, or administer it.', href: '/settings/users', domain: 'settings', task: 'Configuration', kind: 'page', keywords: 'permissions roles', nav: true },
     { id: 'integration-beez-sync', title: 'Atlas Sync', description: 'Two-way transaction sync with an Atlas (formerly beez-trackz) hive-management install: status, tokens and setup.', href: '/settings/integrations/atlas', domain: 'settings', task: 'Configuration', kind: 'action', keywords: 'atlas beez trackz beekeeping apiary hive integration sync api external link idempotent change feed token', nav: true },
 ];
 

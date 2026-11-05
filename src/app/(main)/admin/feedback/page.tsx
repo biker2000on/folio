@@ -266,7 +266,7 @@ export default function AdminFeedbackPage() {
   ];
 
   return (
-    <div className="space-y-5">
+    <div className="max-w-5xl mx-auto space-y-5">
       <PageHeader
         title="Feedback Inbox"
         subtitle="Everything people send from the in-app feedback dialog"

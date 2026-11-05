@@ -720,7 +720,9 @@ export async function runSimpleFinSync(
     return result;
   }
 
-  for (const error of accountSet.errors) {
+  // Chunked fetches (and the bridge itself, per affected account) repeat the
+  // same connection notice; one copy is the message.
+  for (const error of new Set(accountSet.errors)) {
     if (isNonFatalSimpleFinWarning(error)) {
       result.warnings.push({ account: 'all', warning: error });
     } else {

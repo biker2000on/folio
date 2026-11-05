@@ -10,6 +10,7 @@
 
 import Link from 'next/link';
 import { product } from '@/lib/product';
+import { PageHeader } from '@/components/ui/PageHeader';
 
 export const metadata = {
     title: `API Documentation — ${product.brand}`,
@@ -424,18 +425,20 @@ function EndpointCard({ endpoint }: { endpoint: Endpoint }) {
 
 export default function ApiDocsPage() {
     return (
-        <div className="max-w-4xl mx-auto px-6 py-8 space-y-10">
-            <div>
-                <h1 className="text-2xl font-bold text-foreground">API Documentation</h1>
-                <p className="mt-1 text-sm text-foreground-secondary">
-                    The REST API used by the app itself, callable from scripts and integrations with a
-                    personal access token. Manage tokens in{' '}
-                    <Link href="/settings" className="text-primary hover:underline">
-                        Settings → API Tokens
-                    </Link>
-                    .
-                </p>
-            </div>
+        <div className="max-w-5xl mx-auto space-y-10">
+            <PageHeader
+                title="API Documentation"
+                subtitle={
+                    <>
+                        The REST API the app itself uses, callable from scripts and integrations with a personal
+                        access token. Manage tokens in{' '}
+                        <Link href="/settings" className="text-primary hover:underline">
+                            General → API tokens
+                        </Link>
+                        .
+                    </>
+                }
+            />
 
             <section className="space-y-3">
                 <h2 className="text-lg font-semibold text-foreground">Authentication</h2>
