@@ -925,6 +925,18 @@ async function createExtensionTables() {
         ADD COLUMN IF NOT EXISTS last_balance_date TIMESTAMP;
     `;
 
+    // A re-keyed SimpleFin account (institution re-added on the bridge) takes
+    // over its predecessor's mapping. relinked_from/relinked_at record which id
+    // it replaced and when, so syncs re-key rather than re-import the rows the
+    // predecessor imported; feed rows older than relink_floor (the
+    // predecessor's cursor less the overlap) belong to the predecessor.
+    const simpleFinAccountMapAddRelinkDDL = `
+        ALTER TABLE gnucash_web_simplefin_account_map
+        ADD COLUMN IF NOT EXISTS relinked_from VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS relinked_at TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS relink_floor TIMESTAMP;
+    `;
+
     const transactionMetaAddMatchColumnsDDL = `
         ALTER TABLE gnucash_web_transaction_meta
         ADD COLUMN IF NOT EXISTS match_type VARCHAR(30),
@@ -2983,6 +2995,7 @@ async function createExtensionTables() {
         await query(transactionMetaAddDeletedAtDDL);
         await query(transactionMetaNullableGuidDDL);
         await query(simpleFinAccountMapAddBalanceDDL);
+        await query(simpleFinAccountMapAddRelinkDDL);
         await query(transactionMetaAddMatchColumnsDDL);
         await query(transactionMetaAddOriginalDescriptionDDL);
         await query(toolConfigTableDDL);

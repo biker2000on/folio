@@ -3,6 +3,7 @@ import { requireRole } from '@/lib/auth';
 import prisma from '@/lib/prisma';
 import { decryptAccessUrl, fetchAccounts, SimpleFinAccessRevokedError } from '@/lib/services/simplefin.service';
 import { isNonFatalSimpleFinWarning, updateSimpleFinConnectionSyncStatus } from '@/lib/services/simplefin-sync.service';
+import { findRelinkPairs } from '@/lib/simplefin-relink';
 
 // GET /api/simplefin/accounts -- list SimpleFin accounts with mapping status
 export async function GET() {
@@ -111,7 +112,14 @@ export async function GET() {
             simplefin_institution = COALESCE(${acc.org?.name || null}, gnucash_web_simplefin_account_map.simplefin_institution),
             last_balance = COALESCE(${liveBalance}, gnucash_web_simplefin_account_map.last_balance),
             last_balance_date = COALESCE(${liveBalanceDate}, gnucash_web_simplefin_account_map.last_balance_date),
-            last_sync_at = ${now}
+            -- On a MAPPED row last_sync_at is the import cursor: advancing it
+            -- here, without importing anything, made every page load skip
+            -- whatever the last sync failed to bring in. Unmapped rows have no
+            -- cursor yet, so for them it stays "last seen".
+            last_sync_at = CASE
+              WHEN gnucash_web_simplefin_account_map.gnucash_account_guid IS NULL THEN ${now}
+              ELSE gnucash_web_simplefin_account_map.last_sync_at
+            END
         `;
 
         accountMap.set(acc.id, {
@@ -134,8 +142,12 @@ export async function GET() {
         });
       }
 
+      const accounts = Array.from(accountMap.values());
       return NextResponse.json({
-        accounts: Array.from(accountMap.values()),
+        accounts,
+        // Safe even when one institution is erroring: an outage hides
+        // accounts, it never adds the unmapped same-named twin a pair needs.
+        relinkPairs: findRelinkPairs(accounts),
         live: true,
         liveError,
         simplefinErrors,

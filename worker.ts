@@ -159,6 +159,7 @@ async function runScheduledSimpleFinSync(connectionId: number, bookGuid: string,
         accountsProcessed: result.accountsProcessed,
         manualReconciliation: result.transactionsMatched.manualReconciliation,
         transferDedup: result.transactionsMatched.transferDedup,
+        relinked: result.transactionsMatched.relinked,
         warnings: result.warnings.length,
       });
     } else {
@@ -551,6 +552,7 @@ async function main() {
             accountsProcessed: syncResult.accountsProcessed,
             manualReconciliation: syncResult.transactionsMatched.manualReconciliation,
             transferDedup: syncResult.transactionsMatched.transferDedup,
+            relinked: syncResult.transactionsMatched.relinked,
             warnings: syncResult.warnings.length,
             errors: syncResult.errors.length,
           };

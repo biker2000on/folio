@@ -10,6 +10,7 @@ import { MobileCard } from '@/components/ui/MobileCard';
 import { PaymentConnectionCard } from '@/components/business/PaymentConnectionCard';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { formatAccountPath } from '@/lib/account-utils';
+import type { RelinkPair } from '@/lib/simplefin-relink';
 
 interface SimpleFinAccount {
   id: string;
@@ -38,6 +39,7 @@ interface SyncResult {
   transactionsMatched?: {
     manualReconciliation: number;
     transferDedup: number;
+    relinked?: number;
   };
   errors: { account: string; error: string }[];
   warnings?: { account: string; warning: string }[];
@@ -84,6 +86,8 @@ export default function ConnectionsPage() {
   const [sfAccountsMapped, setSfAccountsMapped] = useState(0);
   const [sfLiveLoading, setSfLiveLoading] = useState(false);
   const [sfLiveError, setSfLiveError] = useState<string | null>(null);
+  const [sfRelinkPairs, setSfRelinkPairs] = useState<RelinkPair[]>([]);
+  const [sfRelinking, setSfRelinking] = useState(false);
 
   const fetchSimplefinStatus = useCallback(async () => {
     try {
@@ -124,6 +128,7 @@ export default function ConnectionsPage() {
         isInvestment: a.isInvestment || (a.hasHoldings && !a.isMapped),
       }));
       setSfAccounts(accounts);
+      setSfRelinkPairs(Array.isArray(data.relinkPairs) ? data.relinkPairs : []);
       setSfAccountsTotal(accounts.length);
       setSfAccountsMapped(accounts.filter((account: SimpleFinAccount) => account.isMapped).length);
       setSfLiveError(data.liveError ?? null);
@@ -205,6 +210,28 @@ export default function ConnectionsPage() {
     }
   };
 
+  const handleSfRelink = async () => {
+    setSfRelinking(true);
+    try {
+      const res = await fetch('/api/simplefin/accounts/relink', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pairs: sfRelinkPairs }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showError(data.error || 'Failed to carry over links');
+        return;
+      }
+      success(`Carried over ${data.relinked} account link${data.relinked === 1 ? '' : 's'}`);
+      await fetchSimplefinAccounts();
+    } catch {
+      showError('Failed to carry over links');
+    } finally {
+      setSfRelinking(false);
+    }
+  };
+
   const handleSfToggleInvestment = async (sfAccountId: string, isInvestment: boolean, sfAccount: SimpleFinAccount) => {
     try {
       const res = await fetch('/api/simplefin/accounts/map', {
@@ -247,7 +274,9 @@ export default function ConnectionsPage() {
         setSfSyncStatus(data.status ?? null);
         setSfRevoked(data.revoked ?? false);
         setSfLastSyncError(data.errors?.length ? data.errors.map((err: { account: string; error: string }) => `${err.account}: ${err.error}`).join('\n') : null);
-        const matched = (data.transactionsMatched?.manualReconciliation || 0) + (data.transactionsMatched?.transferDedup || 0);
+        const matched = (data.transactionsMatched?.manualReconciliation || 0)
+          + (data.transactionsMatched?.transferDedup || 0)
+          + (data.transactionsMatched?.relinked || 0);
         const matchedMsg = matched > 0 ? `, matched ${matched} existing` : '';
         if (data.errors?.length) {
           showError(data.errors[0].error || 'Sync finished with errors');
@@ -294,6 +323,7 @@ export default function ConnectionsPage() {
           transactionsMatched: {
             manualReconciliation: num('manualReconciliation'),
             transferDedup: num('transferDedup'),
+            relinked: num('relinked'),
           },
           errors: [],
           warnings: [],
@@ -473,6 +503,11 @@ export default function ConnectionsPage() {
                   Imported {sfSyncResult.transactionsImported} transactions, skipped {sfSyncResult.transactionsSkipped} duplicates
                   ({sfSyncResult.accountsProcessed} accounts processed)
                 </p>
+                {sfSyncResult.transactionsMatched && (sfSyncResult.transactionsMatched.relinked ?? 0) > 0 && (
+                  <p className="text-sm text-primary mt-1">
+                    {sfSyncResult.transactionsMatched.relinked} already-imported transactions moved to their new SimpleFin IDs
+                  </p>
+                )}
                 {sfSyncResult.transactionsMatched && (sfSyncResult.transactionsMatched.manualReconciliation > 0 || sfSyncResult.transactionsMatched.transferDedup > 0) && (
                   <p className="text-sm text-primary mt-1">
                     {sfSyncResult.transactionsMatched.manualReconciliation > 0 && (
@@ -508,6 +543,39 @@ export default function ConnectionsPage() {
                     </ul>
                   </details>
                 )}
+              </div>
+            )}
+
+            {/* Re-keyed accounts: an institution re-added on SimpleFin Bridge
+                returns every account under a new id. */}
+            {sfRelinkPairs.length > 0 && (
+              <div className="border border-warning/30 bg-warning/10 rounded-lg p-4">
+                <p className="text-sm font-medium text-foreground">
+                  {sfRelinkPairs.length} bank account{sfRelinkPairs.length === 1 ? '' : 's'} came back from SimpleFin with new IDs
+                </p>
+                <p className="text-xs text-foreground-secondary mt-1">
+                  Reconnecting a bank on SimpleFin Bridge issues new account and transaction IDs. Carrying the links over keeps
+                  each book account, and the next sync matches transactions it already imported instead of importing them again.
+                </p>
+                <ul className="mt-3 space-y-1 text-xs">
+                  {sfRelinkPairs.map(pair => {
+                    const from = sfAccounts.find(a => a.id === pair.fromId);
+                    return (
+                      <li key={pair.toId} className="flex flex-wrap gap-x-2 text-foreground-secondary">
+                        <span className="text-foreground">{from?.institution} · {from?.name}</span>
+                        <span className="text-foreground-muted">→</span>
+                        <span>{pathFor(from?.gnucashAccountGuid ?? null) ?? 'linked book account'}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <button
+                  onClick={handleSfRelink}
+                  disabled={sfRelinking}
+                  className="mt-3 px-4 py-1.5 text-xs bg-primary hover:bg-primary-hover disabled:bg-primary/50 text-primary-foreground rounded-lg transition-colors font-medium"
+                >
+                  {sfRelinking ? 'Carrying over…' : `Carry over ${sfRelinkPairs.length} link${sfRelinkPairs.length === 1 ? '' : 's'}`}
+                </button>
               </div>
             )}
 

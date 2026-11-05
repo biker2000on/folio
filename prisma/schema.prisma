@@ -1040,6 +1040,9 @@ model gnucash_web_simplefin_account_map {
   is_investment           Boolean   @default(false)
   last_balance            Decimal?
   last_balance_date       DateTime?
+  relinked_from           String?   @db.VarChar(255)
+  relinked_at             DateTime?
+  relink_floor            DateTime?
 
   connection              gnucash_web_simplefin_connections @relation(fields: [connection_id], references: [id], onDelete: Cascade)
 

@@ -85,7 +85,7 @@ export function formatJobSummary(
     if (inv) parts.push(`${inv} investment`);
     const skipped = n('transactionsSkipped');
     if (skipped) parts.push(`${skipped} skipped`);
-    const matched = (n('manualReconciliation') ?? 0) + (n('transferDedup') ?? 0);
+    const matched = (n('manualReconciliation') ?? 0) + (n('transferDedup') ?? 0) + (n('relinked') ?? 0);
     if (matched) parts.push(`${matched} matched`);
     const warnings = n('warnings');
     if (warnings) parts.push(`${warnings} warning${warnings === 1 ? '' : 's'}`);

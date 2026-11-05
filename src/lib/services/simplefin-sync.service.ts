@@ -99,6 +99,8 @@ export interface SyncResult {
   transactionsMatched: {
     manualReconciliation: number;
     transferDedup: number;
+    /** Imports re-keyed onto a relinked account's new SimpleFin ids. */
+    relinked: number;
   };
   errors: { account: string; error: string }[];
   warnings: { account: string; warning: string }[];
@@ -129,7 +131,7 @@ export function isNonFatalSimpleFinWarning(message: string): boolean {
 }
 
 /** Trailing overlap re-fetched on every sync so late-posting transactions land. */
-const SYNC_OVERLAP_DAYS = 7;
+export const SYNC_OVERLAP_DAYS = 7;
 /** Bootstrap window for accounts that have never synced. */
 const SYNC_BOOTSTRAP_DAYS = 90;
 /**
@@ -494,6 +496,7 @@ export async function syncSimpleFin(
       transactionsMatched: {
         manualReconciliation: 0,
         transferDedup: 0,
+        relinked: 0,
       },
       errors: [],
       warnings: [{
@@ -592,6 +595,7 @@ export async function runSimpleFinSync(
     transactionsMatched: {
       manualReconciliation: 0,
       transferDedup: 0,
+      relinked: 0,
     },
     errors: [],
     warnings: [],
@@ -651,6 +655,8 @@ export async function runSimpleFinSync(
       gnucash_account_guid: true,
       last_sync_at: true,
       is_investment: true,
+      relinked_at: true,
+      relink_floor: true,
     },
   });
   const mappedAccounts = (mappedAccountsRaw as Array<
@@ -762,6 +768,12 @@ export async function runSimpleFinSync(
     collectFeedTransactionIds(mappedAccounts, sfAccountMap),
   );
 
+  // Every id the bridge returned this run, mapped or not. An imported row whose
+  // id is absent here can only be re-keyed onto a relinked account's new id.
+  const liveFeedIds = new Set(
+    accountSet.accounts.flatMap(a => (a.transactions ?? []).map(t => t.id)),
+  );
+
   // Process each mapped account
   let accountIndex = 0;
   for (const mappedAccount of mappedAccounts) {
@@ -852,7 +864,20 @@ export async function runSimpleFinSync(
         cashChildGuid = await getOrCreateCashChild(mappedAccount.gnucash_account_guid, bookGuid, bookAccountGuidSet, accountsCreated);
       }
 
-      for (const sfTxn of sfAccount.transactions) {
+      const relink = mappedAccount.relinked_at && mappedAccount.relink_floor
+        ? {
+          cutoffDay: isoDate(normalizePostDate(mappedAccount.relinked_at.getTime() / 1000)),
+          floor: normalizePostDate(mappedAccount.relink_floor.getTime() / 1000),
+          claimed: new Set<string>(),
+        }
+        : null;
+      // Oldest first on a relinked account, so each pre-relink import is
+      // claimed by its own feed row before a later same-amount row can.
+      const feedTransactions = relink
+        ? [...sfAccount.transactions].sort((a, b) => a.posted - b.posted)
+        : sfAccount.transactions;
+
+      for (const sfTxn of feedTransactions) {
         // Dedup by SimpleFin transaction ID
         if (existingIds.has(sfTxn.id)) {
           result.transactionsSkipped++;
@@ -865,8 +890,27 @@ export async function runSimpleFinSync(
           continue;
         }
 
-        // Manual reconciliation: match to existing manually-entered transaction
         const accountScu = gnucashAccount.commodity_scu || 100;
+
+        if (relink) {
+          const postDate = normalizePostDate(sfTxn.posted);
+          // Older than the predecessor mapping's own sync cursor: it already
+          // had its chance to import (or the user deleted it). Re-importing
+          // under the new id would duplicate it.
+          if (postDate < relink.floor) {
+            result.transactionsSkipped++;
+            continue;
+          }
+          if (isoDate(postDate) <= relink.cutoffDay && await findAndRekeyRelinkedImport(
+            sfTxn, mappedAccount.gnucash_account_guid, accountScu, liveFeedIds, relink.claimed, relink.floor,
+          )) {
+            result.transactionsMatched.relinked++;
+            existingIds.add(sfTxn.id);
+            continue;
+          }
+        }
+
+        // Manual reconciliation: match to existing manually-entered transaction
         if (await findAndLinkManualMatch(sfTxn, mappedAccount.gnucash_account_guid, accountScu)) {
           result.transactionsMatched.manualReconciliation++;
           existingIds.add(sfTxn.id);
@@ -1142,7 +1186,9 @@ async function createSimpleFinNotification(
 ) {
   try {
     const source = options.source || 'unknown';
-    const matched = result.transactionsMatched.manualReconciliation + result.transactionsMatched.transferDedup;
+    const matched = result.transactionsMatched.manualReconciliation
+      + result.transactionsMatched.transferDedup
+      + result.transactionsMatched.relinked;
     const summary = `Imported ${result.transactionsImported} transaction${result.transactionsImported === 1 ? '' : 's'}, skipped ${result.transactionsSkipped}, matched ${matched}.`;
 
     if (result.status === 'success') {
@@ -1375,6 +1421,131 @@ async function findAndLinkManualMatch(
     }
     return true;
   });
+}
+
+export interface RelinkRekeyRow {
+  transaction_guid: string;
+  post_date: Date;
+  description: string;
+  simplefin_transaction_id: string | null;
+  simplefin_transaction_id_2: string | null;
+}
+
+/**
+ * Which of an imported row's id columns a relinked account's new feed id may
+ * replace: one whose id the bridge no longer returns. Pure — exported for tests.
+ *
+ * A two-legged transfer carries one id per side. When only this side was
+ * re-keyed, the other side's id is still live and must be left alone (its
+ * account dedups on it); when both sides were re-keyed, each side's pass
+ * replaces one stale column, so which one it picks does not matter.
+ */
+export function staleSimpleFinIdColumn(
+  row: Pick<RelinkRekeyRow, 'simplefin_transaction_id' | 'simplefin_transaction_id_2'>,
+  liveFeedIds: ReadonlySet<string>,
+): 'simplefin_transaction_id' | 'simplefin_transaction_id_2' | null {
+  if (row.simplefin_transaction_id && !liveFeedIds.has(row.simplefin_transaction_id)) {
+    return 'simplefin_transaction_id';
+  }
+  if (row.simplefin_transaction_id_2 && !liveFeedIds.has(row.simplefin_transaction_id_2)) {
+    return 'simplefin_transaction_id_2';
+  }
+  return null;
+}
+
+/**
+ * Re-key an already-imported transaction onto a relinked account's new feed id.
+ *
+ * After an institution is re-added on SimpleFin Bridge, the same bank
+ * transaction comes back under a new id, so id dedup misses it and the
+ * manual-reconciliation matcher skips it (it only considers rows without an
+ * id). This finds the row the predecessor account imported — same book
+ * account, exact amount, within the match window, carrying an id the bridge
+ * no longer returns — and swaps the stale id for the new one.
+ *
+ * `claimed` holds rows this account already re-keyed in this run: a two-legged
+ * transfer keeps one stale column after its first re-key, and must not absorb
+ * a second same-amount feed row from the same account.
+ */
+async function findAndRekeyRelinkedImport(
+  sfTxn: SimpleFinTransaction,
+  bankAccountGuid: string,
+  accountScu: number,
+  liveFeedIds: ReadonlySet<string>,
+  claimed: Set<string>,
+  floor: Date,
+): Promise<boolean> {
+  const amount = parseFloat(sfTxn.amount);
+  if (isNaN(amount) || amount === 0) return false;
+
+  const postDate = normalizePostDate(sfTxn.posted);
+  const matchWindowDays = getSimpleFinMatchWindowDays();
+  const sqlWindowMs = (matchWindowDays + 1) * 86400000;
+  const scuPrecision = Math.round(Math.log10(accountScu));
+  const { num: absNum, denom } = toNumDenom(Math.abs(amount), scuPrecision);
+  const valueNum = amount > 0 ? absNum : -absNum;
+  const lowerBound = new Date(Math.max(postDate.getTime() - sqlWindowMs, floor.getTime()));
+
+  const rows = await prisma.$queryRaw<RelinkRekeyRow[]>`
+    SELECT
+      t.guid AS transaction_guid,
+      t.post_date,
+      COALESCE(NULLIF(btrim(m.original_description), ''), t.description) AS description,
+      m.simplefin_transaction_id,
+      m.simplefin_transaction_id_2
+    FROM transactions t
+    JOIN splits s ON s.tx_guid = t.guid AND s.account_guid = ${bankAccountGuid}
+    JOIN gnucash_web_transaction_meta m ON m.transaction_guid = t.guid
+    WHERE s.value_num = ${BigInt(valueNum)}
+      AND s.value_denom = ${BigInt(denom)}
+      AND t.post_date BETWEEN ${lowerBound}
+                          AND ${new Date(postDate.getTime() + sqlWindowMs)}
+      AND m.simplefin_transaction_id IS NOT NULL
+      AND m.deleted_at IS NULL
+    ORDER BY t.post_date ASC, t.enter_date ASC
+  `;
+
+  const staleColumns = new Map<string, NonNullable<ReturnType<typeof staleSimpleFinIdColumn>>>();
+  const candidates: ReconciliationCandidate[] = [];
+  for (const row of rows) {
+    if (claimed.has(row.transaction_guid)) continue;
+    const column = staleSimpleFinIdColumn(row, liveFeedIds);
+    if (!column) continue;
+    staleColumns.set(row.transaction_guid, column);
+    candidates.push({
+      transaction_guid: row.transaction_guid,
+      post_date: row.post_date,
+      description: row.description,
+      has_meta: true,
+    });
+  }
+
+  const match = selectManualReconciliationMatch(sfTxn, candidates, matchWindowDays);
+  if (!match) return false;
+  const column = staleColumns.get(match.transaction_guid)!;
+  const staleId = rows.find(r => r.transaction_guid === match.transaction_guid)![column]!;
+
+  const rekeyed = await prisma.$transaction(async (tx) => {
+    if (!await claimSimpleFinTransactionId(tx, sfTxn.id)) return false;
+    // Guarded on the stale value, so a concurrent re-key of the same row
+    // updates nothing instead of overwriting the other side's id.
+    const updated = column === 'simplefin_transaction_id'
+      ? await tx.$executeRaw`
+          UPDATE gnucash_web_transaction_meta
+          SET simplefin_transaction_id = ${sfTxn.id}, matched_at = NOW()
+          WHERE transaction_guid = ${match.transaction_guid}
+            AND simplefin_transaction_id = ${staleId}
+        `
+      : await tx.$executeRaw`
+          UPDATE gnucash_web_transaction_meta
+          SET simplefin_transaction_id_2 = ${sfTxn.id}, matched_at = NOW()
+          WHERE transaction_guid = ${match.transaction_guid}
+            AND simplefin_transaction_id_2 = ${staleId}
+        `;
+    return updated === 1;
+  });
+  if (rekeyed) claimed.add(match.transaction_guid);
+  return rekeyed;
 }
 
 /**
@@ -2189,6 +2360,7 @@ export async function syncAllConnections(): Promise<SyncResult[]> {
         transactionsMatched: {
           manualReconciliation: 0,
           transferDedup: 0,
+          relinked: 0,
         },
         errors: [{ account: 'connection', error: `Sync failed: ${error}` }],
         warnings: [],
