@@ -92,11 +92,25 @@ export interface EntityDocumentContext {
   uploadTitlePlaceholder: string;
   notesPlaceholder: string;
   starterIntro: string;
+  /** Starter-set labels, in reading order (lowercase, for running prose). */
   starterExamples: string[];
+  /**
+   * The same starter set, each paired with the upload category it belongs
+   * to, so the empty state can open the upload form with that type chosen.
+   * Every `docType` is one of this context's `typeOptions`.
+   */
+  starterDocuments: StarterDocument[];
   typeOptions: DocumentTypeOption[];
 }
 
-interface BaseContext extends Omit<EntityDocumentContext, 'typeOptions'> {
+export interface StarterDocument {
+  label: string;
+  docType: DocumentTypeValue;
+}
+
+interface BaseContext
+  extends Omit<EntityDocumentContext, 'typeOptions' | 'starterExamples' | 'starterDocuments'> {
+  starterExamples: StarterDocument[];
   typeValues: DocumentTypeValue[];
 }
 
@@ -110,7 +124,12 @@ const NEUTRAL_CONTEXT: BaseContext = {
   uploadTitlePlaceholder: 'e.g. Annual insurance policy',
   notesPlaceholder: 'Reference number, date, contact, or follow-up details…',
   starterIntro: 'No documents yet. Useful records to keep here include:',
-  starterExamples: ['identity records', 'tax notices', 'property records', 'insurance policies'],
+  starterExamples: [
+    { label: 'identity records', docType: 'identity' },
+    { label: 'tax notices', docType: 'tax' },
+    { label: 'property records', docType: 'property' },
+    { label: 'insurance policies', docType: 'insurance' },
+  ],
   typeValues: ['identity', 'tax', 'property', 'estate', 'insurance', 'agreement', 'other'],
 };
 
@@ -123,11 +142,11 @@ const ENTITY_CONTEXTS: Record<string, BaseContext> = {
     notesPlaceholder: 'Policy number, tax year, property, contact, or follow-up details…',
     starterIntro: 'No household documents yet. A practical starter set includes:',
     starterExamples: [
-      'identity records',
-      'recent tax filings and notices',
-      'property records',
-      'estate planning documents',
-      'insurance policies',
+      { label: 'identity records', docType: 'identity' },
+      { label: 'recent tax filings and notices', docType: 'tax' },
+      { label: 'property records', docType: 'property' },
+      { label: 'estate planning documents', docType: 'estate' },
+      { label: 'insurance policies', docType: 'insurance' },
     ],
     typeValues: ['identity', 'tax', 'property', 'estate', 'insurance', 'agreement', 'other'],
   },
@@ -139,11 +158,11 @@ const ENTITY_CONTEXTS: Record<string, BaseContext> = {
     notesPlaceholder: 'Tax year, permit number, policy number, renewal contact, or filing details…',
     starterIntro: 'No sole proprietorship documents yet. A useful starter set includes:',
     starterExamples: [
-      'EIN assignment letter',
-      'business licenses and permits',
-      'client or vendor agreements',
-      'insurance certificates',
-      'tax filings and notices',
+      { label: 'EIN assignment letter', docType: 'ein' },
+      { label: 'business licenses and permits', docType: 'license' },
+      { label: 'client or vendor agreements', docType: 'agreement' },
+      { label: 'insurance certificates', docType: 'insurance' },
+      { label: 'tax filings and notices', docType: 'tax' },
     ],
     typeValues: ['ein', 'tax', 'license', 'agreement', 'insurance', 'property', 'other'],
   },
@@ -155,11 +174,11 @@ const ENTITY_CONTEXTS: Record<string, BaseContext> = {
     notesPlaceholder: 'Filing date, document number, registered agent, renewal, or policy details…',
     starterIntro: 'No single-member LLC documents yet. A useful starter set includes:',
     starterExamples: [
-      'articles of organization',
-      'operating agreement',
-      'EIN assignment letter',
-      'licenses and permits',
-      'insurance certificates',
+      { label: 'articles of organization', docType: 'formation' },
+      { label: 'operating agreement', docType: 'agreement' },
+      { label: 'EIN assignment letter', docType: 'ein' },
+      { label: 'licenses and permits', docType: 'license' },
+      { label: 'insurance certificates', docType: 'insurance' },
     ],
     typeValues: [
       'formation',
@@ -181,11 +200,11 @@ const ENTITY_CONTEXTS: Record<string, BaseContext> = {
     notesPlaceholder: 'Filing date, ownership terms, document number, renewal, or policy details…',
     starterIntro: 'No partnership LLC documents yet. A useful starter set includes:',
     starterExamples: [
-      'articles of organization',
-      'multi-member operating agreement',
-      'EIN assignment letter',
-      'ownership and governance records',
-      'insurance certificates',
+      { label: 'articles of organization', docType: 'formation' },
+      { label: 'multi-member operating agreement', docType: 'agreement' },
+      { label: 'EIN assignment letter', docType: 'ein' },
+      { label: 'ownership and governance records', docType: 'governance' },
+      { label: 'insurance certificates', docType: 'insurance' },
     ],
     typeValues: [
       'formation',
@@ -207,11 +226,11 @@ const ENTITY_CONTEXTS: Record<string, BaseContext> = {
     notesPlaceholder: 'Filing date, tax year, resolution, policy number, or renewal details…',
     starterIntro: 'No S-Corp documents yet. A useful starter set includes:',
     starterExamples: [
-      'articles of incorporation or organization',
-      'EIN assignment letter',
-      'Form 2553 and IRS acceptance',
-      'bylaws, resolutions, and meeting minutes',
-      'insurance certificates',
+      { label: 'articles of incorporation or organization', docType: 'formation' },
+      { label: 'EIN assignment letter', docType: 'ein' },
+      { label: 'Form 2553 and IRS acceptance', docType: 'election' },
+      { label: 'bylaws, resolutions, and meeting minutes', docType: 'governance' },
+      { label: 'insurance certificates', docType: 'insurance' },
     ],
     typeValues: [
       'formation',
@@ -234,11 +253,11 @@ const ENTITY_CONTEXTS: Record<string, BaseContext> = {
     notesPlaceholder: 'Filing date, resolution, tax year, policy number, or renewal details…',
     starterIntro: 'No C-Corp documents yet. A useful starter set includes:',
     starterExamples: [
-      'articles of incorporation',
-      'bylaws and shareholder agreements',
-      'EIN assignment letter',
-      'board resolutions and meeting minutes',
-      'tax filings and insurance certificates',
+      { label: 'articles of incorporation', docType: 'formation' },
+      { label: 'bylaws and shareholder agreements', docType: 'governance' },
+      { label: 'EIN assignment letter', docType: 'ein' },
+      { label: 'board resolutions and meeting minutes', docType: 'governance' },
+      { label: 'tax filings and insurance certificates', docType: 'tax' },
     ],
     typeValues: [
       'formation',
@@ -261,11 +280,11 @@ const ENTITY_CONTEXTS: Record<string, BaseContext> = {
     notesPlaceholder: 'Tax year, board action, filing date, policy number, or renewal details…',
     starterIntro: 'No nonprofit documents yet. A strong governance and compliance starter set includes:',
     starterExamples: [
-      'articles of incorporation and bylaws',
-      'IRS determination letter',
-      'board minutes and governance policies',
-      'Form 990 and related tax filings',
-      'insurance policies',
+      { label: 'articles of incorporation and bylaws', docType: 'formation' },
+      { label: 'IRS determination letter', docType: 'determination' },
+      { label: 'board minutes and governance policies', docType: 'governance' },
+      { label: 'Form 990 and related tax filings', docType: 'tax' },
+      { label: 'insurance policies', docType: 'insurance' },
     ],
     typeValues: [
       'formation',
@@ -307,6 +326,13 @@ export function getEntityDocumentContext(
   const farmTypes: DocumentTypeValue[] = isFarm
     ? ['farm_certificate_qf', 'farm_certificate_cf']
     : [];
+  const starterDocuments: StarterDocument[] = isFarm
+    ? [
+        ...resolved.starterExamples,
+        { label: 'E-595QF qualifying-farmer certificate', docType: 'farm_certificate_qf' },
+        { label: 'E-595CF conditional-farmer certificate', docType: 'farm_certificate_cf' },
+      ]
+    : [...resolved.starterExamples];
 
   return {
     title: resolved.title,
@@ -320,13 +346,8 @@ export function getEntityDocumentContext(
       : resolved.uploadTitlePlaceholder,
     notesPlaceholder: resolved.notesPlaceholder,
     starterIntro: resolved.starterIntro,
-    starterExamples: isFarm
-      ? [
-          ...resolved.starterExamples,
-          'E-595QF qualifying-farmer certificate',
-          'E-595CF conditional-farmer certificate',
-        ]
-      : [...resolved.starterExamples],
+    starterExamples: starterDocuments.map(({ label }) => label),
+    starterDocuments,
     typeOptions: toOptions([
       ...resolved.typeValues.filter((value) => value !== 'other'),
       ...farmTypes,

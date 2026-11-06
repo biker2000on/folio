@@ -66,15 +66,48 @@ export function calculateEducationPlan(child: EducationChild, asOf = new Date())
   };
 }
 
+export const UTILITY_TYPES = ['electric', 'gas', 'water', 'propane'] as const satisfies readonly UtilityType[];
+
+export function utilityUnitFor(type: UtilityType): UtilityBill['unit'] {
+  return type === 'electric' ? 'kWh' : type === 'gas' ? 'therms' : 'gallons';
+}
+
+/**
+ * Metered utilities bill once per service period, so the next bill is due a
+ * month on and bill-to-bill usage is consumption. A propane delivery is a
+ * refill: its size says how empty the tank was, not how much was used.
+ */
+export function isMeteredUtility(type: UtilityType): boolean {
+  return type !== 'propane';
+}
+
 function utilityRate(bill: UtilityBill): number {
   return bill.usage > 0 ? bill.totalCost / bill.usage : 0;
 }
 
+/**
+ * Bills in the 12 calendar months ending with the latest bill's month. A count
+ * of the last 12 bills only means a year for monthly service; propane
+ * deliveries come a few times a year, and 12 of them can span half a decade.
+ */
+function trailingYear(rows: UtilityBill[]): UtilityBill[] {
+  const latest = rows.at(-1);
+  if (!latest) return [];
+  const end = new Date(`${latest.date.slice(0, 7)}-01T00:00:00Z`);
+  end.setUTCMonth(end.getUTCMonth() - 11);
+  const firstMonth = end.toISOString().slice(0, 7);
+  return rows.filter(bill => bill.date.slice(0, 7) >= firstMonth);
+}
+
 export function calculateUtilityAnalysis(bills: UtilityBill[]) {
-  const byType = (['electric', 'gas', 'water'] as const).map(type => {
+  const byType = UTILITY_TYPES.map(type => {
     const rows = bills.filter(bill => bill.type === type).sort((a, b) => a.date.localeCompare(b.date));
-    const latest = rows.at(-1) ?? null;
-    const previous = rows.at(-2) ?? null;
+    // Rate and usage compare bills that carry usage: a propane tank-rental
+    // invoice has none, and would read as usage falling to zero.
+    const usageRows = rows.filter(bill => bill.usage > 0);
+    const latest = usageRows.at(-1) ?? null;
+    const previous = usageRows.at(-2) ?? null;
+    const year = trailingYear(rows);
     const latestRate = latest ? utilityRate(latest) : 0;
     const previousRate = previous ? utilityRate(previous) : 0;
     const usageChangePercent = latest && previous && previous.usage > 0
@@ -91,8 +124,8 @@ export function calculateUtilityAnalysis(bills: UtilityBill[]) {
       latestRate: round2(latestRate),
       usageChangePercent: round2(usageChangePercent),
       rateChangePercent: round2(rateChangePercent),
-      trailing12Cost: round2(rows.slice(-12).reduce((sum, bill) => sum + bill.totalCost, 0)),
-      trailing12Usage: round2(rows.slice(-12).reduce((sum, bill) => sum + bill.usage, 0)),
+      trailing12Cost: round2(year.reduce((sum, bill) => sum + bill.totalCost, 0)),
+      trailing12Usage: round2(year.reduce((sum, bill) => sum + bill.usage, 0)),
     };
   });
   return {
@@ -311,12 +344,113 @@ function parseUsage(text: string): { usage: number; unit: string } | null {
   return null;
 }
 
+function numericDate(month: string, day: string, year: string): string | null {
+  return isoDate(Object.keys(MONTHS)[Number(month) - 1] ?? '', day, year);
+}
+
+const money = (raw: string) => Number(raw.replaceAll(',', ''));
+
+/**
+ * Propane supplier statements bill a delivery, not a metered period. Once OCR
+ * flattens the page a delivery reads:
+ *
+ *   "2/28/22  1424612-Delivery  Leased 125 tank ... 24.400 gals. Propane @
+ *    $3.549000/gal - $86.60 Hazmat Fee LP - $9.95 North Carolina State Tax -
+ *    $4.58 Caldwell County Tax - $1.93  24.40  103.06  103.06 ..."
+ *
+ * The itemized "Label - $amount" lines are the charges; the bare columns after
+ * them (quantity, charge, current, aging buckets) are not, and neither is the
+ * amount due, which nets out payments and credits. The supplier's annual
+ * tank-rental invoice carries no gallons, but it is still part of what heating
+ * with propane costs, so it parses as a zero-usage propane bill.
+ */
+export function parsePropaneStatement(text: string): {
+  date: string | null;
+  usage: number;
+  charges: UtilityCharge[];
+} | null {
+  if (!/propane/i.test(text)) return null;
+  const charges: UtilityCharge[] = [];
+  const dates: string[] = [];
+  let usage = 0;
+
+  const deliveryRe = /([\d,]+(?:\.\d+)?)\s*gal(?:lon)?s?\.?\s*propane\s*@\s*\$?\s*([\d.]+)\s*\/\s*gal(?:lon)?\s*-\s*\$\s*([\d,]+\.\d{2})/gi;
+  const deliveries = [...text.matchAll(deliveryRe)];
+  for (const delivery of deliveries) {
+    const gallons = money(delivery[1]);
+    usage += gallons;
+    charges.push({ label: `Propane ${gallons} gal @ $${Number(delivery[2])}/gal`, amount: money(delivery[3]), category: 'supply' });
+  }
+  if (deliveries.length > 0) {
+    // Fees and taxes follow the delivery line, up to the bare numeric columns.
+    const start = deliveries[0].index!;
+    const tail = text.slice(start);
+    const columns = /\s\d[\d,]*\.\d{2}\s+\d[\d,]*\.\d{2}\s/.exec(tail.slice(deliveries[0][0].length));
+    const region = tail
+      .slice(0, columns ? deliveries[0][0].length + columns.index : undefined)
+      .replace(deliveryRe, ' | ');
+    for (const line of region.matchAll(/([A-Z][A-Za-z .&'/]{2,60}?)\s+-\s+\$\s*(-?[\d,]+\.\d{2})/g)) {
+      const label = line[1].trim();
+      charges.push({ label, amount: money(line[2]), category: TAX_LABEL.test(label) ? 'tax' : 'fee' });
+    }
+    for (const date of text.matchAll(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+\d+-Delivery\b/gi)) {
+      const iso = numericDate(date[1], date[2], date[3]);
+      if (iso) dates.push(iso);
+    }
+  }
+
+  const rental = /tank rental fee/i.exec(text);
+  if (rental) {
+    // The first bare amount after the label is the charge. "$79 plus tax" is
+    // the lease note, and the amount due can be smaller once a credit applies.
+    const amount = /(?<![$\d.,])(\d[\d,]*\.\d{2})(?!\d)/.exec(text.slice(rental.index));
+    if (amount) charges.push({ label: 'Tank rental fee', amount: money(amount[1]), category: 'fee' });
+    for (const date of text.matchAll(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+\d+-Service\b/gi)) {
+      const iso = numericDate(date[1], date[2], date[3]);
+      if (iso) dates.push(iso);
+    }
+  }
+
+  if (charges.length === 0) return null;
+  return { date: dates.sort().at(-1) ?? null, usage: round2(usage), charges };
+}
+
 export function parseUtilityBillText(input: {
   receiptId: number;
   date: string;
   provider: string;
   text: string;
 }): UtilityBill | null {
+  // Before the metered patterns: "24.400 gals." would otherwise read as water.
+  const propane = parsePropaneStatement(input.text);
+  if (propane) {
+    const sum = (category: UtilityChargeCategory) =>
+      round2(propane.charges.filter(charge => charge.category === category).reduce((total, c) => total + c.amount, 0));
+    const supplyCost = sum('supply');
+    const feeCost = sum('fee');
+    const taxCost = sum('tax');
+    const totalCost = round2(supplyCost + feeCost + taxCost);
+    if (totalCost <= 0) return null;
+    return {
+      id: `receipt-${input.receiptId}-propane`,
+      date: (propane.date ?? input.date).slice(0, 10),
+      type: 'propane',
+      provider: input.provider,
+      usage: propane.usage,
+      unit: 'gallons',
+      totalCost,
+      periodStart: null,
+      periodEnd: null,
+      charges: propane.charges,
+      supplyCost,
+      feeCost,
+      taxCost,
+      otherCost: 0,
+      transactionGuid: null,
+      receiptId: input.receiptId,
+    };
+  }
+
   const parsedUsage = parseUsage(input.text);
   if (!parsedUsage) {
     // Prose patterns found nothing — try the municipal meter-table layout.
@@ -371,7 +505,7 @@ export function parseUtilityBillText(input: {
   const type: UtilityType = rawUnit === 'kwh'
     ? 'electric'
     : rawUnit.startsWith('therm') || rawUnit === 'ccf' ? 'gas' : 'water';
-  const unit: UtilityBill['unit'] = type === 'electric' ? 'kWh' : type === 'gas' ? 'therms' : 'gallons';
+  const unit = utilityUnitFor(type);
 
   const period = parseUtilityBillPeriod(input.text);
   return {
@@ -456,11 +590,20 @@ export function calculateSolarPayback(profile: UtilitiesProfile) {
       cumulativeSavings: round2(cumulativeSavings),
     };
   });
+  // Without a cost, production and a rate there is nothing to pay back: the
+  // loop above would report payback in year 1 on an all-zero scenario.
+  const missing = [
+    ...(upfrontCost > 0 ? [] : ['system cost' as const]),
+    ...(profile.solar.annualProductionKwh > 0 ? [] : ['annual production' as const]),
+    ...(currentRate > 0 ? [] : ['an electric bill' as const]),
+  ];
+  const computable = missing.length === 0;
   return {
     currentElectricRate: round2(currentRate),
     upfrontCost: round2(upfrontCost),
-    paybackYear,
-    lifetimeSavings: round2(cumulativeSavings - upfrontCost),
+    paybackYear: computable ? paybackYear : null,
+    lifetimeSavings: computable ? round2(cumulativeSavings - upfrontCost) : 0,
+    missing,
     cashFlows,
   };
 }

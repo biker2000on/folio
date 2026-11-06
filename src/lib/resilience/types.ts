@@ -338,7 +338,11 @@ export interface EducationProfile {
   children: EducationChild[];
 }
 
-export type UtilityType = 'electric' | 'gas' | 'water';
+/**
+ * `propane` is delivered to a tank rather than metered: a bill is a delivery
+ * (gallons) or the annual tank rental (no usage), never a service period.
+ */
+export type UtilityType = 'electric' | 'gas' | 'water' | 'propane';
 
 /**
  * One line item from a bill's charge detail. `supply` is the commodity itself

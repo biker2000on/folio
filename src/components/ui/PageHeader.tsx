@@ -34,7 +34,7 @@ export function PageHeader({ title, subtitle, actions, menuActions, toolbar }: P
                 <div className="min-w-0">
                     <h1 className="text-xl sm:text-2xl font-bold text-foreground truncate">{title}</h1>
                     {subtitle && (
-                        <p className="text-sm text-foreground-secondary mt-0.5 hidden sm:block">{subtitle}</p>
+                        <p className="text-sm text-foreground-secondary mt-0.5 hidden sm:block [text-wrap:pretty]">{subtitle}</p>
                     )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">

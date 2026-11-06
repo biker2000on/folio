@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { FileDropZone, type FileUploadOutcome } from '@/components/ui/FileDropZone';
-import { receiptUploadOutcome, uploadReceiptFile } from '@/components/receipts/ReceiptUploadZone';
+import { receiptUploadOutcome, uploadReceiptFile, type ReceiptUploadResult } from '@/components/receipts/ReceiptUploadZone';
 import {
   RECEIPT_ACCEPT_ATTRIBUTE,
   RECEIPT_MAX_FILE_SIZE,
@@ -13,22 +13,45 @@ import {
 } from '@/lib/upload-limits';
 import { useToast } from '@/contexts/ToastContext';
 import { formatCurrency } from '@/lib/format';
-import { findDuplicateUtilityBill } from '@/lib/resilience/p3-core';
+import { UTILITY_TYPES, findDuplicateUtilityBill, utilityUnitFor } from '@/lib/resilience/p3-core';
 import type { UtilitiesProfile, UtilityBill } from '@/lib/resilience/types';
-import { Empty, Field, FieldGrid, INPUT, Metric, Panel, SaveBar, Tabs, TNUM } from './ui';
+import { Empty, Field, FieldGrid, INPUT, LoadError, Metric, Panel, SaveBar, Tabs, TNUM } from './ui';
 import { UtilityTrends } from './UtilityTrends';
 import { numberValue, today, uid, useSection } from './P3FeaturePages';
 
 type UtilityResponse = {
   profile: UtilitiesProfile;
   analysis: { trailing12Cost: number; byType: Array<{ type: string; latestRate: number; usageChangePercent: number; rateChangePercent: number; trailing12Cost: number }> };
-  solar: { upfrontCost: number; paybackYear: number | null; lifetimeSavings: number; currentElectricRate: number };
+  solar: { upfrontCost: number; paybackYear: number | null; lifetimeSavings: number; currentElectricRate: number; missing?: string[] };
   suggestions: UtilityBill[];
 };
 
 /** How long to keep polling for OCR results after an upload, and how often. */
 const BILL_ANALYSIS_POLL_MS = 5_000;
 const BILL_ANALYSIS_TIMEOUT_MS = 120_000;
+
+const TYPE_LABELS: Record<UtilityBill['type'], string> = { electric: 'Electric', gas: 'Gas', water: 'Water', propane: 'Propane' };
+
+/**
+ * Unit rates in the units the bills are priced in: electricity is fractions of
+ * a cent per kWh, and water is priced per thousand gallons, where a per-gallon
+ * figure rounds to a meaningless $0.01.
+ */
+function formatRate(rate: number, type: UtilityBill['type']): string {
+  switch (type) {
+    case 'electric': return `$${rate.toFixed(3)}/kWh`;
+    case 'gas': return `$${rate.toFixed(2)}/therm`;
+    case 'water': return `$${(rate * 1000).toFixed(2)}/1k gal`;
+    case 'propane': return `$${rate.toFixed(2)}/gal`;
+  }
+}
+
+/** A tank rental or service fee carries no usage; "0 gallons" would read as a reading. */
+function formatUsage(bill: UtilityBill): string {
+  return bill.usage > 0 ? `${bill.usage.toLocaleString()} ${bill.unit}` : 'fee only';
+}
+
+type UploadedBill = Pick<ReceiptUploadResult, 'id' | 'filename'>;
 
 /**
  * Bill capture pane.
@@ -40,12 +63,15 @@ const BILL_ANALYSIS_TIMEOUT_MS = 120_000;
  * review queue. Nothing lands in the utility profile without an explicit
  * import, so the capture step stays evidence-only.
  */
-function UtilityBillCapture(props: { onUploaded: (succeeded: number) => void }) {
+function UtilityBillCapture(props: { onUploaded: (bills: UploadedBill[]) => void }) {
   const toast = useToast();
   const { onUploaded } = props;
+  const batch = useRef<UploadedBill[]>([]);
 
   const upload = useCallback(async (file: File): Promise<FileUploadOutcome> => {
-    return receiptUploadOutcome(await uploadReceiptFile(file));
+    const result = await uploadReceiptFile(file);
+    if (result.status === 'uploaded') batch.current.push({ id: result.id, filename: result.filename });
+    return receiptUploadOutcome(result);
   }, []);
 
   const settled = useCallback(({ succeeded, failed }: { succeeded: number; failed: number }) => {
@@ -55,7 +81,8 @@ function UtilityBillCapture(props: { onUploaded: (succeeded: number) => void }) 
     if (succeeded > 0) {
       toast.success(`${succeeded} bill${succeeded === 1 ? '' : 's'} uploaded — reading them now`);
     }
-    onUploaded(succeeded);
+    onUploaded(batch.current);
+    batch.current = [];
   }, [onUploaded, toast]);
 
   return (
@@ -63,7 +90,7 @@ function UtilityBillCapture(props: { onUploaded: (succeeded: number) => void }) 
       accept={RECEIPT_ACCEPT_ATTRIBUTE}
       rules={RECEIPT_SCREEN_RULES}
       label="Upload utility bills"
-      prompt="Drag and drop electric, gas, or water bills here"
+      prompt="Drop electric, gas, water, or propane bills here"
       hint={`JPEG, PNG, or PDF up to ${formatSizeLimit(RECEIPT_MAX_FILE_SIZE)}. Drop several at once.`}
       buttonLabel="Choose bills"
       onUploadFile={upload}
@@ -147,9 +174,9 @@ function SuggestionRow(props: {
       />
       <div className="min-w-0 flex-1">
         <span>
-          {summary} · {bill.type}
+          {summary} · {TYPE_LABELS[bill.type]}
           {' · '}
-          <span className="font-mono" style={TNUM}>{bill.usage.toLocaleString()} {bill.unit} / {formatCurrency(bill.totalCost)}</span>
+          <span className="font-mono" style={TNUM}>{formatUsage(bill)} / {formatCurrency(bill.totalCost)}</span>
         </span>
         {duplicate && (
           <span className="ml-2 inline-block rounded-sm bg-warning/15 px-1.5 py-0.5 text-[11px] font-semibold text-warning">
@@ -193,7 +220,7 @@ function BillsTable(props: {
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'date', dir: -1 });
 
   const counts = useMemo(() => {
-    const byType = { electric: 0, gas: 0, water: 0 } as Record<UtilityBill['type'], number>;
+    const byType = Object.fromEntries(UTILITY_TYPES.map(type => [type, 0])) as Record<UtilityBill['type'], number>;
     for (const bill of props.bills) byType[bill.type] += 1;
     return byType;
   }, [props.bills]);
@@ -239,9 +266,9 @@ function BillsTable(props: {
         <button type="button" onClick={() => props.onTypeFilter('all')} className={props.typeFilter === 'all' ? CHIP_ON : CHIP_OFF}>
           All ({props.bills.length})
         </button>
-        {(['electric', 'gas', 'water'] as const).map(type => (
+        {UTILITY_TYPES.map(type => (
           <button key={type} type="button" onClick={() => props.onTypeFilter(type)} className={props.typeFilter === type ? CHIP_ON : CHIP_OFF}>
-            {type} ({counts[type]})
+            {TYPE_LABELS[type]} ({counts[type]})
           </button>
         ))}
       </div>
@@ -281,7 +308,7 @@ function BillsTable(props: {
         </table>
       </div>
       {props.typeFilter !== 'all' && rows.length === 0 && (
-        <p className="mt-3 text-xs text-foreground-muted">No {props.typeFilter} bills yet.</p>
+        <p className="mt-3 text-xs text-foreground-muted">No {TYPE_LABELS[props.typeFilter].toLowerCase()} bills yet.</p>
       )}
     </div>
   );
@@ -301,7 +328,7 @@ function BillRow(props: {
     <>
       <tr className={`border-b border-border/60 ${props.staged ? 'bg-primary-light' : ''}`}>
         <td className="py-2 pr-3 font-mono" style={TNUM}>{bill.date}</td>
-        <td className="py-2 pr-3">{bill.type}</td>
+        <td className="py-2 pr-3">{TYPE_LABELS[bill.type]}</td>
         <td className="max-w-[220px] truncate py-2 pr-3">
           {bill.provider || <span className="text-foreground-muted">Unnamed provider</span>}
           {props.staged && (
@@ -310,8 +337,8 @@ function BillRow(props: {
             </span>
           )}
         </td>
-        <td className="py-2 pr-3 text-right font-mono" style={TNUM}>{bill.usage.toLocaleString()} {bill.unit}</td>
-        <td className="py-2 pr-3 text-right font-mono" style={TNUM}>{props.rate != null ? `$${props.rate.toFixed(2)}` : '—'}</td>
+        <td className="py-2 pr-3 text-right font-mono" style={TNUM}>{formatUsage(bill)}</td>
+        <td className="py-2 pr-3 text-right font-mono" style={TNUM}>{props.rate != null ? formatRate(props.rate, bill.type) : '—'}</td>
         <td className="py-2 pr-3 text-right font-mono" style={TNUM}>{formatCurrency(bill.totalCost)}</td>
         <td className="py-2 pr-3">
           {bill.receiptId
@@ -329,7 +356,7 @@ function BillRow(props: {
           <td colSpan={8} className="py-3">
             <FieldGrid>
               <Field label="Date"><input type="date" className={`${INPUT} font-mono`} value={bill.date} onChange={event => props.onUpdate({ date: event.target.value })} /></Field>
-              <Field label="Type"><select className={INPUT} value={bill.type} onChange={event => { const type = event.target.value as UtilityBill['type']; props.onUpdate({ type, unit: type === 'electric' ? 'kWh' : type === 'gas' ? 'therms' : 'gallons' }); }}><option>electric</option><option>gas</option><option>water</option></select></Field>
+              <Field label="Type"><select className={INPUT} value={bill.type} onChange={event => { const type = event.target.value as UtilityBill['type']; props.onUpdate({ type, unit: utilityUnitFor(type) }); }}>{UTILITY_TYPES.map(type => <option key={type} value={type}>{TYPE_LABELS[type]}</option>)}</select></Field>
               <Field label="Provider"><input className={INPUT} value={bill.provider} onChange={event => props.onUpdate({ provider: event.target.value })} /></Field>
               <Field label={`Usage (${bill.unit})`}><input type="number" className={`${INPUT} font-mono`} value={bill.usage} onChange={event => props.onUpdate({ usage: numberValue(event.target.value) })} /></Field>
               <Field label="Total cost"><input type="number" className={`${INPUT} font-mono`} value={bill.totalCost} onChange={event => props.onUpdate({ totalCost: numberValue(event.target.value) })} /></Field>
@@ -352,6 +379,64 @@ function BillRow(props: {
   );
 }
 
+/**
+ * A KPI tile whose explanation lives on this page (another tab), so it is a
+ * button rather than a link. Same look as `Metric` with `href`.
+ */
+function MetricButton(props: { label: string; value: string; opens: string; onSelect: () => void; muted?: boolean; warning?: boolean; hint?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={props.onSelect}
+      className="rounded-lg border border-border bg-background-secondary/30 p-4 text-left transition-colors hover:border-border-hover hover:bg-surface-hover"
+    >
+      <span className="block text-xs font-semibold uppercase tracking-wider text-foreground-secondary">{props.label}</span>
+      <span className={`mt-1 block font-mono text-xl font-semibold ${props.muted ? 'text-foreground-muted' : props.warning ? 'text-warning' : 'text-foreground'}`} style={TNUM}>{props.value}</span>
+      {props.hint && <span className={`mt-1 block text-xs ${props.warning ? 'text-warning' : 'text-foreground-muted'}`}>{props.hint}</span>}
+      <span className="mt-2 block text-xs text-primary">{props.opens} →</span>
+    </button>
+  );
+}
+
+/**
+ * Uploads the OCR pass finished with but could not turn into a bill — a
+ * statement layout the parser does not know, a non-utility document, or a
+ * copy of a bill already in the queue. Each stays one click from its evidence
+ * and from a hand-entered bill linked to it.
+ */
+function UnreadUploads(props: { uploads: UploadedBill[]; onEnterByHand: (upload: UploadedBill) => void; onDismiss: () => void }) {
+  return (
+    <div role="status" className="mt-4 rounded-md border border-warning/30 bg-warning/5 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold text-foreground">
+            {props.uploads.length === 1 ? '1 upload' : `${props.uploads.length} uploads`} could not be read as a utility bill
+          </p>
+          <p className="mt-1 text-xs text-foreground-secondary">
+            They are saved as receipts. Open one to check it, or enter the bill by hand and it stays linked to the receipt.
+          </p>
+        </div>
+        <button type="button" onClick={props.onDismiss} className="min-h-11 px-2 text-xs text-foreground-secondary transition-colors hover:text-foreground">
+          Dismiss
+        </button>
+      </div>
+      <ul className="mt-3 divide-y divide-border/60">
+        {props.uploads.map(upload => (
+          <li key={upload.id} className="flex flex-wrap items-center justify-between gap-3 py-2 text-sm">
+            <span className="min-w-0 truncate font-mono text-xs text-foreground" style={TNUM}>{upload.filename}</span>
+            <span className="flex shrink-0 items-center gap-4">
+              <ReceiptLink receiptId={upload.id} />
+              <button type="button" onClick={() => props.onEnterByHand(upload)} className="text-xs font-semibold text-primary">
+                Enter by hand
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function UtilitiesPlannerPage() {
   const toast = useToast();
   const searchParams = useSearchParams();
@@ -361,11 +446,19 @@ export function UtilitiesPlannerPage() {
   });
   // Honor the Action Center's deep link into the solar scenario.
   const [tab, setTab] = useState<'usage' | 'trends' | 'solar'>(searchParams.get('tab') === 'solar' ? 'solar' : searchParams.get('tab') === 'trends' ? 'trends' : 'usage');
+  // A rate tile opens Trends on its own utility type.
+  const [trendType, setTrendType] = useState<UtilityBill['type'] | null>(null);
   // OCR runs on a worker, so a fresh upload has no suggestion yet. Poll the
   // section until one appears (or we give up), refreshing only the computed
   // half of the response so unsaved bill edits survive.
   const [analyzing, setAnalyzing] = useState(false);
-  const suggestionBaseline = useRef(0);
+  // Receipts from this session's uploads that have not become a suggestion
+  // yet. Whatever is still here when polling gives up could not be read as a
+  // utility bill, and says so instead of silently disappearing.
+  const [pendingUploads, setPendingUploads] = useState<UploadedBill[]>([]);
+  const [unreadUploads, setUnreadUploads] = useState<UploadedBill[]>([]);
+  const pendingRef = useRef<UploadedBill[]>([]);
+  useEffect(() => { pendingRef.current = pendingUploads; });
   const refreshRef = useRef(state.refresh);
   useEffect(() => { refreshRef.current = state.refresh; });
 
@@ -379,31 +472,42 @@ export function UtilitiesPlannerPage() {
 
   const responseSuggestions = state.response?.suggestions;
   const suggestions = useMemo(() => responseSuggestions ?? [], [responseSuggestions]);
-  const suggestionCount = suggestions.length;
 
   useEffect(() => {
     if (!analyzing) return;
     const deadline = Date.now() + BILL_ANALYSIS_TIMEOUT_MS;
+    const settle = (next: UtilityResponse) => {
+      const read = new Set([
+        ...next.suggestions.flatMap(bill => bill.receiptId ? [bill.receiptId] : []),
+        ...next.profile.bills.flatMap(bill => bill.receiptId ? [bill.receiptId] : []),
+      ]);
+      const stillPending = pendingRef.current.filter(upload => !read.has(upload.id));
+      setPendingUploads(stillPending);
+      return stillPending;
+    };
     const timer = setInterval(() => {
-      // Stop as soon as a new suggestion lands, or when the worker has had
-      // long enough that a bill this OCR pass could not parse is the likelier
-      // explanation than a slow queue.
+      // Stop once every upload has become a suggestion, or when the worker has
+      // had long enough that "could not be read" is the likelier explanation
+      // than a slow queue.
       void refreshRef.current()
-        .then(next => {
-          if (next.suggestions.length > suggestionBaseline.current) setAnalyzing(false);
-        })
+        .then(next => { if (settle(next).length === 0) setAnalyzing(false); })
         .catch(() => undefined)
-        .finally(() => { if (Date.now() > deadline) setAnalyzing(false); });
+        .finally(() => {
+          if (Date.now() <= deadline) return;
+          setAnalyzing(false);
+          setUnreadUploads(current => [...current, ...pendingRef.current]);
+          setPendingUploads([]);
+        });
     }, BILL_ANALYSIS_POLL_MS);
     return () => clearInterval(timer);
   }, [analyzing]);
 
-  const handleUploaded = useCallback((succeeded: number) => {
-    if (succeeded === 0) return;
-    suggestionBaseline.current = suggestionCount;
+  const handleUploaded = useCallback((uploads: UploadedBill[]) => {
+    if (uploads.length === 0) return;
+    setPendingUploads(current => [...current, ...uploads]);
     setAnalyzing(true);
     void refreshRef.current().catch(() => undefined);
-  }, [suggestionCount]);
+  }, []);
 
   // The server filters suggestions against SAVED bills only; filtering against
   // the edit buffer here is what makes Import feel immediate — the row leaves
@@ -424,7 +528,15 @@ export function UtilitiesPlannerPage() {
   const selectedBills = queue.filter(item => selected.has(item.bill.id)).map(item => item.bill);
   const allCleanSelected = cleanIds.length > 0 && cleanIds.every(id => selected.has(id));
 
-  if (state.loading) return <div className="p-6 text-sm text-foreground-muted">Loading utility history…</div>;
+  if (state.loading) return <div className="space-y-6"><PageHeader title="Utilities & Solar" /><p className="text-sm text-foreground-muted" aria-live="polite">Loading utility history…</p></div>;
+  if (state.loadError && !state.response) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Utilities & Solar" />
+        <LoadError what="your utility history" message={state.loadError} onRetry={() => void state.retry()} />
+      </div>
+    );
+  }
 
   const updateBill = (id: string, patch: Partial<UtilityBill>) => state.change({ ...state.profile, bills: state.profile.bills.map(bill => bill.id === id ? { ...bill, ...patch } : bill) });
   const removeBill = (id: string) => {
@@ -434,8 +546,9 @@ export function UtilitiesPlannerPage() {
   };
   const updateSolar = (patch: Partial<UtilitiesProfile['solar']>) => state.change({ ...state.profile, solar: { ...state.profile.solar, ...patch } });
 
-  const addManualBill = () => {
-    const bill: UtilityBill = { id: uid(), date: today(), type: 'electric', provider: '', usage: 0, unit: 'kWh', totalCost: 0, receiptId: null, transactionGuid: null };
+  /** A hand-entered bill; given a receipt it stays linked to that evidence. */
+  const addManualBill = (receiptId: number | null = null) => {
+    const bill: UtilityBill = { id: uid(), date: today(), type: 'electric', provider: '', usage: 0, unit: 'kWh', totalCost: 0, receiptId, transactionGuid: null };
     state.change({ ...state.profile, bills: [...state.profile.bills, bill] });
     setTypeFilter('all');
     setExpandedId(bill.id);
@@ -480,12 +593,47 @@ export function UtilitiesPlannerPage() {
     setExpandedId(null);
   };
 
+  const rateRows = state.response?.analysis.byType.filter(row => row.latestRate > 0) ?? [];
+  const trailing12Cost = state.response?.analysis.trailing12Cost ?? 0;
+  const solar = state.response?.solar;
+  const solarMissing = solar?.missing ?? [];
+  const electricRate = solar?.currentElectricRate ?? 0;
+  const openTrends = (type: UtilityBill['type'] | null) => { setTrendType(type); setTab('trends'); };
+
   return (
-    <div className="mx-auto max-w-[1400px] space-y-6 p-4 sm:p-6">
-      <PageHeader title="Utilities & Solar" subtitle="Separate usage changes from rate increases and test solar against actual household bills." actions={<button type="button" onClick={addManualBill} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover">Add bill</button>} />
-      <Tabs value={tab} onChange={setTab} tabs={[{ value: 'usage', label: 'Usage & rates' }, { value: 'trends', label: 'Trends' }, { value: 'solar', label: 'Solar scenario' }]} />
+    <div className="space-y-6">
+      <PageHeader
+        title="Utilities & Solar"
+        subtitle="Separate usage changes from rate increases and test solar against actual household bills."
+        actions={tab === 'usage'
+          ? <button type="button" onClick={() => addManualBill()} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover">Add bill</button>
+          : undefined}
+      />
+      <Tabs label="Utilities views" value={tab} onChange={setTab} tabs={[{ value: 'usage', label: 'Usage & rates' }, { value: 'trends', label: 'Trends' }, { value: 'solar', label: 'Solar scenario' }]} />
       {tab === 'usage' && <>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-4"><Metric label="Trailing 12-month cost" value={formatCurrency(state.response?.analysis.trailing12Cost ?? 0)} />{state.response?.analysis.byType.map(row => <Metric key={row.type} label={`${row.type} unit rate`} value={`$${row.latestRate.toFixed(2)}`} tone={row.rateChangePercent > 15 ? 'warning' : undefined} />)}</div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <MetricButton
+            label="Trailing 12-month cost"
+            value={formatCurrency(trailing12Cost)}
+            muted={trailing12Cost === 0}
+            opens="Cost over time"
+            onSelect={() => openTrends(null)}
+          />
+          {rateRows.map(row => {
+            const type = row.type as UtilityBill['type'];
+            return (
+              <MetricButton
+                key={type}
+                label={`${TYPE_LABELS[type]} rate`}
+                value={formatRate(row.latestRate, type)}
+                warning={row.rateChangePercent > 15}
+                hint={row.rateChangePercent !== 0 ? `${row.rateChangePercent > 0 ? '+' : ''}${row.rateChangePercent.toFixed(1)}% vs prior bill` : undefined}
+                opens={`${TYPE_LABELS[type]} trend`}
+                onSelect={() => openTrends(type)}
+              />
+            );
+          })}
+        </div>
         <Panel
           title="Review queue — bills read from receipts"
           description="Uploaded bills are stored as receipts and read by OCR. Importing stages a bill in the table below and removes it from this queue; nothing is stored until you Save."
@@ -512,6 +660,16 @@ export function UtilitiesPlannerPage() {
           ) : undefined}
         >
           <UtilityBillCapture onUploaded={handleUploaded} />
+          {unreadUploads.length > 0 && (
+            <UnreadUploads
+              uploads={unreadUploads}
+              onEnterByHand={upload => {
+                addManualBill(upload.id);
+                setUnreadUploads(current => current.filter(item => item.id !== upload.id));
+              }}
+              onDismiss={() => setUnreadUploads([])}
+            />
+          )}
           <div className="mt-4">
             {queue.length > 0 ? (
               <div>
@@ -538,13 +696,15 @@ export function UtilitiesPlannerPage() {
             ) : (
               <Empty>
                 {analyzing
-                  ? 'Reading the uploaded bills — usage and amount appear here once OCR finishes.'
+                  ? `Reading ${pendingUploads.length === 1 ? 'the uploaded bill' : `${pendingUploads.length} uploaded bills`} — usage and amount appear here once OCR finishes.`
                   : 'No bills waiting for review. Drop a bill above, or add one by hand with “Add bill”.'}
               </Empty>
             )}
           </div>
           {analyzing && queue.length > 0 && (
-            <p className="mt-3 text-xs text-foreground-muted" aria-live="polite">Still reading the most recent upload…</p>
+            <p className="mt-3 text-xs text-foreground-muted" aria-live="polite">
+              Still reading {pendingUploads.length} uploaded bill{pendingUploads.length === 1 ? '' : 's'}…
+            </p>
           )}
         </Panel>
         <Panel title="Utility bills" description="Rate and usage changes are calculated independently. Staged rows are imported but not yet saved.">
@@ -564,10 +724,51 @@ export function UtilitiesPlannerPage() {
             )}
         </Panel>
       </>}
-      {tab === 'trends' && <UtilityTrends bills={state.profile.bills} dirty={state.dirty} />}
+      {tab === 'trends' && <UtilityTrends key={trendType ?? 'all'} bills={state.profile.bills} dirty={state.dirty} initialType={trendType ?? undefined} />}
       {tab === 'solar' && <>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-4"><Metric label="Net upfront cost" value={formatCurrency(state.response?.solar.upfrontCost ?? 0)} /><Metric label="Current electric rate" value={`$${(state.response?.solar.currentElectricRate ?? 0).toFixed(2)}/kWh`} /><Metric label="Simple payback" value={state.response?.solar.paybackYear ? `${state.response.solar.paybackYear} years` : 'Not reached'} tone={state.response?.solar.paybackYear ? 'positive' : 'warning'} /><Metric label="Lifetime net savings" value={formatCurrency(state.response?.solar.lifetimeSavings ?? 0)} tone={(state.response?.solar.lifetimeSavings ?? 0) >= 0 ? 'positive' : 'negative'} /></div>
-        <Panel title="Solar capital scenario" description="Uses entered production and actual latest electric rate; this is a planning scenario, not a contractor quote."><label className="mb-4 flex items-center gap-2 text-sm"><input type="checkbox" checked={state.profile.solar.enabled} onChange={event => updateSolar({ enabled: event.target.checked })} /> Enable scenario</label><FieldGrid>{([['System cost','systemCost'],['Incentives','incentives'],['Annual production kWh','annualProductionKwh'],['Degradation %','degradationRate'],['Electric inflation %','electricRateInflation'],['Annual maintenance','annualMaintenance'],['Analysis years','analysisYears']] as const).map(([label, key]) => <Field key={key} label={label}><input type="number" step="0.1" className={`${INPUT} font-mono`} value={state.profile.solar[key]} onChange={event => updateSolar({ [key]: numberValue(event.target.value) })} /></Field>)}</FieldGrid></Panel>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Metric label="Net upfront cost" value={formatCurrency(solar?.upfrontCost ?? 0)} tone={(solar?.upfrontCost ?? 0) === 0 ? 'muted' : undefined} />
+          <Metric
+            label="Current electric rate"
+            value={electricRate > 0 ? formatRate(electricRate, 'electric') : '—'}
+            tone={electricRate > 0 ? undefined : 'muted'}
+            hint={electricRate > 0 ? 'From your latest electric bill' : 'Import an electric bill to set it'}
+          />
+          <Metric
+            label="Simple payback"
+            value={solarMissing.length > 0 ? '—' : solar?.paybackYear ? `${solar.paybackYear} ${solar.paybackYear === 1 ? 'year' : 'years'}` : 'Not reached'}
+            tone={solarMissing.length > 0 ? 'muted' : solar?.paybackYear ? undefined : 'warning'}
+            hint={solarMissing.length > 0
+              ? `Needs ${solarMissing.join(', ')}`
+              : solar?.paybackYear ? undefined : `Not within ${state.profile.solar.analysisYears} years`}
+          />
+          <Metric
+            label="Lifetime net savings"
+            value={solarMissing.length > 0 ? '—' : formatCurrency(solar?.lifetimeSavings ?? 0)}
+            tone={solarMissing.length > 0 || (solar?.lifetimeSavings ?? 0) === 0 ? 'muted' : (solar?.lifetimeSavings ?? 0) > 0 ? 'positive' : 'negative'}
+          />
+        </div>
+        <Panel title="Solar capital scenario" description="Uses entered production and your latest electric rate. This is a planning scenario, not a contractor quote.">
+          <label className="mb-4 flex min-h-11 items-center gap-2 text-sm">
+            <input type="checkbox" checked={state.profile.solar.enabled} onChange={event => updateSolar({ enabled: event.target.checked })} />
+            Include this scenario in plans and alerts
+          </label>
+          <FieldGrid>
+            {([
+              ['System cost', 'systemCost', '$'],
+              ['Incentives', 'incentives', '$'],
+              ['Annual production', 'annualProductionKwh', 'kWh'],
+              ['Degradation', 'degradationRate', '%/yr'],
+              ['Electric rate inflation', 'electricRateInflation', '%/yr'],
+              ['Annual maintenance', 'annualMaintenance', '$'],
+              ['Analysis period', 'analysisYears', 'years'],
+            ] as const).map(([label, key, unit]) => (
+              <Field key={key} label={<>{label} <span className="font-normal normal-case tracking-normal text-foreground-muted">({unit})</span></>}>
+                <input type="number" inputMode="decimal" step="0.1" min="0" className={`${INPUT} font-mono`} value={state.profile.solar[key]} onChange={event => updateSolar({ [key]: numberValue(event.target.value) })} />
+              </Field>
+            ))}
+          </FieldGrid>
+        </Panel>
       </>}
       <SaveBar
         saving={state.saving}

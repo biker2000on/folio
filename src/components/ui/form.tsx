@@ -115,7 +115,7 @@ export function RecordCard(props: {
         <button
           type="button"
           onClick={props.onRemove}
-          className="text-xs text-foreground-muted transition-colors hover:text-negative"
+          className="-my-3 -mr-2 inline-flex min-h-11 items-center px-2 text-xs text-foreground-muted transition-colors hover:text-error"
         >
           {props.removeLabel}
         </button>

@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
+import { useState, useEffect, useCallback, useId, useRef } from 'react';
+import { usePathname } from 'next/navigation';
 import type { EntityDocument } from '@/lib/services/entity-documents.service';
 import {
     getEditDocumentTypeOptions,
@@ -18,10 +19,33 @@ import {
 } from '@/components/documents/DocumentVaultBrowser';
 import { useToast } from '@/contexts/ToastContext';
 import { Tip } from '@/components/ui/Tooltip';
-import { INPUT, LABEL, SELECT } from '@/components/ui/form';
+import { FileDropZone, type FileUploadOutcome } from '@/components/ui/FileDropZone';
+import { ErrorLiveRegion } from '@/components/a11y/LiveRegion';
+import { LABEL, SELECT, inputClass } from '@/components/ui/form';
 import { readErrorBody } from '@/lib/api-error';
+import {
+    RECEIPT_MAX_FILE_SIZE,
+    RECEIPT_SCREEN_RULES,
+    formatSizeLimit,
+} from '@/lib/upload-limits';
 
 const TNUM = { fontFeatureSettings: "'tnum'" } as const;
+
+/**
+ * Button recipes for this page. They match the dominant PageHeader action
+ * recipe used across the app (radius lg, px-4 py-2, 14px), so the vault's
+ * buttons read the same as every other section's primary actions.
+ */
+const BUTTON_PRIMARY =
+    'rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-primary/50';
+const BUTTON_SECONDARY =
+    'rounded-lg border border-border px-4 py-2 text-sm text-foreground-secondary transition-colors hover:border-border-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
+
+/**
+ * The document intake runs the receipt pipeline's checks (10MB, PDF/PNG/JPEG
+ * by magic bytes), so the drop zone screens against the same rules.
+ */
+const DOCUMENT_ACCEPT = '.pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg';
 
 interface DocumentsResponse {
     // The list endpoint batches `tags` and `thumbnailStatus` onto every row;
@@ -87,8 +111,20 @@ interface DocumentSuggestions {
     values: Record<string, unknown>;
 }
 
-const inputClass = INPUT;
-const labelClass = LABEL;
+/**
+ * Why a request failed, in words a person can act on. A rejected `fetch`
+ * (offline, server down) surfaces as a TypeError whose message is browser
+ * jargon ("Failed to fetch"), so it is replaced rather than shown.
+ */
+function failureReason(err: unknown): string {
+    if (err instanceof TypeError) return 'the server could not be reached';
+    if (err instanceof Error && err.message.trim()) return err.message.trim();
+    return 'the server returned an unexpected response';
+}
+
+function sentenceCase(text: string): string {
+    return text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 function stringValue(value: unknown): string | null {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -129,11 +165,14 @@ function suggestionSummary(suggestion: DocumentSuggestions): string {
 
 /** Tax subtype fields shown whenever a form's type is 'tax'. */
 function TaxFields({
+    idPrefix,
     taxForm,
     taxYear,
     issuer,
     onChange,
 }: {
+    /** Unique per form instance, so each label points at its own control. */
+    idPrefix: string;
     taxForm: string;
     taxYear: string;
     issuer: string;
@@ -142,8 +181,9 @@ function TaxFields({
     return (
         <>
             <div>
-                <label className={labelClass}>Tax form</label>
+                <label htmlFor={`${idPrefix}-tax-form`} className={LABEL}>Tax form</label>
                 <select
+                    id={`${idPrefix}-tax-form`}
                     value={taxForm}
                     onChange={(e) => onChange({ taxForm: e.target.value })}
                     className={SELECT}
@@ -157,25 +197,27 @@ function TaxFields({
                 </select>
             </div>
             <div>
-                <label className={labelClass}>Tax year</label>
+                <label htmlFor={`${idPrefix}-tax-year`} className={LABEL}>Tax year</label>
                 <input
+                    id={`${idPrefix}-tax-year`}
                     type="number"
                     min={1980}
                     max={2100}
                     value={taxYear}
                     onChange={(e) => onChange({ taxYear: e.target.value })}
                     placeholder="e.g. 2025"
-                    className={`${inputClass} font-mono`}
+                    className={inputClass({ extra: 'font-mono' })}
                 />
             </div>
             <div>
-                <label className={labelClass}>Issuer (institution)</label>
+                <label htmlFor={`${idPrefix}-issuer`} className={LABEL}>Issuer (institution)</label>
                 <input
+                    id={`${idPrefix}-issuer`}
                     type="text"
                     value={issuer}
                     onChange={(e) => onChange({ issuer: e.target.value })}
                     placeholder="e.g. Fidelity, Acme Corp"
-                    className={inputClass}
+                    className={inputClass()}
                 />
             </div>
         </>
@@ -185,10 +227,13 @@ function TaxFields({
 export default function EntityDocumentsPage() {
     const toast = useToast();
     const documentPreview = useDocumentPreview();
+    const pathname = usePathname();
+    const uid = useId();
     const [data, setData] = useState<DocumentsResponse | null>(null);
     const [entityProfile, setEntityProfile] = useState<EntityDocumentProfile | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [retrying, setRetrying] = useState(false);
 
     // Upload panel state — files stage locally and nothing is sent until
     // Upload is pressed; every staged file can be removed first.
@@ -204,8 +249,15 @@ export default function EntityDocumentsPage() {
     const [uploadTaxForm, setUploadTaxForm] = useState('');
     const [uploadIssuer, setUploadIssuer] = useState('');
     const [uploading, setUploading] = useState(false);
-    const [dragging, setDragging] = useState(false);
-    const fileInputRef = useRef<HTMLInputElement>(null);
+    // The first empty load opens the upload panel; later loads leave it alone.
+    const firstLoadSeen = useRef(false);
+
+    // The shared drop zone keeps its own per-file status list. Here a "drop"
+    // only stages a file, so a clean batch remounts the zone (clearing that
+    // list) and the staging list below is the single place files appear.
+    const [dropZoneKey, setDropZoneKey] = useState(0);
+    const dropZoneRef = useRef<HTMLDivElement>(null);
+    const restorePickerFocus = useRef(false);
 
     // Post-upload detailing pass: just-uploaded docs stay editable until
     // dismissed, so a bulk drop can be typed/dated per file afterwards.
@@ -225,13 +277,28 @@ export default function EntityDocumentsPage() {
     const load = useCallback(async () => {
         try {
             const res = await fetch('/api/business/documents');
-            if (!res.ok) throw new Error(`Request failed (${res.status})`);
-            setData(await res.json());
+            if (!res.ok) {
+                throw new Error(await readErrorBody(res, `the server answered ${res.status}`));
+            }
+            const body = (await res.json()) as DocumentsResponse;
+            setData(body);
             setError(null);
-        } catch {
-            setError('Failed to load documents.');
+            if (!firstLoadSeen.current) {
+                firstLoadSeen.current = true;
+                if (body.documents.length === 0) setUploadOpen(true);
+            }
+        } catch (err) {
+            setError(
+                `Couldn't load your documents: ${failureReason(err)}. Nothing was changed. Retry, and if it keeps failing, reload the page.`
+            );
         }
     }, []);
+
+    const retryLoad = async () => {
+        setRetrying(true);
+        await load();
+        setRetrying(false);
+    };
 
     useEffect(() => {
         let cancelled = false;
@@ -264,6 +331,14 @@ export default function EntityDocumentsPage() {
             timers.clear();
         };
     }, []);
+
+    // After a clean batch remounts the drop zone, hand focus back to its
+    // "Choose files" button if that is where the user was.
+    useEffect(() => {
+        if (!restorePickerFocus.current) return;
+        restorePickerFocus.current = false;
+        dropZoneRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    }, [dropZoneKey]);
 
     /**
      * Poll the suggestions endpoint for any document until the AI pass
@@ -298,15 +373,32 @@ export default function EntityDocumentsPage() {
         pollTimers.current.set(documentId, timer);
     }, []);
 
-    const stageFiles = (files: FileList | File[] | null | undefined) => {
-        if (!files || files.length === 0) return;
-        const additions: StagedFile[] = [...files].map((file) => ({
-            key: `${file.name}:${file.size}:${file.lastModified}:${Math.random().toString(36).slice(2)}`,
-            file,
-            status: 'staged',
-        }));
-        setStaged((prev) => [...prev, ...additions]);
-    };
+    /**
+     * The drop zone's per-file callback. It does NOT upload: it adds the file
+     * to the staging list, so the category, dates and notes chosen below are
+     * sent with it when Upload is pressed — the same semantics as before.
+     */
+    const stageFromDropZone = useCallback(async (file: File): Promise<FileUploadOutcome> => {
+        setStaged((prev) => [
+            ...prev,
+            {
+                key: `${file.name}:${file.size}:${file.lastModified}:${Math.random().toString(36).slice(2)}`,
+                file,
+                status: 'staged',
+            },
+        ]);
+        return { ok: true, message: 'Added to the upload list' };
+    }, []);
+
+    const handleDropBatchSettled = useCallback(({ failed }: { succeeded: number; failed: number }) => {
+        // Rejected files (too large, wrong type) never reach the staging
+        // list; keep the zone's list so their reasons stay on screen.
+        if (failed > 0) return;
+        restorePickerFocus.current = Boolean(
+            dropZoneRef.current && dropZoneRef.current.contains(document.activeElement)
+        );
+        setDropZoneKey((key) => key + 1);
+    }, []);
 
     const removeStaged = (key: string) => {
         setStaged((prev) => prev.filter((s) => s.key !== key));
@@ -314,13 +406,19 @@ export default function EntityDocumentsPage() {
 
     const clearStaged = () => {
         setStaged([]);
-        if (fileInputRef.current) fileInputRef.current.value = '';
+        setDropZoneKey((key) => key + 1);
     };
 
-    const handleDrop = (e: React.DragEvent) => {
-        e.preventDefault();
-        setDragging(false);
-        stageFiles(e.dataTransfer.files);
+    /**
+     * Open the upload panel (optionally with a category chosen) and move focus
+     * to the file picker, so the next keystroke or tap is choosing files.
+     */
+    const openUpload = (docType?: string) => {
+        if (docType) setUploadType(docType);
+        setUploadOpen(true);
+        requestAnimationFrame(() => {
+            dropZoneRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+        });
     };
 
     const resetUploadForm = () => {
@@ -478,6 +576,21 @@ export default function EntityDocumentsPage() {
         setDetailSaved({});
     };
 
+    const documents = data?.documents ?? [];
+    const expiring = data?.expiringSoon ?? [];
+    // Household books reach this vault at /home/documents. While the entity
+    // profile is still loading, that route is enough to title the page the
+    // way the sidebar does, instead of flashing the neutral "Documents".
+    const onHomeRoute = pathname?.startsWith('/home/') ?? false;
+    const context = getEntityDocumentContext(
+        entityProfile ?? (loading && onHomeRoute ? { entityType: 'household' } : null)
+    );
+    const stagedCount = staged.filter((s) => s.status === 'staged' || s.status === 'failed').length;
+    const untypedCount = detailing.filter(
+        (doc) => (detailEdits[doc.id]?.docType ?? doc.docType) === 'other'
+    ).length;
+    const ready = !loading && !error && data !== null;
+
     const applySuggestion = (documentId: number) => {
         const suggestion = suggestions[documentId];
         if (!suggestion) return;
@@ -580,128 +693,144 @@ export default function EntityDocumentsPage() {
     };
 
     const handleDelete = async (id: number) => {
+        const title = documents.find((doc) => doc.id === id)?.title;
+        const name = title ? `“${title}”` : 'this document';
         try {
             const res = await fetch(`/api/business/documents/${id}`, { method: 'DELETE' });
-            if (!res.ok) throw new Error('Delete failed');
-            toast.success('Document deleted');
+            if (!res.ok) {
+                throw new Error(await readErrorBody(res, `the server answered ${res.status}`));
+            }
+            toast.success(title ? `Deleted ${name}` : 'Document deleted');
             setConfirmDeleteId(null);
             await load();
-        } catch {
-            toast.error('Failed to delete document');
+        } catch (err) {
+            toast.error(
+                `Couldn't delete ${name}: ${failureReason(err)}. It is still in the vault; try again.`
+            );
         }
     };
 
-    const documents = data?.documents ?? [];
-    const expiring = data?.expiringSoon ?? [];
-    const context = getEntityDocumentContext(entityProfile);
-    const stagedCount = staged.filter((s) => s.status === 'staged' || s.status === 'failed').length;
-    const untypedCount = detailing.filter(
-        (doc) => (detailEdits[doc.id]?.docType ?? doc.docType) === 'other'
-    ).length;
-
-    const renderDocumentEditor = (doc: EntityDocument) => editingId === doc.id && edit ? (
-                <div className="col-span-full rounded-md border border-border bg-background-tertiary/30 px-4 py-3">
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                        <div>
-                            <label className={labelClass}>Title</label>
-                            <input
-                                type="text"
-                                value={edit.title}
-                                onChange={(e) => setEdit({ ...edit, title: e.target.value })}
-                                className={inputClass}
-                            />
-                        </div>
-                        <div>
-                            <label className={labelClass}>Type</label>
-                            <select
-                                value={edit.docType}
-                                onChange={(e) => setEdit({ ...edit, docType: e.target.value })}
-                                className={SELECT}
-                            >
-                                {getEditDocumentTypeOptions(context, doc.docType).map((o) => (
-                                    <option key={o.value} value={o.value}>
-                                        {o.label}
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                        <div>
-                            <label className={labelClass}>Expires</label>
-                            <input
-                                type="date"
-                                value={edit.expiresOn}
-                                onChange={(e) => setEdit({ ...edit, expiresOn: e.target.value })}
-                                className={`${inputClass} font-mono`}
-                            />
-                        </div>
-                        <div>
-                            <label className={labelClass}>Notes</label>
-                            <input
-                                type="text"
-                                value={edit.notes}
-                                onChange={(e) => setEdit({ ...edit, notes: e.target.value })}
-                                className={inputClass}
-                            />
-                        </div>
-                        {edit.docType === 'tax' && (
-                            <TaxFields
-                                taxForm={edit.taxForm}
-                                taxYear={edit.taxYear}
-                                issuer={edit.issuer}
-                                onChange={(patch) => setEdit({ ...edit, ...patch })}
-                            />
-                        )}
-                        {(edit.docType === 'farm_certificate_qf' || edit.docType === 'farm_certificate_cf') && (
-                            <>
-                                <div>
-                                    <label className={labelClass}>Issued</label>
-                                    <input
-                                        type="date"
-                                        value={edit.issuedOn}
-                                        onChange={(e) => setEdit({ ...edit, issuedOn: e.target.value })}
-                                        className={`${inputClass} font-mono`}
-                                    />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Return copy due</label>
-                                    <input
-                                        type="date"
-                                        value={edit.returnCopyDueOn}
-                                        onChange={(e) => setEdit({ ...edit, returnCopyDueOn: e.target.value })}
-                                        className={`${inputClass} font-mono`}
-                                    />
-                                </div>
-                            </>
-                        )}
+    const renderDocumentEditor = (doc: EntityDocument) => {
+        if (editingId !== doc.id || !edit) return null;
+        const idPrefix = `${uid}-edit-${doc.id}`;
+        return (
+            <div className="col-span-full rounded-md border border-border bg-background-tertiary/30 px-4 py-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <div>
+                        <label htmlFor={`${idPrefix}-title`} className={LABEL}>Title</label>
+                        <input
+                            id={`${idPrefix}-title`}
+                            type="text"
+                            value={edit.title}
+                            onChange={(e) => setEdit({ ...edit, title: e.target.value })}
+                            className={inputClass()}
+                        />
                     </div>
-                    <div className="mt-3 flex items-center gap-3">
-                        <button
-                            type="button"
-                            onClick={() => handleSaveEdit(doc.id)}
-                            disabled={savingEdit}
-                            className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary-hover transition-colors disabled:opacity-50"
+                    <div>
+                        <label htmlFor={`${idPrefix}-type`} className={LABEL}>Type</label>
+                        <select
+                            id={`${idPrefix}-type`}
+                            value={edit.docType}
+                            onChange={(e) => setEdit({ ...edit, docType: e.target.value })}
+                            className={SELECT}
                         >
-                            {savingEdit ? 'Saving…' : 'Save'}
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => {
-                                setEditingId(null);
-                                setEdit(null);
-                            }}
-                            className="rounded-lg border border-border px-4 py-1.5 text-sm text-foreground-secondary hover:text-foreground hover:border-border-hover transition-colors"
-                        >
-                            Cancel
-                        </button>
+                            {getEditDocumentTypeOptions(context, doc.docType).map((o) => (
+                                <option key={o.value} value={o.value}>
+                                    {o.label}
+                                </option>
+                            ))}
+                        </select>
                     </div>
+                    <div>
+                        <label htmlFor={`${idPrefix}-expires`} className={LABEL}>Expires</label>
+                        <input
+                            id={`${idPrefix}-expires`}
+                            type="date"
+                            value={edit.expiresOn}
+                            onChange={(e) => setEdit({ ...edit, expiresOn: e.target.value })}
+                            className={inputClass({ extra: 'font-mono' })}
+                        />
+                    </div>
+                    <div>
+                        <label htmlFor={`${idPrefix}-notes`} className={LABEL}>Notes</label>
+                        <input
+                            id={`${idPrefix}-notes`}
+                            type="text"
+                            value={edit.notes}
+                            onChange={(e) => setEdit({ ...edit, notes: e.target.value })}
+                            className={inputClass()}
+                        />
+                    </div>
+                    {edit.docType === 'tax' && (
+                        <TaxFields
+                            idPrefix={idPrefix}
+                            taxForm={edit.taxForm}
+                            taxYear={edit.taxYear}
+                            issuer={edit.issuer}
+                            onChange={(patch) => setEdit({ ...edit, ...patch })}
+                        />
+                    )}
+                    {(edit.docType === 'farm_certificate_qf' || edit.docType === 'farm_certificate_cf') && (
+                        <>
+                            <div>
+                                <label htmlFor={`${idPrefix}-issued`} className={LABEL}>Issued</label>
+                                <input
+                                    id={`${idPrefix}-issued`}
+                                    type="date"
+                                    value={edit.issuedOn}
+                                    onChange={(e) => setEdit({ ...edit, issuedOn: e.target.value })}
+                                    className={inputClass({ extra: 'font-mono' })}
+                                />
+                            </div>
+                            <div>
+                                <label htmlFor={`${idPrefix}-return-copy`} className={LABEL}>Return copy due</label>
+                                <input
+                                    id={`${idPrefix}-return-copy`}
+                                    type="date"
+                                    value={edit.returnCopyDueOn}
+                                    onChange={(e) => setEdit({ ...edit, returnCopyDueOn: e.target.value })}
+                                    className={inputClass({ extra: 'font-mono' })}
+                                />
+                            </div>
+                        </>
+                    )}
                 </div>
-            ) : null;
+                <div className="mt-3 flex items-center gap-3">
+                    <button
+                        type="button"
+                        onClick={() => handleSaveEdit(doc.id)}
+                        disabled={savingEdit}
+                        className={BUTTON_PRIMARY}
+                    >
+                        {savingEdit ? 'Saving…' : 'Save'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setEditingId(null);
+                            setEdit(null);
+                        }}
+                        className={BUTTON_SECONDARY}
+                    >
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        );
+    };
+
+    const uploadId = `${uid}-upload`;
 
     return (
         <div className="space-y-6">
             <PageHeader
                 title={context.title}
                 subtitle={context.subtitle}
+                actions={ready ? (
+                    <button type="button" onClick={() => openUpload()} className={BUTTON_PRIMARY}>
+                        Upload documents
+                    </button>
+                ) : undefined}
             />
 
             {loading && (
@@ -714,12 +843,20 @@ export default function EntityDocumentsPage() {
             )}
 
             {!loading && error && (
-                <div className="border border-error/30 bg-surface/30 rounded-lg p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-error/30 bg-surface/30 p-4">
                     <p className="text-sm text-error">{error}</p>
+                    <button
+                        type="button"
+                        onClick={() => void retryLoad()}
+                        disabled={retrying}
+                        className={BUTTON_SECONDARY}
+                    >
+                        {retrying ? 'Retrying…' : 'Retry'}
+                    </button>
                 </div>
             )}
 
-            {!loading && !error && data && (
+            {ready && (
                 <>
                     {expiring.length > 0 && (
                         <div className="border border-warning/30 bg-warning/5 rounded-lg px-4 py-3 text-sm text-foreground-secondary">
@@ -732,7 +869,44 @@ export default function EntityDocumentsPage() {
                         </div>
                     )}
 
-                    {/* Upload panel — folded closed by default; staging a file opens it. */}
+                    {/* First-use empty state: the starter set is the call to action. */}
+                    {documents.length === 0 && (
+                        <section
+                            aria-labelledby={`${uid}-starter`}
+                            className="rounded-lg border border-border bg-background-secondary/30 p-6"
+                        >
+                            <h2 id={`${uid}-starter`} className="text-sm font-semibold text-foreground">
+                                {context.starterIntro}
+                            </h2>
+                            <p className="mt-1 text-sm text-foreground-secondary">
+                                Pick one to upload it with its category already set, or drop any file
+                                into the upload panel below.
+                            </p>
+                            <ul className="mt-4 flex flex-wrap gap-2">
+                                {context.starterDocuments.map((starter) => {
+                                    const chosen = uploadOpen && uploadType === starter.docType;
+                                    return (
+                                        <li key={starter.label}>
+                                            <button
+                                                type="button"
+                                                aria-pressed={chosen}
+                                                onClick={() => openUpload(starter.docType)}
+                                                className={`inline-flex min-h-10 items-center rounded-md border px-3 py-2 text-sm transition-colors ${
+                                                    chosen
+                                                        ? 'border-primary bg-primary-light text-primary'
+                                                        : 'border-border bg-surface text-foreground hover:border-border-hover hover:text-primary'
+                                                }`}
+                                            >
+                                                {sentenceCase(starter.label)}
+                                            </button>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        </section>
+                    )}
+
+                    {/* Upload panel — open on an empty vault, folded otherwise; staging a file keeps it open. */}
                     <details
                         className="bg-background-secondary/30 border border-border rounded-lg"
                         open={uploadOpen || staged.length > 0}
@@ -741,161 +915,166 @@ export default function EntityDocumentsPage() {
                         <summary className="cursor-pointer select-none rounded-lg px-4 py-3 text-sm font-medium text-foreground-secondary hover:text-foreground">
                             Upload documents
                         </summary>
-                    <div className="p-4 pt-1 space-y-4">
-                        <div
-                            onDragOver={(e) => {
-                                e.preventDefault();
-                                setDragging(true);
-                            }}
-                            onDragLeave={() => setDragging(false)}
-                            onDrop={handleDrop}
-                            onClick={() => fileInputRef.current?.click()}
-                            className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed px-4 py-6 text-center transition-colors ${
-                                dragging
-                                    ? 'border-primary bg-primary-light'
-                                    : 'border-border hover:border-border-hover'
-                            }`}
-                        >
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                multiple
-                                accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
-                                className="hidden"
-                                onChange={(e) => {
-                                    stageFiles(e.target.files);
-                                    e.target.value = '';
-                                }}
-                            />
-                            <p className="text-sm text-foreground-secondary">
-                                Drag files here, or click to browse
-                            </p>
-                            <p className="mt-1 text-xs text-foreground-muted">
-                                PDF, PNG, or JPEG — up to 10MB each. Multiple files upload as a batch.
-                            </p>
-                        </div>
-
-                        {/* Staged files: reviewable and removable before anything is sent */}
-                        {staged.length > 0 && (
-                            <ul className="divide-y divide-border/30 rounded-lg border border-border">
-                                {staged.map((item) => (
-                                    <li
-                                        key={item.key}
-                                        className="flex items-center gap-3 px-3 py-2 text-sm"
-                                    >
-                                        <span className="min-w-0 flex-1 truncate text-foreground">
-                                            {item.file.name}
-                                            <span className="ml-2 font-mono text-xs text-foreground-muted" style={TNUM}>
-                                                ({formatDocumentBytes(item.file.size)})
-                                            </span>
-                                        </span>
-                                        {item.status === 'uploading' && (
-                                            <span className="text-xs text-foreground-muted">Uploading…</span>
-                                        )}
-                                        {item.status === 'done' && (
-                                            <span className="text-xs text-success">Uploaded</span>
-                                        )}
-                                        {item.status === 'failed' && (
-                                            <Tip content={item.error}>
-                                            <span className="text-xs text-error">
-                                                {item.error ?? 'Failed'}
-                                            </span>
-                                            </Tip>
-                                        )}
-                                        {(item.status === 'staged' || item.status === 'failed') && !uploading && (
-                                            <button
-                                                type="button"
-                                                onClick={() => removeStaged(item.key)}
-                                                aria-label={`Remove ${item.file.name}`}
-                                                className="text-foreground-muted hover:text-error transition-colors"
-                                            >
-                                                Remove
-                                            </button>
-                                        )}
-                                    </li>
-                                ))}
-                            </ul>
-                        )}
-
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                            <div>
-                                <label className={labelClass}>
-                                    Title{staged.length > 1 ? ' (single file only — batches use filenames)' : ''}
-                                </label>
-                                <input
-                                    type="text"
-                                    value={uploadTitle}
-                                    onChange={(e) => setUploadTitle(e.target.value)}
-                                    placeholder={context.uploadTitlePlaceholder}
-                                    disabled={staged.length > 1}
-                                    className={`${inputClass} disabled:opacity-50`}
+                        <div className="p-4 pt-1 space-y-4">
+                            <div ref={dropZoneRef}>
+                                <FileDropZone
+                                    key={dropZoneKey}
+                                    accept={DOCUMENT_ACCEPT}
+                                    rules={RECEIPT_SCREEN_RULES}
+                                    label="Add documents to upload"
+                                    prompt="Drop files here to add them to the upload list"
+                                    hint={`PDF, PNG, or JPEG up to ${formatSizeLimit(RECEIPT_MAX_FILE_SIZE)} each. Nothing is sent until you press Upload.`}
+                                    buttonLabel="Choose files"
+                                    onUploadFile={stageFromDropZone}
+                                    onBatchSettled={handleDropBatchSettled}
+                                    disabled={uploading}
                                 />
                             </div>
-                            <div>
-                                <label className={labelClass}>
-                                    Type{staged.length > 1 ? ' (applies to all staged files)' : ''}
-                                </label>
-                                <select
-                                    value={uploadType}
-                                    onChange={(e) => setUploadType(e.target.value)}
-                                    className={SELECT}
+
+                            {/* Staged files: reviewable and removable before anything is sent */}
+                            {staged.length > 0 && (
+                                <ul
+                                    aria-label="Files to upload"
+                                    aria-live="polite"
+                                    className="divide-y divide-border/30 rounded-lg border border-border"
                                 >
-                                    {context.typeOptions.map((o) => (
-                                        <option key={o.value} value={o.value}>
-                                            {o.label}
-                                        </option>
+                                    {staged.map((item) => (
+                                        <li
+                                            key={item.key}
+                                            className="flex items-center gap-3 px-3 py-1 text-sm"
+                                        >
+                                            <span className="min-w-0 flex-1 truncate py-1 text-foreground">
+                                                {item.file.name}
+                                                <span className="ml-2 font-mono text-xs text-foreground-muted" style={TNUM}>
+                                                    ({formatDocumentBytes(item.file.size)})
+                                                </span>
+                                            </span>
+                                            {item.status === 'uploading' && (
+                                                <span className="text-xs text-foreground-muted">Uploading…</span>
+                                            )}
+                                            {item.status === 'done' && (
+                                                <span className="text-xs text-success">Uploaded</span>
+                                            )}
+                                            {item.status === 'failed' && (
+                                                <Tip content={item.error}>
+                                                    <span className="text-xs text-error">
+                                                        {item.error ?? 'Failed'}
+                                                    </span>
+                                                </Tip>
+                                            )}
+                                            {(item.status === 'staged' || item.status === 'failed') && !uploading && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => removeStaged(item.key)}
+                                                    aria-label={`Remove ${item.file.name}`}
+                                                    className="-mr-2 inline-flex min-h-9 items-center px-2 text-xs text-foreground-muted transition-colors hover:text-error"
+                                                >
+                                                    Remove
+                                                </button>
+                                            )}
+                                        </li>
                                     ))}
-                                </select>
-                            </div>
-                            <div>
-                                <label className={labelClass}>Expires (optional)</label>
-                                <input
-                                    type="date"
-                                    value={uploadExpires}
-                                    onChange={(e) => setUploadExpires(e.target.value)}
-                                    className={`${inputClass} font-mono`}
-                                />
-                            </div>
-                            {uploadType === 'tax' && (
-                                <TaxFields
-                                    taxForm={uploadTaxForm}
-                                    taxYear={uploadTaxYear}
-                                    issuer={uploadIssuer}
-                                    onChange={(patch) => {
-                                        if (patch.taxForm !== undefined) setUploadTaxForm(patch.taxForm);
-                                        if (patch.taxYear !== undefined) setUploadTaxYear(patch.taxYear);
-                                        if (patch.issuer !== undefined) setUploadIssuer(patch.issuer);
-                                    }}
-                                />
+                                </ul>
                             )}
-                            {(uploadType === 'farm_certificate_qf' || uploadType === 'farm_certificate_cf') && (
-                                <>
-                                    <div>
-                                        <label className={labelClass}>Issued (optional)</label>
-                                        <input
-                                            type="date"
-                                            value={uploadIssued}
-                                            onChange={(e) => setUploadIssued(e.target.value)}
-                                            className={`${inputClass} font-mono`}
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className={labelClass}>Return copy due (optional)</label>
-                                        <input
-                                            type="date"
-                                            value={uploadReturnCopyDue}
-                                            onChange={(e) => setUploadReturnCopyDue(e.target.value)}
-                                            className={`${inputClass} font-mono`}
-                                        />
-                                    </div>
-                                </>
-                            )}
-                            <div className="flex items-end gap-2">
+
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                <div>
+                                    <label htmlFor={`${uploadId}-title`} className={LABEL}>
+                                        Title{staged.length > 1 ? ' (single file only — batches use filenames)' : ''}
+                                    </label>
+                                    <input
+                                        id={`${uploadId}-title`}
+                                        type="text"
+                                        value={uploadTitle}
+                                        onChange={(e) => setUploadTitle(e.target.value)}
+                                        placeholder={context.uploadTitlePlaceholder}
+                                        disabled={staged.length > 1}
+                                        className={inputClass({ extra: 'disabled:cursor-not-allowed disabled:opacity-50' })}
+                                    />
+                                </div>
+                                <div>
+                                    <label htmlFor={`${uploadId}-type`} className={LABEL}>
+                                        Type{staged.length > 1 ? ' (applies to all staged files)' : ''}
+                                    </label>
+                                    <select
+                                        id={`${uploadId}-type`}
+                                        value={uploadType}
+                                        onChange={(e) => setUploadType(e.target.value)}
+                                        className={SELECT}
+                                    >
+                                        {context.typeOptions.map((o) => (
+                                            <option key={o.value} value={o.value}>
+                                                {o.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label htmlFor={`${uploadId}-expires`} className={LABEL}>Expires (optional)</label>
+                                    <input
+                                        id={`${uploadId}-expires`}
+                                        type="date"
+                                        value={uploadExpires}
+                                        onChange={(e) => setUploadExpires(e.target.value)}
+                                        className={inputClass({ extra: 'font-mono' })}
+                                    />
+                                </div>
+                                {uploadType === 'tax' && (
+                                    <TaxFields
+                                        idPrefix={uploadId}
+                                        taxForm={uploadTaxForm}
+                                        taxYear={uploadTaxYear}
+                                        issuer={uploadIssuer}
+                                        onChange={(patch) => {
+                                            if (patch.taxForm !== undefined) setUploadTaxForm(patch.taxForm);
+                                            if (patch.taxYear !== undefined) setUploadTaxYear(patch.taxYear);
+                                            if (patch.issuer !== undefined) setUploadIssuer(patch.issuer);
+                                        }}
+                                    />
+                                )}
+                                {(uploadType === 'farm_certificate_qf' || uploadType === 'farm_certificate_cf') && (
+                                    <>
+                                        <div>
+                                            <label htmlFor={`${uploadId}-issued`} className={LABEL}>Issued (optional)</label>
+                                            <input
+                                                id={`${uploadId}-issued`}
+                                                type="date"
+                                                value={uploadIssued}
+                                                onChange={(e) => setUploadIssued(e.target.value)}
+                                                className={inputClass({ extra: 'font-mono' })}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label htmlFor={`${uploadId}-return-copy`} className={LABEL}>Return copy due (optional)</label>
+                                            <input
+                                                id={`${uploadId}-return-copy`}
+                                                type="date"
+                                                value={uploadReturnCopyDue}
+                                                onChange={(e) => setUploadReturnCopyDue(e.target.value)}
+                                                className={inputClass({ extra: 'font-mono' })}
+                                            />
+                                        </div>
+                                    </>
+                                )}
+                                <div className="sm:col-span-2 lg:col-span-3">
+                                    <label htmlFor={`${uploadId}-notes`} className={LABEL}>Notes (optional)</label>
+                                    <input
+                                        id={`${uploadId}-notes`}
+                                        type="text"
+                                        value={uploadNotes}
+                                        onChange={(e) => setUploadNotes(e.target.value)}
+                                        placeholder={context.notesPlaceholder}
+                                        className={inputClass()}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-3">
                                 <button
                                     type="button"
                                     onClick={handleUpload}
                                     disabled={uploading || stagedCount === 0}
-                                    className="flex-1 rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary-hover transition-colors disabled:opacity-50"
+                                    className={BUTTON_PRIMARY}
                                 >
                                     {uploading
                                         ? 'Uploading…'
@@ -907,24 +1086,18 @@ export default function EntityDocumentsPage() {
                                     <button
                                         type="button"
                                         onClick={clearStaged}
-                                        className="rounded-lg border border-border px-4 py-1.5 text-sm text-foreground-secondary hover:text-foreground hover:border-border-hover transition-colors"
+                                        className={BUTTON_SECONDARY}
                                     >
-                                        Cancel
+                                        Clear list
                                     </button>
+                                )}
+                                {stagedCount === 0 && !uploading && (
+                                    <span className="text-xs text-foreground-muted">
+                                        Choose or drop at least one file to upload.
+                                    </span>
                                 )}
                             </div>
                         </div>
-                        <div>
-                            <label className={labelClass}>Notes (optional)</label>
-                            <input
-                                type="text"
-                                value={uploadNotes}
-                                onChange={(e) => setUploadNotes(e.target.value)}
-                                placeholder={context.notesPlaceholder}
-                                className={inputClass}
-                            />
-                        </div>
-                    </div>
                     </details>
 
                     {/* Post-upload detailing pass */}
@@ -948,7 +1121,7 @@ export default function EntityDocumentsPage() {
                                                 if (e.target.value) applyTypeToAll(e.target.value);
                                                 e.target.value = '';
                                             }}
-                                            className={`${SELECT} w-auto px-2 py-1 text-xs`}
+                                            className={inputClass({ base: SELECT, extra: 'w-auto' })}
                                         >
                                             <option value="">— choose —</option>
                                             {context.typeOptions.map((o) => (
@@ -962,7 +1135,7 @@ export default function EntityDocumentsPage() {
                                 <button
                                     type="button"
                                     onClick={dismissDetailing}
-                                    className="rounded-lg border border-border px-3 py-1 text-xs text-foreground-secondary hover:text-foreground hover:border-border-hover transition-colors"
+                                    className={BUTTON_SECONDARY}
                                 >
                                     Done
                                 </button>
@@ -972,6 +1145,7 @@ export default function EntityDocumentsPage() {
                                     const detailEdit = detailEdits[doc.id];
                                     if (!detailEdit) return null;
                                     const suggestion = suggestions[doc.id];
+                                    const idPrefix = `${uid}-detail-${doc.id}`;
                                     return (
                                         <li key={doc.id} className="py-3 space-y-2">
                                             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -998,8 +1172,9 @@ export default function EntityDocumentsPage() {
                                             </div>
                                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                                                 <div>
-                                                    <label className={labelClass}>Title</label>
+                                                    <label htmlFor={`${idPrefix}-title`} className={LABEL}>Title</label>
                                                     <input
+                                                        id={`${idPrefix}-title`}
                                                         type="text"
                                                         value={detailEdit.title}
                                                         onChange={(e) => {
@@ -1009,12 +1184,13 @@ export default function EntityDocumentsPage() {
                                                             }));
                                                             setDetailSaved((prev) => ({ ...prev, [doc.id]: false }));
                                                         }}
-                                                        className={inputClass}
+                                                        className={inputClass()}
                                                     />
                                                 </div>
                                                 <div>
-                                                    <label className={labelClass}>Type</label>
+                                                    <label htmlFor={`${idPrefix}-type`} className={LABEL}>Type</label>
                                                     <select
+                                                        id={`${idPrefix}-type`}
                                                         value={detailEdit.docType}
                                                         onChange={(e) => {
                                                             setDetailEdits((prev) => ({
@@ -1033,8 +1209,9 @@ export default function EntityDocumentsPage() {
                                                     </select>
                                                 </div>
                                                 <div>
-                                                    <label className={labelClass}>Expires</label>
+                                                    <label htmlFor={`${idPrefix}-expires`} className={LABEL}>Expires</label>
                                                     <input
+                                                        id={`${idPrefix}-expires`}
                                                         type="date"
                                                         value={detailEdit.expiresOn}
                                                         onChange={(e) => {
@@ -1044,11 +1221,12 @@ export default function EntityDocumentsPage() {
                                                             }));
                                                             setDetailSaved((prev) => ({ ...prev, [doc.id]: false }));
                                                         }}
-                                                        className={`${inputClass} font-mono`}
+                                                        className={inputClass({ extra: 'font-mono' })}
                                                     />
                                                 </div>
                                                 {detailEdit.docType === 'tax' && (
                                                     <TaxFields
+                                                        idPrefix={idPrefix}
                                                         taxForm={detailEdit.taxForm}
                                                         taxYear={detailEdit.taxYear}
                                                         issuer={detailEdit.issuer}
@@ -1066,7 +1244,7 @@ export default function EntityDocumentsPage() {
                                                         type="button"
                                                         onClick={() => saveDetail(doc.id)}
                                                         disabled={detailSaving[doc.id] || detailSaved[doc.id]}
-                                                        className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary-hover transition-colors disabled:opacity-50"
+                                                        className={BUTTON_PRIMARY}
                                                     >
                                                         {detailSaving[doc.id]
                                                             ? 'Saving…'
@@ -1083,22 +1261,7 @@ export default function EntityDocumentsPage() {
                         </div>
                     )}
 
-                    {documents.length === 0 ? (
-                        <div className="bg-background-secondary/30 border border-border rounded-lg p-8 text-center space-y-2">
-                            <p className="text-sm text-foreground-secondary">
-                                {context.starterIntro}
-                            </p>
-                            <p className="text-sm text-foreground-secondary">
-                                {context.starterExamples.map((example, index) => (
-                                    <Fragment key={example}>
-                                        {index > 0 && (index === context.starterExamples.length - 1 ? ', and ' : ', ')}
-                                        <span className="text-foreground font-medium">{example}</span>
-                                    </Fragment>
-                                ))}
-                                .
-                            </p>
-                        </div>
-                    ) : (
+                    {documents.length > 0 && (
                         <DocumentVaultBrowser
                             documents={documents}
                             categoryOptions={context.typeOptions}
@@ -1134,6 +1297,7 @@ export default function EntityDocumentsPage() {
             )}
 
             {documentPreview.preview}
+            <ErrorLiveRegion message={loading ? null : error} />
         </div>
     );
 }

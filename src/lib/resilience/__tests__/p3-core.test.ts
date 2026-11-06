@@ -207,6 +207,81 @@ describe('P3 integrated feature calculations', () => {
     expect(bill.charges).toEqual([]);
   });
 
+  // OCR text of real propane supplier statements, flattened as the OCR job stores it.
+  const PROPANE_HEADER = 'PLEASE RETURN THIS PORTION WITH YOUR REMITTANCE ACCOUNT NUMBER DUE DATE Blue Ridge Energies. LLC STATEMENT AS OF ACCOUNT NUMBER CUSTOMER NAME BALANCE OF LAST STATEMENT CURRENT 30 DAYS 60 DAYS 90 DAYS 120 DAYS TOTAL AMOUNT DUE QUANTITY CHARGES/CREDITS DESCRIPTION REFERENCE ACTIVITY DATE Propane and Fuels Statement 9796_PSMT 1/19/22 STATEMENT Propane • Fuel Oil • Kerosene Office and Showroom Locations 100 Cooperative Way Lenoir, NC 28645';
+
+  it('reads a propane delivery as gallons with itemized supply, fees, and taxes', () => {
+    const bill = parseUtilityBillText({
+      receiptId: 59,
+      date: '2022-02-28',
+      provider: 'Blue Ridge Energies, LLC',
+      text: `${PROPANE_HEADER} 02/28/2022   97812604   Justin & Cara Crawford   $0.00  2/28/22   1424612-Delivery   Leased 125 tank V462795 Delivery: 24.400 gals. Propane at 3539 MAJESTIC VIEW 24.400 gals. Propane @ $3.549000/gal - $86.60 Hazmat Fee LP - $9.95 North Carolina State Tax - $4.58 Caldwell County Tax - $1.93 Charge To Credit Card 24.40   103.06  103.06   0.00   0.00   0.00   0.00   $103.06 97812604   To Be Drafted  20097812604000010306  Do not remit payment.`,
+    })!;
+    expect(bill).toMatchObject({
+      id: 'receipt-59-propane',
+      type: 'propane',
+      unit: 'gallons',
+      usage: 24.4,
+      date: '2022-02-28',
+      totalCost: 103.06,
+      supplyCost: 86.6,
+      feeCost: 9.95,
+      taxCost: 6.51,
+      periodStart: null,
+    });
+    expect(bill.charges!.map(charge => charge.label)).toEqual([
+      'Propane 24.4 gal @ $3.549/gal', 'Hazmat Fee LP', 'North Carolina State Tax', 'Caldwell County Tax',
+    ]);
+  });
+
+  it('costs a propane delivery at its charges, not the amount due after a credit', () => {
+    const bill = parseUtilityBillText({
+      receiptId: 57,
+      date: '2021-09-22',
+      provider: 'Blue Ridge Energies, LLC',
+      text: `${PROPANE_HEADER} Justin & Cara Crawford   $0.00  9/17/21   Payment   -168.75 9/22/21   1309311-Delivery   Leased 125 tank V462795 Delivery: 37.200 gals. Propane at 3539 MAJESTIC VIEW 37.200 gals. Propane @ $2.859000/gal - $106.35 Hazmat Fee LP - $9.95 North Carolina State Tax - $5.52 Caldwell County Tax - $2.33 37.20   124.15  0.00   0.00   0.00   0.00   0.00   $-44.60 97812604   No Payment Due`,
+    })!;
+    expect(bill.date).toBe('2021-09-22');
+    expect(bill.usage).toBe(37.2);
+    expect(bill.totalCost).toBe(124.15);
+  });
+
+  it('reads the annual tank rental as a zero-usage propane bill at the charged amount', () => {
+    const rental = parseUtilityBillText({
+      receiptId: 50,
+      date: '2023-10-31',
+      provider: 'Blue Ridge Energies, LLC',
+      text: `${PROPANE_HEADER} 10/31/2023   97812604   Justin & Cara Crawford   $0.00  10/31/23   1767135-Service   Leased 125 tank V462795 Tank Rental Fee for Tank #250946 - Leased 125 tank V462795 Charge To Credit Card The current lease amount is $79 plus tax billed annually. If you are interested in our easy pay installment plan, please contact your local office. 84.33  84.33   0.00   0.00   0.00   0.00   $84.33 97812604   To Be Drafted`,
+    })!;
+    expect(rental).toMatchObject({ type: 'propane', usage: 0, date: '2023-10-31', totalCost: 84.33, feeCost: 84.33 });
+
+    // A prior credit shrinks the amount due (29.06), not the rental's cost.
+    const credited = parseUtilityBillText({
+      receiptId: 58,
+      date: '2021-10-31',
+      provider: 'Blue Ridge Energies, LLC',
+      text: `${PROPANE_HEADER} Justin & Cara Crawford   $-44.60  10/31/21   1333148-Service   Tank Rental Fee Charge To Credit Card The current lease amount is $69 plus tax billed annually. If you are interested in our easy pay installment plan, please contact your local office. 73.66  29.06   0.00   0.00   0.00   0.00   $29.06 97812604   To Be Drafted`,
+    })!;
+    expect(credited.totalCost).toBe(73.66);
+    expect(credited.date).toBe('2021-10-31');
+  });
+
+  it('compares propane rates across deliveries and totals a calendar year, not 12 bills', () => {
+    const result = calculateUtilityAnalysis([
+      { id: 'd1', date: '2024-01-20', type: 'propane', provider: 'BRE', usage: 31.2, unit: 'gallons', totalCost: 131.43 },
+      { id: 'r1', date: '2025-10-31', type: 'propane', provider: 'BRE', usage: 0, unit: 'gallons', totalCost: 84.33 },
+      { id: 'd2', date: '2025-12-30', type: 'propane', provider: 'BRE', usage: 45.1, unit: 'gallons', totalCost: 187.62 },
+    ]);
+    const propane = result.byType.find(row => row.type === 'propane')!;
+    // The rental has no gallons, so it never becomes the "latest" rate.
+    expect(propane.latest?.id).toBe('d2');
+    expect(propane.previous?.id).toBe('d1');
+    expect(propane.latestRate).toBe(4.16);
+    // Jan 2025 – Dec 2025: the rental and the December delivery.
+    expect(propane.trailing12Cost).toBe(271.95);
+    expect(result.trailing12Cost).toBe(271.95);
+  });
+
   const bill = (overrides: Partial<UtilityBill>): UtilityBill => ({
     id: 'b1',
     date: '2026-06-01',
@@ -267,6 +342,18 @@ describe('P3 integrated feature calculations', () => {
     expect(result.upfrontCost).toBe(15_000);
     expect(result.paybackYear).not.toBeNull();
     expect(result.lifetimeSavings).toBeGreaterThan(0);
+    expect(result.missing).toEqual([]);
+  });
+
+  it('reports no payback for a scenario with nothing to pay back', () => {
+    const result = calculateSolarPayback({
+      bills: [],
+      solar: { enabled: true, systemCost: 0, incentives: 0, annualProductionKwh: 0, degradationRate: 0.5, electricRateInflation: 3, annualMaintenance: 0, analysisYears: 25 },
+    });
+    // The all-zero scenario used to "pay back" in year 1.
+    expect(result.paybackYear).toBeNull();
+    expect(result.lifetimeSavings).toBe(0);
+    expect(result.missing).toEqual(['system cost', 'annual production', 'an electric bill']);
   });
 
   it('keeps family balances liability-backed and excludes pending chores', () => {

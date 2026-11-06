@@ -7,7 +7,11 @@ import { formatCurrency } from '@/lib/format';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { PersonalToolNotice } from '@/components/PersonalToolNotice';
 import { useToast } from '@/contexts/ToastContext';
-import { inputClass, labelClass, TNUM } from '@/components/home/home-shared';
+import { ActionMenu, type ActionMenuItem } from '@/components/ui/ActionMenu';
+import { INPUT, LABEL, SELECT, inputClass } from '@/components/ui/form';
+import { Tabs } from '@/components/resilience/ui';
+import { TransactionPicker } from '@/components/receipts/TransactionPicker';
+import { TNUM } from '@/components/home/home-shared';
 
 const SEASON_OPTIONS = [
     { value: '', label: '—' },
@@ -18,12 +22,34 @@ const SEASON_OPTIONS = [
     { value: 'spring+fall', label: 'Spring + Fall' },
 ];
 
-const STATUS_GROUPS: Array<{ status: TaskStatus; label: string; tone: string }> = [
-    { status: 'overdue', label: 'Overdue', tone: 'text-error' },
-    { status: 'due_soon', label: 'Due soon (30 days)', tone: 'text-warning' },
-    { status: 'later', label: 'Later', tone: 'text-foreground-muted' },
-    { status: 'unscheduled', label: 'Unscheduled', tone: 'text-foreground-muted' },
+type TaskGroupKey = TaskStatus | 'baseline';
+
+const TASK_GROUPS: Array<{ key: TaskGroupKey; label: string; tone: string; hint?: string }> = [
+    { key: 'overdue', label: 'Overdue', tone: 'text-error' },
+    { key: 'due_soon', label: 'Due soon (30 days)', tone: 'text-warning' },
+    {
+        key: 'baseline',
+        label: 'Needs a baseline',
+        tone: 'text-foreground-secondary',
+        hint: 'Never logged, so there is no due date yet. Set when each was last done to schedule it.',
+    },
+    { key: 'later', label: 'Later', tone: 'text-foreground-muted' },
+    { key: 'unscheduled', label: 'Unscheduled', tone: 'text-foreground-muted' },
 ];
+
+/**
+ * A cadence task that has never been done has no anchor, so no due date. The
+ * service files it under "due soon" so it surfaces; here it gets its own group
+ * instead, because nothing about it is actually due and a warning colour would
+ * be a false alarm. Season-only tasks always have a next anchor and stay put.
+ */
+function needsBaseline(task: HomeTask): boolean {
+    return !task.lastDone && task.nextDue === null && (task.cadenceMonths ?? 0) > 0;
+}
+
+function taskGroup(task: HomeTask): TaskGroupKey {
+    return needsBaseline(task) ? 'baseline' : task.status;
+}
 
 interface TaskFormState {
     name: string;
@@ -79,16 +105,116 @@ function cadenceLabel(task: HomeTask): string {
     return parts.join(' · ') || 'no schedule';
 }
 
-function dueLabel(task: HomeTask): string {
-    if (!task.nextDue) return task.lastDone ? '—' : 'Never done';
-    const d = task.daysUntilDue;
-    if (d === null) return task.nextDue;
-    if (d < 0) return `${task.nextDue} (${Math.abs(d)}d overdue)`;
-    if (d === 0) return `${task.nextDue} (today)`;
-    return `${task.nextDue} (in ${d}d)`;
+/**
+ * The one date reading a row shows: when it is next due, or — for a task with
+ * no schedule — when it was last done. Never both, and never the same fact
+ * twice.
+ */
+function scheduleReading(task: HomeTask): { text: string; tone: string; mono: boolean } {
+    if (task.nextDue) {
+        const d = task.daysUntilDue;
+        const tone =
+            task.status === 'overdue'
+                ? 'text-error'
+                : task.status === 'due_soon'
+                  ? 'text-warning'
+                  : 'text-foreground-secondary';
+        if (d === null) return { text: `Due ${task.nextDue}`, tone, mono: true };
+        if (d < 0) return { text: `Due ${task.nextDue} · ${Math.abs(d)}d overdue`, tone, mono: true };
+        if (d === 0) return { text: `Due today`, tone, mono: true };
+        return { text: `Due ${task.nextDue} · in ${d}d`, tone, mono: true };
+    }
+    return {
+        text: task.lastDone ? `Last done ${task.lastDone}` : 'Not done yet',
+        tone: 'text-foreground-muted',
+        mono: Boolean(task.lastDone),
+    };
 }
 
 type Panel = { taskId: number; kind: 'done' | 'history' | 'edit' } | null;
+
+/** Row action that must stay a comfortable tap target on phones. */
+const ROW_ACTION =
+    'inline-flex min-h-11 items-center rounded-md px-3 text-sm font-medium transition-colors sm:min-h-9 disabled:opacity-50';
+
+/**
+ * Optional link from a service entry to a ledger transaction, chosen by
+ * searching rather than by pasting a 32-character GUID.
+ */
+function LinkedTransactionField({
+    id,
+    value,
+    onChange,
+}: {
+    id: string;
+    value: string;
+    onChange: (guid: string) => void;
+}) {
+    const [pickerOpen, setPickerOpen] = useState(false);
+    const [summary, setSummary] = useState<{ guid: string; text: string } | null>(null);
+
+    useEffect(() => {
+        if (!value || summary?.guid === value) return;
+        let cancelled = false;
+        fetch(`/api/transactions/${value}`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((json: { description?: string; post_date?: string } | null) => {
+                if (cancelled || !json) return;
+                const date = json.post_date ? String(json.post_date).slice(0, 10) : '';
+                const text = [json.description || '(no description)', date].filter(Boolean).join(' · ');
+                setSummary({ guid: value, text });
+            })
+            .catch(() => {
+                /* the summary is cosmetic; the link itself is already set */
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [value, summary?.guid]);
+
+    const labelId = `${id}-label`;
+    return (
+        <div role="group" aria-labelledby={labelId}>
+            <span id={labelId} className={LABEL}>
+                Linked transaction (optional)
+            </span>
+            {value ? (
+                <div className="flex min-h-[42px] items-center gap-3 rounded-md border border-border px-3">
+                    <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                        {summary?.guid === value ? summary.text : 'Transaction linked'}
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => setPickerOpen(true)}
+                        className="text-sm text-primary transition-colors hover:text-primary-hover"
+                    >
+                        Change
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => onChange('')}
+                        className="text-sm text-foreground-muted transition-colors hover:text-foreground"
+                    >
+                        Remove
+                    </button>
+                </div>
+            ) : (
+                <button
+                    type="button"
+                    onClick={() => setPickerOpen(true)}
+                    className={inputClass({ extra: 'text-left text-foreground-secondary' })}
+                >
+                    Search transactions…
+                </button>
+            )}
+            <TransactionPicker
+                isOpen={pickerOpen}
+                onClose={() => setPickerOpen(false)}
+                onSelect={(guid) => onChange(guid)}
+            />
+        </div>
+    );
+}
 
 export default function HomeMaintenancePage() {
     const toast = useToast();
@@ -128,6 +254,8 @@ export default function HomeMaintenancePage() {
         notes: '',
     });
     const [confirmDeleteLogId, setConfirmDeleteLogId] = useState<number | null>(null);
+    // "Last done" dates typed into the baseline group, keyed by task id.
+    const [baselineDates, setBaselineDates] = useState<Record<number, string>>({});
 
     const load = useCallback(async () => {
         try {
@@ -304,6 +432,35 @@ export default function HomeMaintenancePage() {
         }
     };
 
+    /** Record when a never-logged task was last done, which gives it a due date. */
+    const handleSetBaseline = async (task: HomeTask) => {
+        const lastDone = baselineDates[task.id];
+        if (!lastDone) return;
+        setSaving(true);
+        try {
+            const res = await fetch(`/api/home/tasks/${task.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lastDone }),
+            });
+            if (!res.ok) {
+                const json = await res.json().catch(() => null);
+                throw new Error(json?.error ?? 'Failed to update task');
+            }
+            toast.success(`${task.name} scheduled`);
+            setBaselineDates((prev) => {
+                const next = { ...prev };
+                delete next[task.id];
+                return next;
+            });
+            await load();
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Failed to update task');
+        } finally {
+            setSaving(false);
+        }
+    };
+
     const handleDeleteTask = async (id: number) => {
         try {
             const res = await fetch(`/api/home/tasks/${id}`, { method: 'DELETE' });
@@ -378,18 +535,18 @@ export default function HomeMaintenancePage() {
     ) => (
         <div className="space-y-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <div className="sm:col-span-2">
-                    <label className={labelClass}>Task name *</label>
+                <label className="sm:col-span-2">
+                    <span className={LABEL}>Task name *</span>
                     <input
                         type="text"
                         value={form.name}
                         onChange={(e) => setForm({ ...form, name: e.target.value })}
                         placeholder="e.g. Replace HVAC filter"
-                        className={inputClass}
+                        className={INPUT}
                     />
-                </div>
-                <div>
-                    <label className={labelClass}>Every N months</label>
+                </label>
+                <label>
+                    <span className={LABEL}>Every N months</span>
                     <input
                         type="number"
                         min="1"
@@ -397,16 +554,16 @@ export default function HomeMaintenancePage() {
                         value={form.cadenceMonths}
                         onChange={(e) => setForm({ ...form, cadenceMonths: e.target.value })}
                         placeholder="e.g. 3"
-                        className={`${inputClass} font-mono`}
+                        className={inputClass({ extra: 'font-mono' })}
                         style={TNUM}
                     />
-                </div>
-                <div>
-                    <label className={labelClass}>Season</label>
+                </label>
+                <label>
+                    <span className={LABEL}>Season</span>
                     <select
                         value={form.season}
                         onChange={(e) => setForm({ ...form, season: e.target.value })}
-                        className={inputClass}
+                        className={SELECT}
                     >
                         {SEASON_OPTIONS.map((o) => (
                             <option key={o.value} value={o.value}>
@@ -414,13 +571,13 @@ export default function HomeMaintenancePage() {
                             </option>
                         ))}
                     </select>
-                </div>
-                <div>
-                    <label className={labelClass}>Linked item (optional)</label>
+                </label>
+                <label>
+                    <span className={LABEL}>Linked item (optional)</span>
                     <select
                         value={form.itemId}
                         onChange={(e) => setForm({ ...form, itemId: e.target.value })}
-                        className={inputClass}
+                        className={SELECT}
                     >
                         <option value="">None</option>
                         {items.map((i) => (
@@ -429,26 +586,26 @@ export default function HomeMaintenancePage() {
                             </option>
                         ))}
                     </select>
-                </div>
-                <div>
-                    <label className={labelClass}>Last done</label>
+                </label>
+                <label>
+                    <span className={LABEL}>Last done</span>
                     <input
                         type="date"
                         value={form.lastDone}
                         onChange={(e) => setForm({ ...form, lastDone: e.target.value })}
-                        className={`${inputClass} font-mono`}
+                        className={inputClass({ extra: 'font-mono' })}
                     />
-                </div>
-                <div className="sm:col-span-2">
-                    <label className={labelClass}>Notes</label>
+                </label>
+                <label className="sm:col-span-2">
+                    <span className={LABEL}>Notes</span>
                     <input
                         type="text"
                         value={form.notes}
                         onChange={(e) => setForm({ ...form, notes: e.target.value })}
                         placeholder="Filter size, breaker location…"
-                        className={inputClass}
+                        className={INPUT}
                     />
-                </div>
+                </label>
             </div>
             <div className="flex items-center gap-3">
                 <button
@@ -470,221 +627,251 @@ export default function HomeMaintenancePage() {
         </div>
     );
 
-    const renderTaskRow = (task: HomeTask) => (
-        <Fragment key={task.id}>
-            <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/30 px-4 py-2.5 last:border-b-0">
-                <div className="min-w-0 flex-1">
-                    <span className="text-sm text-foreground">{task.name}</span>
-                    <span className="ml-3 text-xs text-foreground-muted">
-                        {cadenceLabel(task)}
-                        {task.itemName && ` · ${task.itemName}`}
-                    </span>
-                    {task.notes && (
-                        <p className="mt-0.5 truncate text-xs text-foreground-muted">{task.notes}</p>
-                    )}
-                </div>
-                <span className="font-mono text-xs text-foreground-secondary" style={TNUM}>
-                    {task.lastDone ? `done ${task.lastDone}` : 'never done'}
-                </span>
-                <span
-                    className={`font-mono text-xs ${
-                        task.status === 'overdue'
-                            ? 'text-error'
-                            : task.status === 'due_soon'
-                              ? 'text-warning'
-                              : 'text-foreground-muted'
-                    }`}
-                    style={TNUM}
-                >
-                    {dueLabel(task)}
-                </span>
-                <div className="flex items-center gap-3 text-sm">
-                    {task.active && (
-                        <button
-                            type="button"
-                            onClick={() => openPanel(task.id, 'done')}
-                            className="text-primary hover:text-primary-hover transition-colors"
+    const renderTaskRow = (task: HomeTask) => {
+        const baseline = task.active && needsBaseline(task);
+        const reading = baseline ? null : scheduleReading(task);
+        const confirmingDelete = confirmDeleteId === task.id;
+        // Mark done (or Resume, for a paused task) is the one visible action;
+        // everything else lives in the row's overflow menu.
+        const menuItems: ActionMenuItem[] = [
+            ...(baseline ? [{ label: 'Mark done', onSelect: () => openPanel(task.id, 'done') }] : []),
+            { label: 'History', onSelect: () => openPanel(task.id, 'history') },
+            { label: 'Edit', onSelect: () => openPanel(task.id, 'edit', task) },
+            ...(task.active ? [{ label: 'Pause', onSelect: () => void handleToggleActive(task) }] : []),
+            {
+                label: 'Delete…',
+                destructive: true,
+                onSelect: () => {
+                    setPanel(null);
+                    setConfirmDeleteId(task.id);
+                },
+            },
+        ];
+        return (
+            <Fragment key={task.id}>
+                <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/30 px-4 py-2 last:border-b-0">
+                    <div className="min-w-0 flex-1 basis-full py-1 sm:basis-48">
+                        <span className="text-sm text-foreground">{task.name}</span>
+                        <span className="ml-3 text-xs text-foreground-muted">
+                            {cadenceLabel(task)}
+                            {task.itemName && ` · ${task.itemName}`}
+                        </span>
+                        {task.notes && (
+                            <p className="mt-0.5 truncate text-xs text-foreground-muted">{task.notes}</p>
+                        )}
+                    </div>
+                    {reading && (
+                        <span
+                            className={`text-xs ${reading.mono ? 'font-mono' : ''} ${reading.tone}`}
+                            style={reading.mono ? TNUM : undefined}
                         >
-                            Mark done
-                        </button>
+                            {reading.text}
+                        </span>
                     )}
-                    <button
-                        type="button"
-                        onClick={() => openPanel(task.id, 'history')}
-                        className="text-foreground-secondary hover:text-foreground transition-colors"
-                    >
-                        History
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => openPanel(task.id, 'edit', task)}
-                        className="text-foreground-secondary hover:text-foreground transition-colors"
-                    >
-                        Edit
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => handleToggleActive(task)}
-                        className="text-foreground-muted hover:text-foreground transition-colors"
-                    >
-                        {task.active ? 'Pause' : 'Resume'}
-                    </button>
-                    {confirmDeleteId === task.id ? (
-                        <span className="flex items-center gap-2">
+                    {confirmingDelete ? (
+                        <div className="ml-auto flex items-center gap-1" role="group" aria-label={`Delete ${task.name}`}>
+                            <span className="text-sm text-foreground-secondary">Delete this task?</span>
                             <button
                                 type="button"
                                 onClick={() => handleDeleteTask(task.id)}
-                                className="font-medium text-error hover:opacity-80 transition-opacity"
+                                className={`${ROW_ACTION} text-error hover:bg-error/10`}
                             >
-                                Confirm
+                                Delete
                             </button>
                             <button
                                 type="button"
                                 onClick={() => setConfirmDeleteId(null)}
-                                className="text-foreground-muted hover:text-foreground transition-colors"
+                                className={`${ROW_ACTION} font-normal text-foreground-secondary hover:text-foreground`}
                             >
                                 Cancel
                             </button>
-                        </span>
+                        </div>
                     ) : (
-                        <button
-                            type="button"
-                            onClick={() => setConfirmDeleteId(task.id)}
-                            className="text-foreground-muted hover:text-error transition-colors"
-                        >
-                            Delete
-                        </button>
-                    )}
-                </div>
-            </li>
-            {panel?.taskId === task.id && (
-                <li className="border-b border-border/30 bg-background-tertiary/30 px-4 py-3 last:border-b-0">
-                    {panel.kind === 'done' && (
-                        <div className="space-y-3">
-                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                                <div>
-                                    <label className={labelClass}>Date</label>
-                                    <input
-                                        type="date"
-                                        value={doneForm.date}
-                                        onChange={(e) =>
-                                            setDoneForm({ ...doneForm, date: e.target.value })
-                                        }
-                                        className={`${inputClass} font-mono`}
-                                    />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Cost (optional)</label>
-                                    <input
-                                        type="number"
-                                        min="0"
-                                        step="0.01"
-                                        inputMode="decimal"
-                                        value={doneForm.cost}
-                                        onChange={(e) =>
-                                            setDoneForm({ ...doneForm, cost: e.target.value })
-                                        }
-                                        placeholder="0.00"
-                                        className={`${inputClass} font-mono`}
-                                        style={TNUM}
-                                    />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Vendor (optional)</label>
-                                    <input
-                                        type="text"
-                                        value={doneForm.vendor}
-                                        onChange={(e) =>
-                                            setDoneForm({ ...doneForm, vendor: e.target.value })
-                                        }
-                                        className={inputClass}
-                                    />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Ledger txn GUID (optional)</label>
-                                    <input
-                                        type="text"
-                                        value={doneForm.txnGuid}
-                                        onChange={(e) =>
-                                            setDoneForm({ ...doneForm, txnGuid: e.target.value })
-                                        }
-                                        placeholder="32-char guid"
-                                        className={`${inputClass} font-mono`}
-                                    />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Notes</label>
-                                    <input
-                                        type="text"
-                                        value={doneForm.notes}
-                                        onChange={(e) =>
-                                            setDoneForm({ ...doneForm, notes: e.target.value })
-                                        }
-                                        className={inputClass}
-                                    />
-                                </div>
-                            </div>
-                            <div className="flex items-center gap-3">
+                        <div className="ml-auto flex items-center gap-1">
+                            {baseline ? (
+                                <form
+                                    className="flex items-center gap-2"
+                                    onSubmit={(e) => {
+                                        e.preventDefault();
+                                        void handleSetBaseline(task);
+                                    }}
+                                >
+                                    <label
+                                        htmlFor={`baseline-${task.id}`}
+                                        className="whitespace-nowrap text-xs text-foreground-secondary"
+                                    >
+                                        Last done
+                                    </label>
+                                    <div className="w-40">
+                                        <input
+                                            id={`baseline-${task.id}`}
+                                            type="date"
+                                            max={today()}
+                                            value={baselineDates[task.id] ?? ''}
+                                            onChange={(e) =>
+                                                setBaselineDates((prev) => ({ ...prev, [task.id]: e.target.value }))
+                                            }
+                                            className={inputClass({ extra: 'py-2 font-mono' })}
+                                            style={TNUM}
+                                        />
+                                    </div>
+                                    <button
+                                        type="submit"
+                                        disabled={saving || !baselineDates[task.id]}
+                                        className={`${ROW_ACTION} border border-border text-foreground hover:border-border-hover hover:bg-surface-hover`}
+                                    >
+                                        Set
+                                    </button>
+                                </form>
+                            ) : task.active ? (
                                 <button
                                     type="button"
-                                    onClick={() => handleMarkDone(task)}
-                                    disabled={saving}
-                                    className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary-hover transition-colors disabled:opacity-50"
+                                    onClick={() => openPanel(task.id, 'done')}
+                                    aria-expanded={panel?.taskId === task.id && panel.kind === 'done'}
+                                    className={`${ROW_ACTION} text-primary hover:bg-primary-light hover:text-primary-hover`}
                                 >
-                                    {saving ? 'Saving…' : 'Log service'}
+                                    Mark done
                                 </button>
+                            ) : (
                                 <button
                                     type="button"
-                                    onClick={() => setPanel(null)}
-                                    className="rounded-lg border border-border px-4 py-1.5 text-sm text-foreground-secondary hover:text-foreground hover:border-border-hover transition-colors"
+                                    onClick={() => handleToggleActive(task)}
+                                    className={`${ROW_ACTION} text-primary hover:bg-primary-light hover:text-primary-hover`}
                                 >
-                                    Cancel
+                                    Resume
                                 </button>
-                            </div>
+                            )}
+                            <ActionMenu
+                                items={menuItems}
+                                label={`More actions for ${task.name}`}
+                                size="touch"
+                                className="shrink-0"
+                            />
                         </div>
                     )}
-                    {panel.kind === 'history' &&
-                        (history[task.id] === undefined ? (
-                            <p className="text-sm text-foreground-muted">Loading history…</p>
-                        ) : history[task.id].length === 0 ? (
-                            <p className="text-sm text-foreground-muted">
-                                No service history for this task yet.
-                            </p>
-                        ) : (
-                            <ul className="space-y-1">
-                                {history[task.id].map((entry) => (
-                                    <li
-                                        key={entry.id}
-                                        className="flex flex-wrap items-center gap-x-4 text-sm"
-                                    >
-                                        <span className="font-mono text-foreground-secondary" style={TNUM}>
-                                            {entry.serviceDate}
-                                        </span>
-                                        <span className="font-mono text-foreground-secondary" style={TNUM}>
-                                            {entry.cost !== null ? formatCurrency(entry.cost) : '—'}
-                                        </span>
-                                        {entry.vendor && (
-                                            <span className="text-foreground-secondary">{entry.vendor}</span>
-                                        )}
-                                        {entry.notes && (
-                                            <span className="text-xs text-foreground-muted">{entry.notes}</span>
-                                        )}
-                                    </li>
-                                ))}
-                            </ul>
-                        ))}
-                    {panel.kind === 'edit' &&
-                        renderTaskForm(
-                            editForm,
-                            setEditForm,
-                            () => handleSaveTask(task),
-                            () => setPanel(null),
-                            'Save',
-                        )}
                 </li>
-            )}
-        </Fragment>
-    );
+                {panel?.taskId === task.id && (
+                    <li className="border-b border-border/30 bg-background-tertiary/30 px-4 py-3 last:border-b-0">
+                        {panel.kind === 'done' && (
+                            <div className="space-y-3">
+                                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                    <label>
+                                        <span className={LABEL}>Date</span>
+                                        <input
+                                            type="date"
+                                            value={doneForm.date}
+                                            onChange={(e) =>
+                                                setDoneForm({ ...doneForm, date: e.target.value })
+                                            }
+                                            className={inputClass({ extra: 'font-mono' })}
+                                        />
+                                    </label>
+                                    <label>
+                                        <span className={LABEL}>Cost (optional)</span>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            step="0.01"
+                                            inputMode="decimal"
+                                            value={doneForm.cost}
+                                            onChange={(e) =>
+                                                setDoneForm({ ...doneForm, cost: e.target.value })
+                                            }
+                                            placeholder="0.00"
+                                            className={inputClass({ extra: 'font-mono' })}
+                                            style={TNUM}
+                                        />
+                                    </label>
+                                    <label>
+                                        <span className={LABEL}>Vendor (optional)</span>
+                                        <input
+                                            type="text"
+                                            value={doneForm.vendor}
+                                            onChange={(e) =>
+                                                setDoneForm({ ...doneForm, vendor: e.target.value })
+                                            }
+                                            className={INPUT}
+                                        />
+                                    </label>
+                                    <LinkedTransactionField
+                                        id={`done-txn-${task.id}`}
+                                        value={doneForm.txnGuid}
+                                        onChange={(txnGuid) => setDoneForm({ ...doneForm, txnGuid })}
+                                    />
+                                    <label>
+                                        <span className={LABEL}>Notes</span>
+                                        <input
+                                            type="text"
+                                            value={doneForm.notes}
+                                            onChange={(e) =>
+                                                setDoneForm({ ...doneForm, notes: e.target.value })
+                                            }
+                                            className={INPUT}
+                                        />
+                                    </label>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => handleMarkDone(task)}
+                                        disabled={saving}
+                                        className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary-hover transition-colors disabled:opacity-50"
+                                    >
+                                        {saving ? 'Saving…' : 'Log service'}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setPanel(null)}
+                                        className="rounded-lg border border-border px-4 py-1.5 text-sm text-foreground-secondary hover:text-foreground hover:border-border-hover transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                        {panel.kind === 'history' &&
+                            (history[task.id] === undefined ? (
+                                <p className="text-sm text-foreground-muted">Loading history…</p>
+                            ) : history[task.id].length === 0 ? (
+                                <p className="text-sm text-foreground-muted">
+                                    No service history for this task yet.
+                                </p>
+                            ) : (
+                                <ul className="space-y-1">
+                                    {history[task.id].map((entry) => (
+                                        <li
+                                            key={entry.id}
+                                            className="flex flex-wrap items-center gap-x-4 text-sm"
+                                        >
+                                            <span className="font-mono text-foreground-secondary" style={TNUM}>
+                                                {entry.serviceDate}
+                                            </span>
+                                            <span className="font-mono text-foreground-secondary" style={TNUM}>
+                                                {entry.cost !== null ? formatCurrency(entry.cost) : '—'}
+                                            </span>
+                                            {entry.vendor && (
+                                                <span className="text-foreground-secondary">{entry.vendor}</span>
+                                            )}
+                                            {entry.notes && (
+                                                <span className="text-xs text-foreground-muted">{entry.notes}</span>
+                                            )}
+                                        </li>
+                                    ))}
+                                </ul>
+                            ))}
+                        {panel.kind === 'edit' &&
+                            renderTaskForm(
+                                editForm,
+                                setEditForm,
+                                () => handleSaveTask(task),
+                                () => setPanel(null),
+                                'Save',
+                            )}
+                    </li>
+                )}
+            </Fragment>
+        );
+    };
 
     return (
         <div className="space-y-6">
@@ -692,13 +879,18 @@ export default function HomeMaintenancePage() {
                 title="Home Maintenance"
                 subtitle="Recurring and seasonal upkeep with a service log — so nothing quietly rusts, clogs, or burns out."
                 actions={
-                    <button
-                        type="button"
-                        onClick={() => setAddOpen((v) => !v)}
-                        className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary-hover transition-colors"
-                    >
-                        Add task
-                    </button>
+                    // Adding a task only makes sense on the task list; the service
+                    // log has its own entry form.
+                    tab === 'tasks' ? (
+                        <button
+                            type="button"
+                            onClick={() => setAddOpen((v) => !v)}
+                            aria-expanded={addOpen}
+                            className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary-hover transition-colors"
+                        >
+                            Add task
+                        </button>
+                    ) : undefined
                 }
             />
 
@@ -721,37 +913,28 @@ export default function HomeMaintenancePage() {
 
             {!loading && !error && tasks !== null && (
                 <>
-                    {/* Tabs */}
-                    <div className="flex items-center gap-1 border-b border-border">
-                        {(
-                            [
-                                { id: 'tasks', label: 'Tasks' },
-                                { id: 'log', label: 'Service log' },
-                            ] as const
-                        ).map((t) => (
-                            <button
-                                key={t.id}
-                                type="button"
-                                onClick={() => setTab(t.id)}
-                                className={`border-b-2 px-3 py-2 text-sm transition-colors ${
-                                    tab === t.id
-                                        ? 'border-primary font-medium text-primary'
-                                        : 'border-transparent text-foreground-secondary hover:text-foreground'
-                                }`}
-                            >
-                                {t.label}
-                            </button>
-                        ))}
+                    <div className="flex items-stretch">
+                        <div className="min-w-0 flex-1">
+                            <Tabs
+                                label="Maintenance views"
+                                value={tab}
+                                onChange={setTab}
+                                tabs={[
+                                    { value: 'tasks', label: 'Tasks' },
+                                    { value: 'log', label: 'Service log' },
+                                ]}
+                            />
+                        </div>
                         <Link
                             href="/home/inventory"
-                            className="ml-auto pb-2 text-sm text-primary hover:text-primary-hover transition-colors"
+                            className="flex shrink-0 items-center border-b border-border pl-3 text-sm text-primary hover:text-primary-hover transition-colors"
                         >
                             Home inventory →
                         </Link>
                     </div>
 
                     {tab === 'tasks' && (
-                        <>
+                        <div role="tabpanel" aria-label="Tasks" className="space-y-6">
                             {addOpen && (
                                 <div className="bg-background-secondary/30 border border-border rounded-lg p-4">
                                     {renderTaskForm(
@@ -790,45 +973,59 @@ export default function HomeMaintenancePage() {
                                 </div>
                             )}
 
-                            {STATUS_GROUPS.map((group) => {
-                                const groupTasks = activeTasks.filter((t) => t.status === group.status);
+                            {TASK_GROUPS.map((group) => {
+                                const groupTasks = activeTasks.filter((t) => taskGroup(t) === group.key);
                                 if (groupTasks.length === 0) return null;
+                                const headingId = `task-group-${group.key}`;
                                 return (
-                                    <div
-                                        key={group.status}
+                                    <section
+                                        key={group.key}
+                                        aria-labelledby={headingId}
                                         className="bg-background-secondary/30 border border-border rounded-lg overflow-hidden"
                                     >
-                                        <div
-                                            className={`border-b border-border px-4 py-2.5 text-[10px] font-medium uppercase tracking-wider ${group.tone}`}
-                                        >
-                                            {group.label}
-                                            <span className="ml-2 font-mono" style={TNUM}>
-                                                {groupTasks.length}
-                                            </span>
+                                        <div className="border-b border-border px-4 py-2.5">
+                                            <h2
+                                                id={headingId}
+                                                className={`text-xs font-semibold uppercase tracking-wider ${group.tone}`}
+                                            >
+                                                {group.label}
+                                                <span className="ml-2 font-mono" style={TNUM}>
+                                                    {groupTasks.length}
+                                                </span>
+                                            </h2>
+                                            {group.hint && (
+                                                <p className="mt-0.5 text-xs text-foreground-muted">{group.hint}</p>
+                                            )}
                                         </div>
                                         <ul>{groupTasks.map(renderTaskRow)}</ul>
-                                    </div>
+                                    </section>
                                 );
                             })}
 
                             {inactiveTasks.length > 0 && (
-                                <div className="bg-background-secondary/30 border border-border rounded-lg overflow-hidden opacity-70">
-                                    <div className="border-b border-border px-4 py-2.5 text-[10px] font-medium uppercase tracking-wider text-foreground-muted">
+                                <section
+                                    aria-labelledby="task-group-paused"
+                                    className="bg-background-secondary/30 border border-border rounded-lg overflow-hidden"
+                                >
+                                    <h2
+                                        id="task-group-paused"
+                                        className="border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-foreground-muted"
+                                    >
                                         Paused
                                         <span className="ml-2 font-mono" style={TNUM}>
                                             {inactiveTasks.length}
                                         </span>
-                                    </div>
+                                    </h2>
                                     <ul>{inactiveTasks.map(renderTaskRow)}</ul>
-                                </div>
+                                </section>
                             )}
-                        </>
+                        </div>
                     )}
 
                     {tab === 'log' && (
-                        <>
+                        <div role="tabpanel" aria-label="Service log" className="space-y-6">
                             <div className="bg-background-secondary/30 border border-border rounded-lg p-5">
-                                <p className="text-[10px] font-medium uppercase tracking-wider text-foreground-muted">
+                                <p className="text-xs font-semibold uppercase tracking-wider text-foreground-muted">
                                     Maintenance cost — year to date
                                 </p>
                                 <p
@@ -845,25 +1042,25 @@ export default function HomeMaintenancePage() {
                                     Log a service
                                 </p>
                                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                                    <div>
-                                        <label className={labelClass}>Date</label>
+                                    <label>
+                                        <span className={LABEL}>Date</span>
                                         <input
                                             type="date"
                                             value={logForm.date}
                                             onChange={(e) =>
                                                 setLogForm({ ...logForm, date: e.target.value })
                                             }
-                                            className={`${inputClass} font-mono`}
+                                            className={inputClass({ extra: 'font-mono' })}
                                         />
-                                    </div>
-                                    <div>
-                                        <label className={labelClass}>Task (optional)</label>
+                                    </label>
+                                    <label>
+                                        <span className={LABEL}>Task (optional)</span>
                                         <select
                                             value={logForm.taskId}
                                             onChange={(e) =>
                                                 setLogForm({ ...logForm, taskId: e.target.value })
                                             }
-                                            className={inputClass}
+                                            className={SELECT}
                                         >
                                             <option value="">None</option>
                                             {(tasks ?? []).map((t) => (
@@ -872,15 +1069,15 @@ export default function HomeMaintenancePage() {
                                                 </option>
                                             ))}
                                         </select>
-                                    </div>
-                                    <div>
-                                        <label className={labelClass}>Item (optional)</label>
+                                    </label>
+                                    <label>
+                                        <span className={LABEL}>Item (optional)</span>
                                         <select
                                             value={logForm.itemId}
                                             onChange={(e) =>
                                                 setLogForm({ ...logForm, itemId: e.target.value })
                                             }
-                                            className={inputClass}
+                                            className={SELECT}
                                         >
                                             <option value="">None</option>
                                             {items.map((i) => (
@@ -889,9 +1086,9 @@ export default function HomeMaintenancePage() {
                                                 </option>
                                             ))}
                                         </select>
-                                    </div>
-                                    <div>
-                                        <label className={labelClass}>Cost</label>
+                                    </label>
+                                    <label>
+                                        <span className={LABEL}>Cost</span>
                                         <input
                                             type="number"
                                             min="0"
@@ -902,44 +1099,37 @@ export default function HomeMaintenancePage() {
                                                 setLogForm({ ...logForm, cost: e.target.value })
                                             }
                                             placeholder="0.00"
-                                            className={`${inputClass} font-mono`}
+                                            className={inputClass({ extra: 'font-mono' })}
                                             style={TNUM}
                                         />
-                                    </div>
-                                    <div>
-                                        <label className={labelClass}>Vendor</label>
+                                    </label>
+                                    <label>
+                                        <span className={LABEL}>Vendor</span>
                                         <input
                                             type="text"
                                             value={logForm.vendor}
                                             onChange={(e) =>
                                                 setLogForm({ ...logForm, vendor: e.target.value })
                                             }
-                                            className={inputClass}
+                                            className={INPUT}
                                         />
-                                    </div>
-                                    <div>
-                                        <label className={labelClass}>Ledger txn GUID</label>
-                                        <input
-                                            type="text"
-                                            value={logForm.txnGuid}
-                                            onChange={(e) =>
-                                                setLogForm({ ...logForm, txnGuid: e.target.value })
-                                            }
-                                            placeholder="optional"
-                                            className={`${inputClass} font-mono`}
-                                        />
-                                    </div>
-                                    <div className="sm:col-span-2">
-                                        <label className={labelClass}>Notes</label>
+                                    </label>
+                                    <LinkedTransactionField
+                                        id="log-txn"
+                                        value={logForm.txnGuid}
+                                        onChange={(txnGuid) => setLogForm({ ...logForm, txnGuid })}
+                                    />
+                                    <label className="sm:col-span-2">
+                                        <span className={LABEL}>Notes</span>
                                         <input
                                             type="text"
                                             value={logForm.notes}
                                             onChange={(e) =>
                                                 setLogForm({ ...logForm, notes: e.target.value })
                                             }
-                                            className={inputClass}
+                                            className={INPUT}
                                         />
-                                    </div>
+                                    </label>
                                 </div>
                                 <button
                                     type="button"
@@ -1030,7 +1220,7 @@ export default function HomeMaintenancePage() {
                                     </ul>
                                 </div>
                             )}
-                        </>
+                        </div>
                     )}
                 </>
             )}

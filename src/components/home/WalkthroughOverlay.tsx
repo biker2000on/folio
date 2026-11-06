@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { HomeRoom, HomeItem } from '@/lib/services/home.service';
 import { formatCurrency } from '@/lib/format';
 import { useToast } from '@/contexts/ToastContext';
-import { CATEGORY_OPTIONS, inputClass, labelClass, TNUM } from './home-shared';
+import { INPUT, LABEL, SELECT, inputClass } from '@/components/ui/form';
+import { CATEGORY_OPTIONS, TNUM } from './home-shared';
 import { extractErrorMessage } from '@/lib/api-error';
 
 /** Capture mode: fill in details now, or snap photos now and detail later. */
@@ -304,11 +305,16 @@ export function WalkthroughOverlay({ rooms, onClose }: WalkthroughOverlayProps) 
                                 }}
                             >
                                 <div>
-                                    <label className={labelClass}>
+                                    <label htmlFor="walk-photos-only" className={LABEL}>
+                                        Photos
+                                    </label>
+                                    <p id="walk-photos-only-hint" className="mb-2 text-sm text-foreground-secondary">
                                         Snap the item (and its serial-number label) — name it and add
                                         details later on the desktop.
-                                    </label>
+                                    </p>
                                     <input
+                                        id="walk-photos-only"
+                                        aria-describedby="walk-photos-only-hint"
                                         ref={photoRef}
                                         type="file"
                                         accept="image/*"
@@ -371,25 +377,25 @@ export function WalkthroughOverlay({ rooms, onClose }: WalkthroughOverlayProps) 
                                     void addItem();
                                 }}
                             >
-                                <div>
-                                    <label className={labelClass}>Item name *</label>
+                                <label>
+                                    <span className={LABEL}>Item name *</span>
                                     <input
                                         ref={nameRef}
                                         type="text"
                                         value={name}
                                         onChange={(e) => setName(e.target.value)}
                                         placeholder={`What's in the ${room.name.toLowerCase()}?`}
-                                        className={inputClass}
+                                        className={INPUT}
                                         required
                                     />
-                                </div>
+                                </label>
                                 <div className="grid grid-cols-2 gap-3">
-                                    <div>
-                                        <label className={labelClass}>Category</label>
+                                    <label>
+                                        <span className={LABEL}>Category</span>
                                         <select
                                             value={category}
                                             onChange={(e) => setCategory(e.target.value)}
-                                            className={inputClass}
+                                            className={SELECT}
                                         >
                                             <option value="">—</option>
                                             {CATEGORY_OPTIONS.map((o) => (
@@ -398,9 +404,9 @@ export function WalkthroughOverlay({ rooms, onClose }: WalkthroughOverlayProps) 
                                                 </option>
                                             ))}
                                         </select>
-                                    </div>
-                                    <div>
-                                        <label className={labelClass}>Est. value</label>
+                                    </label>
+                                    <label>
+                                        <span className={LABEL}>Est. value</span>
                                         <input
                                             type="number"
                                             min="0"
@@ -409,16 +415,21 @@ export function WalkthroughOverlay({ rooms, onClose }: WalkthroughOverlayProps) 
                                             value={estValue}
                                             onChange={(e) => setEstValue(e.target.value)}
                                             placeholder="0.00"
-                                            className={`${inputClass} font-mono`}
+                                            className={inputClass({ extra: 'font-mono' })}
                                             style={TNUM}
                                         />
-                                    </div>
+                                    </label>
                                 </div>
                                 <div>
-                                    <label className={labelClass}>
-                                        Photos (optional) — add the item and its serial-number label
+                                    <label htmlFor="walk-item-photos" className={LABEL}>
+                                        Photos (optional)
                                     </label>
+                                    <p id="walk-item-photos-hint" className="mb-2 text-xs text-foreground-muted">
+                                        Add the item and its serial-number label.
+                                    </p>
                                     <input
+                                        id="walk-item-photos"
+                                        aria-describedby="walk-item-photos-hint"
                                         ref={photoRef}
                                         type="file"
                                         accept="image/*"
@@ -435,24 +446,24 @@ export function WalkthroughOverlay({ rooms, onClose }: WalkthroughOverlayProps) 
                                     )}
                                 </div>
                                 <div className="grid grid-cols-2 gap-3">
-                                    <div>
-                                        <label className={labelClass}>Warranty until</label>
+                                    <label>
+                                        <span className={LABEL}>Warranty until</span>
                                         <input
                                             type="date"
                                             value={warranty}
                                             onChange={(e) => setWarranty(e.target.value)}
-                                            className={`${inputClass} font-mono`}
+                                            className={inputClass({ extra: 'font-mono' })}
                                         />
-                                    </div>
-                                    <div>
-                                        <label className={labelClass}>Serial #</label>
+                                    </label>
+                                    <label>
+                                        <span className={LABEL}>Serial #</span>
                                         <input
                                             type="text"
                                             value={serial}
                                             onChange={(e) => setSerial(e.target.value)}
-                                            className={`${inputClass} font-mono`}
+                                            className={inputClass({ extra: 'font-mono' })}
                                         />
-                                    </div>
+                                    </label>
                                 </div>
 
                                 <div className="flex flex-wrap items-center gap-2 pt-2">

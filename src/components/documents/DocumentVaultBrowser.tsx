@@ -25,7 +25,7 @@ import type { DocSearchResults, SearchSnippet } from '@/lib/doc-search';
 import { getDocumentTypeLabel, getTaxFormLabel } from '@/lib/entity-document-context';
 import { findMissingTaxForms, type MissingTaxForm } from '@/lib/tax-records';
 import { ErrorLiveRegion } from '@/components/a11y/LiveRegion';
-import { SELECT, inputClass } from '@/components/ui/form';
+import { LABEL, SELECT, inputClass } from '@/components/ui/form';
 import { readErrorBody } from '@/lib/api-error';
 import { Tip } from '@/components/ui/Tooltip';
 
@@ -544,9 +544,21 @@ function DocumentActions({
                 <TagEditor document={document} tags={tags ?? []} vocabulary={vocabulary} onSaved={onTagsSaved} />
             )}
             {confirmDelete ? (
-                <span className="flex items-center gap-2">
-                    <button type="button" onClick={onDelete} className="font-medium text-error hover:opacity-80">Confirm delete</button>
-                    <button type="button" onClick={() => onRequestDelete(null)} className="text-foreground-muted hover:text-foreground">Cancel</button>
+                // DELETE removes the row, its tags and thumbnail, and the stored
+                // file itself (src/app/api/business/documents/[id]/route.ts) —
+                // there is no trash to restore from, so say so before it happens.
+                <span
+                    role="group"
+                    aria-label={`Delete ${document.title}?`}
+                    className="flex basis-full flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-error/30 bg-error/5 px-2 py-1.5"
+                >
+                    <span className="text-foreground-secondary">
+                        This removes the file from storage. It can&apos;t be recovered.
+                    </span>
+                    <span className="flex items-center gap-3">
+                        <button type="button" onClick={onDelete} className="font-medium text-error hover:opacity-80">Delete permanently</button>
+                        <button type="button" onClick={() => onRequestDelete(null)} className="text-foreground-secondary hover:text-foreground">Keep it</button>
+                    </span>
                 </span>
             ) : (
                 <button type="button" onClick={() => onRequestDelete(document.id)} className="text-foreground-muted hover:text-error">Delete</button>
@@ -924,50 +936,57 @@ export function DocumentVaultBrowser({
 
     return (
         <section className="space-y-4" aria-label="Document browser">
-            <div className="flex flex-wrap items-end gap-3 rounded-lg border border-border bg-background-secondary/30 p-3">
-                <label className="min-w-64 flex-1 text-xs font-medium text-foreground-secondary">
-                    Search document text
+            {/*
+              * Primary filters (search, category) lead; layout preferences
+              * (grouping, view) sit apart at the far end so the row reads
+              * "find" first and "arrange" second.
+              */}
+            <div className="flex flex-wrap items-end gap-x-3 gap-y-3 rounded-lg border border-border bg-background-secondary/30 p-3">
+                <label className="min-w-0 basis-full sm:min-w-64 sm:flex-1 sm:basis-auto">
+                    <span className={LABEL}>Search document text</span>
                     <input
                         type="search"
                         value={query}
                         onChange={(event) => setQuery(event.target.value)}
                         placeholder="Search titles and document text…"
-                        className={inputClass({ extra: 'mt-1' })}
+                        className={inputClass()}
                     />
                 </label>
-                <label className="text-xs font-medium text-foreground-secondary">
-                    Category
-                    <select value={category} onChange={(event) => setCategory(event.target.value)} className={`${SELECT} mt-1 min-w-44`}>
+                <label className="min-w-0 basis-full sm:basis-auto">
+                    <span className={LABEL}>Category</span>
+                    <select value={category} onChange={(event) => setCategory(event.target.value)} className={inputClass({ base: SELECT, extra: 'sm:min-w-44' })}>
                         <option value="all">All categories</option>
                         {visibleCategoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                 </label>
-                <label className="text-xs font-medium text-foreground-secondary">
-                    Group by
-                    <select
-                        value={grouping}
-                        onChange={(event) => setGrouping(event.target.value as DocumentVaultGrouping)}
-                        className={`${SELECT} mt-1 min-w-36`}
-                    >
-                        <option value="category">Category</option>
-                        <option value="taxYear">Tax year</option>
-                        <option value="issuer">Issuer</option>
-                        <option value="none">None</option>
-                    </select>
-                </label>
-                <span className="flex rounded-md border border-border p-0.5" aria-label="View mode">
-                    {(['cards', 'table'] as const).map((mode) => (
-                        <button
-                            key={mode}
-                            type="button"
-                            aria-pressed={viewMode === mode}
-                            onClick={() => setViewMode(mode)}
-                            className={`rounded-sm px-3 py-2 text-xs font-medium capitalize ${viewMode === mode ? 'bg-primary text-primary-foreground' : 'text-foreground-secondary hover:text-foreground'}`}
+                <div className="flex basis-full items-end gap-3 border-border sm:basis-auto lg:ml-auto lg:border-l lg:pl-3">
+                    <label className="min-w-0 flex-1 sm:flex-none">
+                        <span className={LABEL}>Group by</span>
+                        <select
+                            value={grouping}
+                            onChange={(event) => setGrouping(event.target.value as DocumentVaultGrouping)}
+                            className={inputClass({ base: SELECT, extra: 'min-w-32' })}
                         >
-                            {mode}
-                        </button>
-                    ))}
-                </span>
+                            <option value="category">Category</option>
+                            <option value="taxYear">Tax year</option>
+                            <option value="issuer">Issuer</option>
+                            <option value="none">None</option>
+                        </select>
+                    </label>
+                    <span role="group" className="flex rounded-md border border-border p-0.5" aria-label="View mode">
+                        {(['cards', 'table'] as const).map((mode) => (
+                            <button
+                                key={mode}
+                                type="button"
+                                aria-pressed={viewMode === mode}
+                                onClick={() => setViewMode(mode)}
+                                className={`rounded-sm px-3 py-2.5 text-xs font-medium capitalize transition-colors ${viewMode === mode ? 'bg-primary text-primary-foreground' : 'text-foreground-secondary hover:text-foreground'}`}
+                            >
+                                {mode}
+                            </button>
+                        ))}
+                    </span>
+                </div>
             </div>
 
             {tagsAvailable && tagVocabulary.length > 0 && (

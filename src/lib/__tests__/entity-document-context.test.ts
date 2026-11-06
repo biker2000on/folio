@@ -112,6 +112,22 @@ describe('getEntityDocumentContext', () => {
     }
   );
 
+  it('maps every starter document to an upload category the context offers', () => {
+    const profiles = [
+      null,
+      ...Object.keys(entityTitles).map((entityType) => ({ entityType, businessActivity: 'general' })),
+      { entityType: 'llc_single', businessActivity: 'farm' },
+    ];
+    for (const profile of profiles) {
+      const context = getEntityDocumentContext(profile);
+      const offered = new Set(context.typeOptions.map(({ value }) => value));
+      expect(context.starterDocuments.map(({ label }) => label)).toEqual(context.starterExamples);
+      for (const starter of context.starterDocuments) {
+        expect(offered.has(starter.docType)).toBe(true);
+      }
+    }
+  });
+
   it('retains an out-of-context or legacy current type for editing only', () => {
     const household = getEntityDocumentContext({ entityType: 'household' });
     const editOptions = getEditDocumentTypeOptions(household, 'formation');

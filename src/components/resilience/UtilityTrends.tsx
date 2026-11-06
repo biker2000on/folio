@@ -31,8 +31,8 @@ function TrendChart({ data, label, money = false }: { data: ChartPoint[]; label:
   );
 }
 
-export function UtilityTrends({ bills, dirty }: { bills: UtilityBill[]; dirty: boolean }) {
-  const [type, setType] = useState<UtilityType>(bills[0]?.type ?? 'electric');
+export function UtilityTrends({ bills, dirty, initialType }: { bills: UtilityBill[]; dirty: boolean; initialType?: UtilityType }) {
+  const [type, setType] = useState<UtilityType>(initialType ?? bills[0]?.type ?? 'electric');
   const [provider, setProvider] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -48,7 +48,7 @@ export function UtilityTrends({ bills, dirty }: { bills: UtilityBill[]; dirty: b
       <Panel title="Usage, cost & fee trends" description="Monthly totals by bill date (service period end when captured). Multiple bills in a month are added together; months without bills are gaps.">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Field label="Utility type"><select aria-label="Trend utility type" className={SELECT} value={type} onChange={event => { setType(event.target.value as UtilityType); setProvider(''); setFeeId('total'); }}>
-            <option value="electric">Electric</option><option value="gas">Gas</option><option value="water">Water</option>
+            <option value="electric">Electric</option><option value="gas">Gas</option><option value="water">Water</option><option value="propane">Propane</option>
           </select></Field>
           <Field label="Provider"><select aria-label="Trend provider" className={SELECT} value={provider} onChange={event => { setProvider(event.target.value); setFeeId('total'); }}>
             <option value="">All providers</option>{providers.filter(Boolean).map(name => <option key={name} value={name}>{name}</option>)}

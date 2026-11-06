@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { HomeSummary, RoomSummary } from '@/lib/services/home.service';
 import { formatCurrency } from '@/lib/format';
 import { PageHeader } from '@/components/ui/PageHeader';
@@ -10,15 +11,49 @@ import { useToast } from '@/contexts/ToastContext';
 import { WalkthroughOverlay } from '@/components/home/WalkthroughOverlay';
 import { RoomDetailPanel } from '@/components/home/RoomDetailPanel';
 import { BulkDetailPanel } from '@/components/home/BulkDetailPanel';
-import { inputClass, TNUM } from '@/components/home/home-shared';
+import { inputClass } from '@/components/ui/form';
+import { TNUM } from '@/components/home/home-shared';
 
-export default function HomeInventoryPage() {
+const INVENTORY_PATH = '/home/inventory';
+
+function LoadingState() {
+    return (
+        <div className="flex items-center justify-center py-12">
+            <div className="flex items-center gap-3">
+                <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                <span className="text-foreground-secondary">Loading...</span>
+            </div>
+        </div>
+    );
+}
+
+function HomeInventoryContent() {
     const toast = useToast();
+    const router = useRouter();
+    const searchParams = useSearchParams();
     const [summary, setSummary] = useState<HomeSummary | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    const [selectedRoomId, setSelectedRoomId] = useState<number | null>(null);
+    // The open room lives in the URL (?room=<id>) so browser Back returns to the
+    // room list instead of leaving the page, and a room can be linked to.
+    const roomParam = Number(searchParams.get('room'));
+    const selectedRoomId = Number.isInteger(roomParam) && roomParam > 0 ? roomParam : null;
+    // True once this page pushed a room entry, so "All rooms" can pop it rather
+    // than stacking a second list entry on top of it.
+    const pushedRoom = useRef(false);
+    const openRoom = (roomId: number) => {
+        pushedRoom.current = true;
+        router.push(`${INVENTORY_PATH}?room=${roomId}`, { scroll: false });
+    };
+    const closeRoom = () => {
+        if (pushedRoom.current) {
+            pushedRoom.current = false;
+            router.back();
+        } else {
+            router.replace(INVENTORY_PATH, { scroll: false });
+        }
+    };
     const [walking, setWalking] = useState(false);
     const [startingWalk, setStartingWalk] = useState(false);
     const [bulkDetailing, setBulkDetailing] = useState(false);
@@ -98,6 +133,18 @@ export default function HomeInventoryPage() {
     const selectedRoom = rooms.find((r) => r.id === selectedRoomId) ?? null;
     const warrantyAlertCount =
         (summary?.warrantyExpired.length ?? 0) + (summary?.warrantyExpiringSoon.length ?? 0);
+    // Up to six alerts, expired first (matching the old single-line strip).
+    const shownExpired = (summary?.warrantyExpired ?? []).slice(0, 6);
+    const shownExpiring = (summary?.warrantyExpiringSoon ?? []).slice(0, 6 - shownExpired.length);
+    const warrantyLines = [
+        { key: 'expired', label: 'Warranty expired', tone: 'text-error', alerts: shownExpired },
+        {
+            key: 'expiring',
+            label: `Warranty ending within ${summary?.warrantyWarningDays ?? 90} days`,
+            tone: 'text-warning',
+            alerts: shownExpiring,
+        },
+    ].filter((line) => line.alerts.length > 0);
 
     return (
         <div className="space-y-6">
@@ -120,14 +167,7 @@ export default function HomeInventoryPage() {
 
             <PersonalToolNotice />
 
-            {loading && (
-                <div className="flex items-center justify-center py-12">
-                    <div className="flex items-center gap-3">
-                        <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-                        <span className="text-foreground-secondary">Loading...</span>
-                    </div>
-                </div>
-            )}
+            {loading && <LoadingState />}
 
             {!loading && error && (
                 <div className="border border-error/30 bg-surface/30 rounded-lg p-4">
@@ -139,10 +179,11 @@ export default function HomeInventoryPage() {
                 <RoomDetailPanel
                     room={selectedRoom}
                     rooms={rooms}
-                    onBack={() => setSelectedRoomId(null)}
+                    onBack={closeRoom}
                     onChanged={() => void load()}
                     onRoomDeleted={() => {
-                        setSelectedRoomId(null);
+                        pushedRoom.current = false;
+                        router.replace(INVENTORY_PATH, { scroll: false });
                         void load();
                     }}
                 />
@@ -180,7 +221,7 @@ export default function HomeInventoryPage() {
 
                     {/* Coverage hero */}
                     <div className="bg-background-secondary/30 border border-border rounded-lg p-5">
-                        <p className="text-[10px] font-medium uppercase tracking-wider text-foreground-muted">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-foreground-muted">
                             Estimated contents value
                         </p>
                         <p className="mt-1 font-mono text-3xl font-semibold text-foreground" style={TNUM}>
@@ -218,31 +259,33 @@ export default function HomeInventoryPage() {
                         </div>
                     </div>
 
-                    {/* Warranty alert detail */}
+                    {/* Warranty alert detail. Expired and expiring are separate,
+                        labelled lines, so the state never rests on colour alone. */}
                     {warrantyAlertCount > 0 && (
-                        <div className="border border-warning/30 bg-warning/5 rounded-lg px-4 py-3 text-sm text-foreground-secondary">
-                            {[...summary.warrantyExpired, ...summary.warrantyExpiringSoon]
-                                .slice(0, 6)
-                                .map((a) => (
-                                    <span key={a.itemId} className="mr-4 inline-block">
-                                        <button
-                                            type="button"
-                                            onClick={() => setSelectedRoomId(a.roomId)}
-                                            className="text-foreground hover:text-primary transition-colors"
-                                        >
-                                            {a.itemName}
-                                        </button>{' '}
-                                        <span className={a.daysUntil < 0 ? 'text-error' : 'text-warning'}>
-                                            {a.daysUntil < 0
-                                                ? `expired ${a.warrantyExpires}`
-                                                : `ends in ${a.daysUntil}d`}
+                        <div className="space-y-1 border border-warning/30 bg-warning/5 rounded-lg px-4 py-3 text-sm text-foreground-secondary">
+                            {warrantyLines.map((line) => (
+                                <p key={line.key}>
+                                    <span className={`mr-3 font-medium ${line.tone}`}>{line.label}</span>
+                                    {line.alerts.map((a) => (
+                                        <span key={a.itemId} className="mr-4 inline-block">
+                                            <button
+                                                type="button"
+                                                onClick={() => openRoom(a.roomId)}
+                                                className="text-foreground hover:text-primary transition-colors"
+                                            >
+                                                {a.itemName}
+                                            </button>{' '}
+                                            <span className="font-mono text-xs" style={TNUM}>
+                                                {a.daysUntil < 0 ? a.warrantyExpires : `in ${a.daysUntil}d`}
+                                            </span>
                                         </span>
-                                    </span>
-                                ))}
+                                    ))}
+                                </p>
+                            ))}
                             {warrantyAlertCount > 6 && (
-                                <span className="text-foreground-muted">
+                                <p className="text-foreground-muted">
                                     +{warrantyAlertCount - 6} more
-                                </span>
+                                </p>
                             )}
                         </div>
                     )}
@@ -258,20 +301,20 @@ export default function HomeInventoryPage() {
                             </p>
                         </div>
                     ) : (
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                             {rooms.map((room: RoomSummary) => (
                                 <button
                                     key={room.id}
                                     type="button"
-                                    onClick={() => setSelectedRoomId(room.id)}
+                                    onClick={() => openRoom(room.id)}
                                     className="rounded-lg border border-border bg-background-secondary/30 p-4 text-left transition-colors hover:border-border-hover hover:bg-surface-hover"
                                 >
-                                    <p className="text-sm font-medium text-foreground">{room.name}</p>
+                                    <p className="text-sm font-medium text-foreground break-words">{room.name}</p>
                                     <p className="mt-1 text-xs text-foreground-secondary">
                                         <span className="font-mono" style={TNUM}>{room.itemCount}</span> item
                                         {room.itemCount === 1 ? '' : 's'}
                                     </p>
-                                    <p className="mt-2 font-mono text-sm text-foreground-secondary" style={TNUM}>
+                                    <p className={`mt-2 font-mono text-sm ${room.totalValue === 0 ? 'text-foreground-muted' : 'text-foreground-secondary'}`} style={TNUM}>
                                         {formatCurrency(room.totalValue)}
                                     </p>
                                 </button>
@@ -294,7 +337,8 @@ export default function HomeInventoryPage() {
                                     value={newRoomName}
                                     onChange={(e) => setNewRoomName(e.target.value)}
                                     placeholder="Room name"
-                                    className={`${inputClass} w-56`}
+                                    aria-label="Room name"
+                                    className={inputClass({ extra: 'w-56' })}
                                     autoFocus
                                 />
                                 <button
@@ -337,5 +381,13 @@ export default function HomeInventoryPage() {
                 />
             )}
         </div>
+    );
+}
+
+export default function HomeInventoryPage() {
+    return (
+        <Suspense fallback={<LoadingState />}>
+            <HomeInventoryContent />
+        </Suspense>
     );
 }

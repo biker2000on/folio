@@ -16,12 +16,27 @@ vi.mock('@/contexts/ToastContext', () => ({
 }));
 // The drop zone drives the receipt upload pipeline, which is out of scope for
 // the review-queue behavior under test.
+// Its stand-in uploads one file through the real callbacks.
 vi.mock('@/components/ui/FileDropZone', () => ({
-  FileDropZone: () => <div data-testid="dropzone" />,
+  FileDropZone: (props: {
+    onUploadFile: (file: File) => Promise<{ ok: boolean }>;
+    onBatchSettled?: (summary: { succeeded: number; failed: number }) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="dropzone"
+      onClick={async () => {
+        await props.onUploadFile(new File(['%PDF'], 'statement.pdf'));
+        props.onBatchSettled?.({ succeeded: 1, failed: 0 });
+      }}
+    >
+      Upload stand-in
+    </button>
+  ),
 }));
 vi.mock('@/components/receipts/ReceiptUploadZone', () => ({
-  receiptUploadOutcome: vi.fn(),
-  uploadReceiptFile: vi.fn(),
+  receiptUploadOutcome: vi.fn(() => ({ ok: true })),
+  uploadReceiptFile: vi.fn(async () => ({ id: 77, filename: 'statement.pdf', status: 'uploaded' })),
 }));
 
 function bill(overrides: Partial<UtilityBill>): UtilityBill {
@@ -197,6 +212,37 @@ describe('utilities bill review queue', () => {
   });
 });
 
+describe('utilities safety and feedback', () => {
+  it('shows a retryable error instead of an empty, saveable profile when loading fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, json: async () => ({ error: 'Database unavailable' }) })));
+    render(<UtilitiesPlannerPage />);
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.getByText(/Database unavailable/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add bill' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
+  it('names an upload that never became a bill, with its receipt and a manual-entry path', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await renderPage();
+      fireEvent.click(screen.getByTestId('dropzone'));
+      await waitFor(() => expect(screen.getByText(/Still reading 1 uploaded bill/)).toBeTruthy());
+      // The worker never produces a suggestion for receipt 77.
+      await vi.advanceTimersByTimeAsync(130_000);
+      await waitFor(() => expect(screen.getByText('1 upload could not be read as a utility bill')).toBeTruthy());
+      const notice = screen.getByText('statement.pdf').closest('li')!;
+      expect(within(notice).getByRole('link', { name: 'View receipt' }).getAttribute('href')).toBe('/api/receipts/77');
+      fireEvent.click(within(notice).getByRole('button', { name: 'Enter by hand' }));
+      expect(screen.queryByText('statement.pdf')).toBeNull();
+      // The hand-entered bill opens for editing, linked to the receipt.
+      expect(screen.getAllByRole('link', { name: 'View receipt' }).map(link => link.getAttribute('href'))).toContain('/api/receipts/77');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('utility trend controls', () => {
   it('shows monthly costs and changes for a named fee, and filters utility type', async () => {
@@ -206,7 +252,7 @@ describe('utility trend controls', () => {
       gasSuggestion,
     ], []) })));
     await renderPage();
-    fireEvent.click(screen.getByRole('button', { name: 'Trends' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Trends' }));
     expect(screen.getByText('2 bills in this selection')).toBeTruthy();
     expect(screen.getByText('+50%')).toBeTruthy();
     expect(screen.getByText('+$5.00')).toBeTruthy();

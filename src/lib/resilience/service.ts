@@ -61,6 +61,7 @@ import {
   calculateUtilityAnalysis,
   calculateVehicleTco,
   dedupeUtilityBillSuggestions,
+  isMeteredUtility,
   parseUtilityBillText,
 } from './p3-core';
 import type {
@@ -298,7 +299,7 @@ const utilitiesSchema = z.object({
   bills: z.array(z.object({
     id,
     date,
-    type: z.enum(['electric', 'gas', 'water']),
+    type: z.enum(['electric', 'gas', 'water', 'propane']),
     provider: z.string().trim().max(160),
     usage: z.number().finite().min(0).max(1_000_000_000),
     unit: z.enum(['kWh', 'therms', 'gallons']),
@@ -1944,16 +1945,19 @@ export async function loadResilienceActions(bookGuid: string): Promise<Financial
   }
   const utilityAnalysis = calculateUtilityAnalysis((utilities as UtilitiesProfile).bills);
   for (const row of utilityAnalysis.byType) {
-    if (!row.latest || (row.rateChangePercent <= 15 && row.usageChangePercent <= 20)) continue;
-    const rateDriven = row.rateChangePercent > row.usageChangePercent;
+    // A bigger propane delivery is an emptier tank, not higher usage; only its
+    // price per gallon is comparable from one bill to the next.
+    const usageChangePercent = isMeteredUtility(row.type) ? row.usageChangePercent : 0;
+    if (!row.latest || (row.rateChangePercent <= 15 && usageChangePercent <= 20)) continue;
+    const rateDriven = row.rateChangePercent > usageChangePercent;
     actions.push(action({
       stableKey: `utility-change:${row.type}:${row.latest.date}`,
       lane: 'decide',
       origin: 'utility',
       sourceId: row.latest.id,
-      severity: Math.max(row.rateChangePercent, row.usageChangePercent) >= 30 ? 'warning' : 'info',
+      severity: Math.max(row.rateChangePercent, usageChangePercent) >= 30 ? 'warning' : 'info',
       title: `Review ${row.type} ${rateDriven ? 'rate' : 'usage'} increase`,
-      summary: `${rateDriven ? 'Unit rate' : 'Usage'} rose ${Math.max(row.rateChangePercent, row.usageChangePercent).toFixed(1)}% from the prior bill.`,
+      summary: `${rateDriven ? 'Unit rate' : 'Usage'} rose ${Math.max(row.rateChangePercent, usageChangePercent).toFixed(1)}% from the prior bill.`,
       dueDate: null,
       impact: { low: 0, high: row.latest.totalCost * 12, period: 'annual' },
       confidence: 0.9,
@@ -2628,7 +2632,8 @@ export async function loadResilienceEvents(
     });
   }
   for (const row of calculateUtilityAnalysis((utilities as UtilitiesProfile).bills).byType) {
-    if (!row.latest) continue;
+    // Deliveries have no monthly cadence to project.
+    if (!row.latest || !isMeteredUtility(row.type)) continue;
     const nextDate = new Date(`${row.latest.date}T12:00:00Z`);
     nextDate.setUTCMonth(nextDate.getUTCMonth() + 1);
     const dateValue = nextDate.toISOString().slice(0, 10);

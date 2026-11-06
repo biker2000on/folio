@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { HomeRoom, HomeItem } from '@/lib/services/home.service';
 import { useToast } from '@/contexts/ToastContext';
 import { ErrorLiveRegion } from '@/components/a11y/LiveRegion';
-import { CATEGORY_OPTIONS, inputClass, labelClass, TNUM } from './home-shared';
+import { INPUT, LABEL, SELECT, inputClass } from '@/components/ui/form';
+import { CATEGORY_OPTIONS, TNUM } from './home-shared';
 import { extractErrorMessage } from '@/lib/api-error';
 
 interface BulkDetailPanelProps {
@@ -221,23 +222,23 @@ function DraftCard({
                 {/* Fields */}
                 <div className="min-w-0 flex-1">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                        <div className="sm:col-span-2 lg:col-span-1">
-                            <label className={labelClass}>Name *</label>
+                        <label className="sm:col-span-2 lg:col-span-1">
+                            <span className={LABEL}>Name *</span>
                             <input
                                 type="text"
                                 value={form.name}
                                 onChange={(e) => set('name', e.target.value)}
                                 placeholder="What is it?"
-                                className={inputClass}
+                                className={INPUT}
                                 autoFocus
                             />
-                        </div>
-                        <div>
-                            <label className={labelClass}>Category</label>
+                        </label>
+                        <label>
+                            <span className={LABEL}>Category</span>
                             <select
                                 value={form.category}
                                 onChange={(e) => set('category', e.target.value)}
-                                className={inputClass}
+                                className={SELECT}
                             >
                                 <option value="">—</option>
                                 {CATEGORY_OPTIONS.map((o) => (
@@ -246,9 +247,9 @@ function DraftCard({
                                     </option>
                                 ))}
                             </select>
-                        </div>
-                        <div>
-                            <label className={labelClass}>Est. value</label>
+                        </label>
+                        <label>
+                            <span className={LABEL}>Est. value</span>
                             <input
                                 type="number"
                                 min="0"
@@ -257,43 +258,43 @@ function DraftCard({
                                 value={form.estValue}
                                 onChange={(e) => set('estValue', e.target.value)}
                                 placeholder="0.00"
-                                className={`${inputClass} font-mono`}
+                                className={inputClass({ extra: 'font-mono' })}
                                 style={TNUM}
                             />
-                        </div>
-                        <div>
-                            <label className={labelClass}>Purchased</label>
+                        </label>
+                        <label>
+                            <span className={LABEL}>Purchased</span>
                             <input
                                 type="date"
                                 value={form.purchaseDate}
                                 onChange={(e) => set('purchaseDate', e.target.value)}
-                                className={`${inputClass} font-mono`}
+                                className={inputClass({ extra: 'font-mono' })}
                             />
-                        </div>
-                        <div>
-                            <label className={labelClass}>Warranty until</label>
+                        </label>
+                        <label>
+                            <span className={LABEL}>Warranty until</span>
                             <input
                                 type="date"
                                 value={form.warrantyExpires}
                                 onChange={(e) => set('warrantyExpires', e.target.value)}
-                                className={`${inputClass} font-mono`}
+                                className={inputClass({ extra: 'font-mono' })}
                             />
-                        </div>
-                        <div>
-                            <label className={labelClass}>Serial #</label>
+                        </label>
+                        <label>
+                            <span className={LABEL}>Serial #</span>
                             <input
                                 type="text"
                                 value={form.serial}
                                 onChange={(e) => set('serial', e.target.value)}
-                                className={`${inputClass} font-mono`}
+                                className={inputClass({ extra: 'font-mono' })}
                             />
-                        </div>
-                        <div>
-                            <label className={labelClass}>Room</label>
+                        </label>
+                        <label>
+                            <span className={LABEL}>Room</span>
                             <select
                                 value={String(form.roomId)}
                                 onChange={(e) => set('roomId', Number(e.target.value))}
-                                className={inputClass}
+                                className={SELECT}
                             >
                                 {rooms.map((r) => (
                                     <option key={r.id} value={String(r.id)}>
@@ -301,7 +302,7 @@ function DraftCard({
                                     </option>
                                 ))}
                             </select>
-                        </div>
+                        </label>
                     </div>
 
                     <div className="mt-3 flex flex-wrap items-center gap-3">

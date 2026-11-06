@@ -7,13 +7,12 @@ import { useToast } from '@/contexts/ToastContext';
 import { LinkedDocumentsPanel } from '@/components/documents/LinkedDocumentsPanel';
 import { ErrorLiveRegion } from '@/components/a11y/LiveRegion';
 import { extractErrorMessage } from '@/lib/api-error';
+import { INPUT, LABEL, SELECT, inputClass } from '@/components/ui/form';
 import {
     CATEGORY_OPTIONS,
     categoryLabel,
-    inputClass,
     isDraftItem,
     itemDisplayName,
-    labelClass,
     TNUM,
     WarrantyBadge,
 } from './home-shared';
@@ -315,21 +314,21 @@ export function RoomDetailPanel({
         },
     ) => (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="sm:col-span-2">
-                <label className={labelClass}>Name *</label>
+            <label className="sm:col-span-2">
+                <span className={LABEL}>Name *</span>
                 <input
                     type="text"
                     value={form.name}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    className={inputClass}
+                    className={INPUT}
                 />
-            </div>
-            <div>
-                <label className={labelClass}>Category</label>
+            </label>
+            <label>
+                <span className={LABEL}>Category</span>
                 <select
                     value={form.category}
                     onChange={(e) => setForm({ ...form, category: e.target.value })}
-                    className={inputClass}
+                    className={SELECT}
                 >
                     <option value="">—</option>
                     {CATEGORY_OPTIONS.map((o) => (
@@ -338,9 +337,9 @@ export function RoomDetailPanel({
                         </option>
                     ))}
                 </select>
-            </div>
-            <div>
-                <label className={labelClass}>Est. value</label>
+            </label>
+            <label>
+                <span className={LABEL}>Est. value</span>
                 <input
                     type="number"
                     min="0"
@@ -348,43 +347,43 @@ export function RoomDetailPanel({
                     inputMode="decimal"
                     value={form.estValue}
                     onChange={(e) => setForm({ ...form, estValue: e.target.value })}
-                    className={`${inputClass} font-mono`}
+                    className={inputClass({ extra: 'font-mono' })}
                     style={TNUM}
                 />
-            </div>
-            <div>
-                <label className={labelClass}>Purchased</label>
+            </label>
+            <label>
+                <span className={LABEL}>Purchased</span>
                 <input
                     type="date"
                     value={form.purchaseDate}
                     onChange={(e) => setForm({ ...form, purchaseDate: e.target.value })}
-                    className={`${inputClass} font-mono`}
+                    className={inputClass({ extra: 'font-mono' })}
                 />
-            </div>
-            <div>
-                <label className={labelClass}>Warranty until</label>
+            </label>
+            <label>
+                <span className={LABEL}>Warranty until</span>
                 <input
                     type="date"
                     value={form.warrantyExpires}
                     onChange={(e) => setForm({ ...form, warrantyExpires: e.target.value })}
-                    className={`${inputClass} font-mono`}
+                    className={inputClass({ extra: 'font-mono' })}
                 />
-            </div>
-            <div>
-                <label className={labelClass}>Serial #</label>
+            </label>
+            <label>
+                <span className={LABEL}>Serial #</span>
                 <input
                     type="text"
                     value={form.serial}
                     onChange={(e) => setForm({ ...form, serial: e.target.value })}
-                    className={`${inputClass} font-mono`}
+                    className={inputClass({ extra: 'font-mono' })}
                 />
-            </div>
-            <div>
-                <label className={labelClass}>Receipt (optional)</label>
+            </label>
+            <label>
+                <span className={LABEL}>Receipt (optional)</span>
                 <select
                     value={form.receiptId}
                     onChange={(e) => setForm({ ...form, receiptId: e.target.value })}
-                    className={inputClass}
+                    className={SELECT}
                 >
                     <option value="">None</option>
                     {(receipts ?? []).map((r) => (
@@ -393,14 +392,14 @@ export function RoomDetailPanel({
                         </option>
                     ))}
                 </select>
-            </div>
+            </label>
             {options.showMoveRoom && (
-                <div>
-                    <label className={labelClass}>Room</label>
+                <label>
+                    <span className={LABEL}>Room</span>
                     <select
                         value={String(form.roomId)}
                         onChange={(e) => setForm({ ...form, roomId: Number(e.target.value) })}
-                        className={inputClass}
+                        className={SELECT}
                     >
                         {rooms.map((r) => (
                             <option key={r.id} value={String(r.id)}>
@@ -408,19 +407,21 @@ export function RoomDetailPanel({
                             </option>
                         ))}
                     </select>
-                </div>
+                </label>
             )}
-            <div className={options.showMoveRoom ? 'sm:col-span-2' : 'sm:col-span-2 lg:col-span-3'}>
-                <label className={labelClass}>Notes</label>
+            <label className={options.showMoveRoom ? 'sm:col-span-2' : 'sm:col-span-2 lg:col-span-3'}>
+                <span className={LABEL}>Notes</span>
                 <input
                     type="text"
                     value={form.notes}
                     onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                    className={inputClass}
+                    className={INPUT}
                 />
-            </div>
+            </label>
             <div className="sm:col-span-2 lg:col-span-4">
-                <label className={labelClass}>Photos</label>
+                <label htmlFor={options.item ? `item-photos-${options.item.id}` : 'new-item-photos'} className={LABEL}>
+                    Photos
+                </label>
                 {options.item && options.item.photos.length > 0 && (
                     <div className="mb-2 flex flex-wrap gap-2">
                         {options.item.photos.map((p) => (
@@ -444,6 +445,7 @@ export function RoomDetailPanel({
                     </div>
                 )}
                 <input
+                    id={options.item ? `item-photos-${options.item.id}` : 'new-item-photos'}
                     type="file"
                     accept="image/*"
                     capture="environment"
@@ -477,7 +479,8 @@ export function RoomDetailPanel({
                             type="text"
                             value={roomName}
                             onChange={(e) => setRoomName(e.target.value)}
-                            className={`${inputClass} w-56`}
+                            aria-label="Room name"
+                            className={inputClass({ extra: 'w-56' })}
                             autoFocus
                         />
                         <button

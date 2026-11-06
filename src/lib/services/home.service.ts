@@ -1393,7 +1393,9 @@ export async function getHomeSummary(bookGuid: string): Promise<HomeSummary> {
         warrantyExpiringSoon: expiringSoon,
         warrantyWarningDays: WARRANTY_WARNING_DAYS,
         tasksOverdue: tasks.filter((t) => t.status === 'overdue').length,
-        tasksDueSoon: tasks.filter((t) => t.status === 'due_soon').length,
+        // A never-done task has no due date; the maintenance page lists it as
+        // "needs a baseline", so it must not inflate the due-soon count.
+        tasksDueSoon: tasks.filter((t) => t.status === 'due_soon' && t.nextDue !== null).length,
         maintenanceCostYtd: costYtd,
     };
 }
