@@ -25,6 +25,7 @@
  */
 
 import { BUDGETABLE_ACCOUNT_TYPES } from '@/lib/budget-constants';
+import { MONEY_DISPLAY_EPSILON } from '@/lib/tolerances';
 import { collectKnownNumbers, unsupportedFigures, type Figure } from '@/lib/ai-privacy/number-check';
 import { SUMMARY_PROMPT_NOTE, roundMoney, tokenizeAccountPath, type Names } from '@/lib/ai-privacy/privacy';
 import type { AiChatMessage } from '@/lib/ai-query/client';
@@ -180,7 +181,7 @@ export function periodMonthsOf(recurrence: { period_type?: string | null; mult?:
 export function lineState(accountGuid: string, periodAmounts: readonly number[]): BudgetLineState {
     if (periodAmounts.length === 0) return { accountGuid, amount: 0, varies: false };
     const first = periodAmounts[0];
-    const varies = periodAmounts.some(v => Math.abs(v - first) > 0.005);
+    const varies = periodAmounts.some(v => Math.abs(v - first) > MONEY_DISPLAY_EPSILON);
     const amount = varies ? periodAmounts.reduce((s, v) => s + v, 0) / periodAmounts.length : first;
     return { accountGuid, amount: Math.round(amount * 100) / 100, varies };
 }
