@@ -71,6 +71,8 @@ scripts/*
 # Tracked deliberately: the supervised lot-gain repair TODOS.md references,
 # including its TAX_EXEMPT-aware report.
 !scripts/repair-transfer-lot-gains.mjs
+# Tracked deliberately: the stdio MCP bridge documented in docs/mcp.md.
+!scripts/folio-mcp.mjs
 .polly/
 
 # Impeccable design-session scratch (decision boards, review captures, reference art)
