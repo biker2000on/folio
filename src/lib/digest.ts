@@ -723,15 +723,10 @@ export async function generateDigest(
     // Optional AI narrative — strictly best-effort, never blocks the digest.
     if (options.aiUserId !== undefined) {
         try {
-            const { getAiConfig } = await import('@/lib/ai-config');
-            const { isAiConfigured } = await import('@/lib/ai-query/client');
-            const { generateDigestNarrative, narrativeClientFor } = await import('@/lib/digest-narrative');
-
-            const config = await getAiConfig(options.aiUserId);
-            if (isAiConfigured(config)) {
-                const result = await generateDigestNarrative(digest, narrativeClientFor(config));
-                if (result) digest.narrative = result.narrative;
-            }
+            // Through the AI privacy gate (off / summary / full).
+            const { generateGatedDigestNarrative } = await import('@/lib/digest-narrative');
+            const result = await generateGatedDigestNarrative(digest, { userId: options.aiUserId, bookGuid });
+            if (result) digest.narrative = result.narrative;
         } catch (error) {
             console.error('Digest: narrative generation failed:', error);
         }

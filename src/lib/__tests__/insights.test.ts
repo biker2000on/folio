@@ -45,6 +45,8 @@ import {
     type InsightCandidate,
     type InsightSource,
 } from '../insights';
+import { newNames } from '../ai-privacy/privacy';
+import { createGatedAi } from '../ai-privacy/session';
 
 const MONTH = '2026-07';
 const WEEK = '2026-W28';
@@ -453,5 +455,65 @@ describe('polishInsights', () => {
         expect(out[0]).toEqual(candidates[0]);
         expect(out[1].title).toBe(candidates[1].title); // empty title rejected
         expect(out[1].detail).toBe('Only the detail changed.');
+    });
+});
+
+describe('polishInsights privacy', () => {
+    const candidates: InsightCandidate[] = [
+        {
+            kind: 'new-merchant',
+            severity: 'info',
+            title: 'New merchant: Zorblax Coffee',
+            detail: 'First charge of $987.65 from "Zorblax Coffee" on 2026-07-03.',
+            href: '/ledger',
+            dedupeKey: 'new-merchant:zorblax',
+            subjects: [{ kind: 'Merchant', name: 'Zorblax Coffee' }],
+        },
+        {
+            kind: 'savings-rate-drop',
+            severity: 'warning',
+            title: 'Savings rate down 12 points',
+            detail: 'Your savings rate this month is 8.0%, versus a 6-month average of 20.0%.',
+            href: '/tools/digest',
+            dedupeKey: 'savings-rate:2026-07',
+        },
+    ];
+
+    it('keeps template text per item when a rewrite brings an unsupported figure', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const out = await polishInsights(candidates, async () =>
+            JSON.stringify({
+                items: [
+                    { i: 0, title: 'A new place: Zorblax Coffee', detail: 'You paid $1,500 there.' },
+                    { i: 1, title: 'Saving less this month', detail: 'Down to 8% from about 20%.' },
+                ],
+            })
+        );
+        expect(out[0]).toEqual(candidates[0]);
+        expect(out[1].title).toBe('Saving less this month');
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('insights-polish'));
+        warn.mockRestore();
+    });
+
+    it('sends scrubbed items in summary mode and unmasks the rewrite', async () => {
+        const ai = createGatedAi({
+            path: 'insights-polish',
+            level: 'summary',
+            config: { provider: 'custom', base_url: 'http://x', api_key: null, model: 'm', enabled: true },
+            names: newNames(),
+            chatFn: async () => '',
+        });
+        let sent = '';
+        const out = await polishInsights(candidates, async messages => {
+            sent = messages[1].content;
+            const items = JSON.parse(sent) as Array<{ i: number; title: string; detail: string }>;
+            return JSON.stringify({ items: items.map(it => ({ i: it.i, title: `Note: ${it.title}`, detail: it.detail })) });
+        }, ai);
+        expect(sent).not.toContain('Zorblax');
+        expect(sent).not.toContain('987.65');
+        expect(sent).not.toContain('2026-07-03');
+        expect(sent).toContain('about $990');
+        expect(out[0].title).toBe('Note: New merchant: Zorblax Coffee');
+        expect(out[0].detail).toBe('First charge of about $990 from "Zorblax Coffee" on 2026-07.');
     });
 });

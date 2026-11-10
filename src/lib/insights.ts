@@ -15,19 +15,21 @@
  * lazily-created `gnucash_web_insights` table, deduped by (book_guid,
  * dedupe_key). An OPTIONAL AI pass rewrites titles/details more naturally in
  * one batched call; the deterministic template text is the fallback.
+ *
+ * The AI pass goes through the privacy gate (src/lib/ai-privacy/gate.ts): off
+ * skips it, summary sends each item with names as tokens, amounts rounded and
+ * dates as YYYY-MM. Per item, a rewrite that quotes a figure the item did not
+ * carry (see src/lib/ai-privacy/number-check.ts) keeps its template text.
  */
 
 import prisma from '@/lib/prisma';
 import { formatCurrency } from '@/lib/format';
 import { getBaseCurrency } from '@/lib/currency';
 import { FinancialSummaryService } from '@/lib/services/financial-summary.service';
-import { getAiConfig } from '@/lib/ai-config';
-import {
-    chatComplete,
-    extractJsonObject,
-    isAiConfigured,
-    type AiChatMessage,
-} from '@/lib/ai-query/client';
+import { extractJsonObject, type AiChatMessage } from '@/lib/ai-query/client';
+import { SUMMARY_PROMPT_NOTE } from '@/lib/ai-privacy/privacy';
+import { collectKnownNumbers, unsupportedFigures, warnUnsupported } from '@/lib/ai-privacy/number-check';
+import type { GatedAi } from '@/lib/ai-privacy/session';
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -50,6 +52,12 @@ export interface InsightCandidate {
     href: string;
     /** Stable key for dedupe (unique per book) */
     dedupeKey: string;
+    /**
+     * Names the title/detail mention, so summary-mode AI polish can replace
+     * them with placeholders even when they are not in the book's names map.
+     * Never persisted.
+     */
+    subjects?: Array<{ kind: 'Account' | 'Merchant'; name: string }>;
 }
 
 export interface StoredInsight {
@@ -163,6 +171,7 @@ export function detectCategorySpike(
         detail,
         href: '/tools/digest',
         dedupeKey: `category-spike:${month}:${slug(top.name)}`,
+        subjects: [{ kind: 'Account', name: top.name }],
     }];
 }
 
@@ -190,6 +199,7 @@ export function detectNewMerchants(
                 `"${m.description}" on ${m.firstDate}. You have not paid this merchant before.`,
             href: '/ledger',
             dedupeKey: `new-merchant:${slug(m.description)}`,
+            subjects: [{ kind: 'Merchant' as const, name: m.description }],
         }));
 }
 
@@ -320,6 +330,7 @@ export function detectBalanceDrops(
                 `${formatCurrency(round2(a.current), currency)} over the last 7 days.`,
             href: `/accounts/${a.guid}`,
             dedupeKey: `balance-drop:${a.guid}:${weekKey}`,
+            subjects: [{ kind: 'Account', name: a.name }],
         });
     }
     return out;
@@ -401,23 +412,38 @@ export function filterInsights<T extends { dismissedAt: string | null }>(
 
 type ChatFn = (messages: AiChatMessage[]) => Promise<string>;
 
+/** The privacy helpers polish needs (a GatedAi satisfies it). */
+export type PolishPrivacy = Pick<GatedAi, 'level' | 'scrubText' | 'unmask' | 'token'>;
+
+/**
+ * One item as the model may see it. In summary mode subjects get their tokens
+ * first, then the text is scrubbed (names, money, dates). Listed field by
+ * field, no spread: a new field on the item payload fails the type check here
+ * until someone decides how to summarise it.
+ */
+function polishItemFor(c: InsightCandidate, i: number, privacy?: PolishPrivacy): { i: number; kind: InsightKind; title: string; detail: string } {
+    if (!privacy || privacy.level !== 'summary') return { i, kind: c.kind, title: c.title, detail: c.detail };
+    for (const s of c.subjects ?? []) privacy.token(s.kind, s.name);
+    return { i, kind: c.kind, title: privacy.scrubText(c.title), detail: privacy.scrubText(c.detail) };
+}
+
 /**
  * Rewrite titles/details more naturally in ONE batched call. Falls back to
- * the deterministic template text (the input) on any failure. Exported for
+ * the deterministic template text (the input) on any failure, and per item
+ * when a rewrite quotes a figure that item did not carry. Exported for
  * tests; never throws.
+ *
+ * @param privacy the gated session's helpers; omitted means full detail.
  */
 export async function polishInsights(
     candidates: InsightCandidate[],
-    chat: ChatFn
+    chat: ChatFn,
+    privacy?: PolishPrivacy,
 ): Promise<InsightCandidate[]> {
     if (candidates.length === 0) return candidates;
     try {
-        const payload = candidates.map((c, i) => ({
-            i,
-            kind: c.kind,
-            title: c.title,
-            detail: c.detail,
-        }));
+        const summary = privacy?.level === 'summary';
+        const payload = candidates.map((c, i) => polishItemFor(c, i, privacy));
         const messages: AiChatMessage[] = [
             {
                 role: 'system',
@@ -426,6 +452,7 @@ export async function polishInsights(
                     'Reply with ONLY a JSON object: { "items": [{ "i": number, "title": string, "detail": string }] }.',
                     'Keep every number and account/merchant name exactly as given. No advice, no emojis.',
                     'Titles under 80 characters; details 1-2 sentences.',
+                    ...(summary ? ['', SUMMARY_PROMPT_NOTE] : []),
                 ].join('\n'),
             },
             { role: 'user', content: JSON.stringify(payload) },
@@ -435,25 +462,59 @@ export async function polishInsights(
         const items = Array.isArray(parsed.items) ? parsed.items : null;
         if (!items) return candidates;
 
+        const restore = (t: string) => (privacy ? privacy.unmask(t) : t);
         const polished = [...candidates];
         for (const item of items) {
             if (!item || typeof item !== 'object') continue;
             const { i, title, detail } = item as Record<string, unknown>;
             if (typeof i !== 'number' || i < 0 || i >= polished.length) continue;
+            const newTitle = typeof title === 'string' && title.trim() ? title.trim().slice(0, 120) : null;
+            const newDetail = typeof detail === 'string' && detail.trim() ? detail.trim().slice(0, 500) : null;
+            // Known numbers: exactly this item's text as sent.
+            const known = collectKnownNumbers(payload[i].title, payload[i].detail);
+            const bad = unsupportedFigures(`${newTitle ?? ''}\n${newDetail ?? ''}`, known);
+            if (bad.length > 0) {
+                warnUnsupported('insights-polish', bad);
+                continue; // keep this item's template text
+            }
             polished[i] = {
                 ...polished[i],
-                title:
-                    typeof title === 'string' && title.trim()
-                        ? title.trim().slice(0, 120)
-                        : polished[i].title,
-                detail:
-                    typeof detail === 'string' && detail.trim()
-                        ? detail.trim().slice(0, 500)
-                        : polished[i].detail,
+                title: newTitle !== null ? restore(newTitle) : polished[i].title,
+                detail: newDetail !== null ? restore(newDetail) : polished[i].detail,
             };
         }
         return polished;
     } catch {
+        return candidates;
+    }
+}
+
+/**
+ * Polish through the AI privacy gate for one book. The template text when AI
+ * is not configured, the user's mode is off, or anything fails. Never throws.
+ */
+export async function polishInsightsGated(
+    candidates: InsightCandidate[],
+    opts: { userId: number; bookGuid: string },
+): Promise<InsightCandidate[]> {
+    if (candidates.length === 0) return candidates;
+    try {
+        const { openGatedAi } = await import('@/lib/ai-privacy/gate');
+        const { getAccountGuidsForBook } = await import('@/lib/book-scope');
+        const gate = await openGatedAi({
+            userId: opts.userId,
+            path: 'insights-polish',
+            accountGuids: () => getAccountGuidsForBook(opts.bookGuid),
+        });
+        if (!gate.ok) return candidates;
+        const { ai } = gate;
+        return await polishInsights(
+            candidates,
+            messages => ai.chat(messages, { maxTokens: 900, timeoutMs: 20000 }),
+            ai,
+        );
+    } catch (error) {
+        console.error('Insights: AI polish failed (using template text):', error);
         return candidates;
     }
 }
@@ -782,17 +843,8 @@ export async function runInsights(
     const detected = candidates.length;
     if (detected === 0) return { detected: 0, created: 0 };
 
-    // Optional AI polish — template text is the fallback on any failure.
-    try {
-        const config = await getAiConfig(userId);
-        if (isAiConfigured(config)) {
-            candidates = await polishInsights(candidates, messages =>
-                chatComplete(config, messages, { maxTokens: 900, timeoutMs: 20000 })
-            );
-        }
-    } catch (error) {
-        console.error('Insights: AI polish failed (using template text):', error);
-    }
+    // Optional AI polish through the privacy gate — template text is the fallback on any failure.
+    candidates = await polishInsightsGated(candidates, { userId, bookGuid });
 
     let created = 0;
     for (const c of candidates) {

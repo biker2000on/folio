@@ -1214,6 +1214,11 @@ async function createExtensionTables() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id)
     );
+    -- AI privacy (src/lib/ai-privacy): summary is the default, including for
+    -- existing rows. full detail needs self_hosted, which the user sets.
+    ALTER TABLE gnucash_web_ai_config
+        ADD COLUMN IF NOT EXISTS privacy_mode VARCHAR(20) NOT NULL DEFAULT 'summary',
+        ADD COLUMN IF NOT EXISTS self_hosted BOOLEAN NOT NULL DEFAULT FALSE;
 `;
 
     const toolConfigTriggerDDL = `
