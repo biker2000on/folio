@@ -1275,6 +1275,20 @@ model gnucash_web_book_features {
   @@map("gnucash_web_book_features")
 }
 
+// Monthly digest tips: up to 3 tips per (book, issuing month), graded by the
+// next month's digest. DDL in src/lib/db-init.ts; accessed via raw SQL only
+// (src/lib/digest-tips-store.ts).
+model gnucash_web_digest_tips {
+  id         Int      @id @default(autoincrement())
+  book_guid  String   @db.VarChar(32)
+  month      String   @db.VarChar(7)
+  tips       Json     @default("[]") @db.JsonB
+  created_at DateTime @default(now()) @db.Timestamp(6)
+
+  @@unique([book_guid, month], map: "uq_digest_tips_book_month")
+  @@map("gnucash_web_digest_tips")
+}
+
 // Entity-level book links: business book → owner household book(s) with
 // ownership percent. Powers cross-book 1040 aggregation and the S-corp
 // analyzer's household tax context.
