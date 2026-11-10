@@ -49,7 +49,15 @@ vi.mock('@/lib/currency', () => ({
     getBaseCurrencyForBook: getBaseCurrencyForBookMock,
     findExchangeRate: vi.fn().mockResolvedValue(null),
 }));
-vi.mock('@/lib/mcp/shape', () => ({ shapeToolResult: shapeToolResultMock }));
+// The privacy hook is mocked to full detail here; its behaviour (off refusal,
+// summary scrubbing, input unmasking) is covered in mcp-privacy.test.ts.
+vi.mock('@/lib/mcp/shape', () => ({
+    shapeToolResult: shapeToolResultMock,
+    resolveMcpAccess: vi.fn(async () => ({ level: 'full', names: null })),
+    unmaskMcpArgs: (args: unknown) => ({ args, unknown: [] }),
+    shapeToolText: (text: string) => text,
+    MCP_OFF_MESSAGE: 'AI access is turned off in Settings → AI.',
+}));
 
 import { handleMcpPost, mcpMethodNotAllowed, MAX_TOOL_RESULT_CHARS } from '../server';
 import { MCP_TOOLS } from '../tools';
@@ -256,10 +264,12 @@ describe('tools/call', () => {
         const { json } = await rpc('tools/call', { name: 'recurring_charges', arguments: {} });
 
         expect(shapeToolResultMock).toHaveBeenCalledTimes(1);
-        const [name, result, ctx] = shapeToolResultMock.mock.calls[0];
+        const [name, result, ctx, access] = shapeToolResultMock.mock.calls[0];
         expect(name).toBe('recurring_charges');
         expect(result).toMatchObject({ totals: { activeCount: 1 } });
-        expect(ctx).toEqual({ bookGuid: TOKEN_BOOK, userId: 7, role: 'readonly' });
+        // A token without an mcp_detail value reads as summary.
+        expect(ctx).toEqual({ bookGuid: TOKEN_BOOK, userId: 7, role: 'readonly', mcpDetail: 'summary' });
+        expect(access).toEqual({ level: 'full', names: null });
         expect(JSON.parse(json.result.content[0].text)).toEqual({ shaped: true });
     });
 

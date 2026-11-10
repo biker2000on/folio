@@ -16,7 +16,7 @@ import { chatComplete, type AiChatMessage } from '@/lib/ai-query/client';
 import { mask, ph, scrubRows, scrubText, unmask, unmaskSql, type Names, type TokenKind } from './privacy';
 
 /** Every gated analysis path. Keep in step with AI_GATED_MODULES in ./registry.ts. */
-export type GatedAiPath = 'ask' | 'digest-narrative' | 'insights-polish';
+export type GatedAiPath = 'ask' | 'digest-narrative' | 'insights-polish' | 'rule-suggest' | 'budget-suggest';
 
 export type ChatFn = (
     config: AiConfig,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
-import { createToken, listTokens, type TokenRole } from '@/lib/api-tokens';
+import { createToken, listTokens, type McpDetail, type TokenRole } from '@/lib/api-tokens';
+import { parseMcpDetail } from '@/lib/ai-privacy/privacy';
 
 function serializeToken(t: {
   id: number;
@@ -8,6 +9,7 @@ function serializeToken(t: {
   prefix: string;
   role: TokenRole;
   bookGuid: string | null;
+  mcpDetail: McpDetail;
   expiresAt: Date | null;
   lastUsedAt: Date | null;
   createdAt: Date;
@@ -18,6 +20,7 @@ function serializeToken(t: {
     prefix: t.prefix,
     role: t.role,
     bookGuid: t.bookGuid,
+    mcpDetail: t.mcpDetail,
     expiresAt: t.expiresAt?.toISOString() ?? null,
     lastUsedAt: t.lastUsedAt?.toISOString() ?? null,
     createdAt: t.createdAt.toISOString(),
@@ -43,7 +46,9 @@ export async function GET() {
 
 /**
  * POST /api/settings/api-tokens — create a token.
- * Body: { name, role: 'readonly'|'edit', scopeToBook?: boolean, expiresAt?: ISO string }
+ * Body: { name, role: 'readonly'|'edit', scopeToBook?: boolean, expiresAt?: ISO string,
+ *         mcpDetail?: 'summary'|'full' (default summary; the MCP endpoint also caps it
+ *         at the owner's AI privacy mode) }
  * Returns the plaintext secret exactly once.
  */
 export async function POST(request: NextRequest) {
@@ -86,6 +91,7 @@ export async function POST(request: NextRequest) {
       role,
       bookGuid: body.scopeToBook === false ? null : roleResult.bookGuid,
       expiresAt,
+      mcpDetail: parseMcpDetail(body.mcpDetail),
     });
 
     return NextResponse.json({ token: serializeToken(token), secret }, { status: 201 });

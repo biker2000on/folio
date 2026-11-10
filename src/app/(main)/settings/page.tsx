@@ -1450,7 +1450,10 @@ export default function SettingsPage() {
       {/* ── Integrations & Automation ─────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className={SETTINGS_GROUP_HEADING}>Integrations &amp; Automation</h2>
-        <AiSettingsSection />
+        {/* Anchor for "Settings → AI" links from AI suggestion panels */}
+        <div id="ai-privacy" className="scroll-mt-20">
+          <AiSettingsSection />
+        </div>
         <EmailIngestSection />
         <ApiTokensSection />
         <WebhooksSection />

@@ -6,6 +6,7 @@ import { CollapsibleConfigSection } from '@/components/ui/CollapsibleConfigSecti
 import { Abbr } from '@/components/ui/Abbr';
 import { useToast } from '@/contexts/ToastContext';
 import { extractErrorMessage } from '@/lib/api-error';
+import { DEFAULT_MCP_DETAIL, MCP_DETAIL_OPTIONS, type McpDetail } from '@/lib/ai-privacy/privacy';
 
 interface ApiToken {
     id: number;
@@ -13,6 +14,7 @@ interface ApiToken {
     prefix: string;
     role: 'readonly' | 'edit';
     bookGuid: string | null;
+    mcpDetail?: McpDetail;
     expiresAt: string | null;
     lastUsedAt: string | null;
     createdAt: string;
@@ -78,7 +80,9 @@ function McpHint({ onCopyFailed }: { onCopyFailed: () => void }) {
                 </button>
             </div>
             <p className="text-xs text-foreground-muted">
-                Tool results, including account names and amounts, go to the model your client uses.{' '}
+                Tool results go to the model your client uses. By default it sees placeholders instead of
+                names, rounded amounts and months instead of dates. Full detail is a per-token choice, and
+                only works when your AI privacy mode is full detail too.{' '}
                 <Link href="/docs/admin/api-automation-and-webhooks" className="text-primary hover:underline">
                     Claude Desktop setup and security notes
                 </Link>
@@ -98,6 +102,7 @@ export function ApiTokensSection() {
     const [name, setName] = useState('');
     const [role, setRole] = useState<'readonly' | 'edit'>('readonly');
     const [expiry, setExpiry] = useState('90d');
+    const [mcpDetail, setMcpDetail] = useState<McpDetail>(DEFAULT_MCP_DETAIL);
     const [newSecret, setNewSecret] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
 
@@ -130,13 +135,14 @@ export function ApiTokensSection() {
             const res = await fetch('/api/settings/api-tokens', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name.trim(), role, expiresAt }),
+                body: JSON.stringify({ name: name.trim(), role, expiresAt, mcpDetail }),
             });
             const data = await res.json().catch(() => null);
             if (!res.ok) throw new Error(extractErrorMessage(data, 'Failed to create token'));
             setNewSecret(data.secret);
             setCopied(false);
             setName('');
+            setMcpDetail(DEFAULT_MCP_DETAIL);
             success('API token created');
             void load();
         } catch (e) {
@@ -204,6 +210,7 @@ export function ApiTokensSection() {
                                     <th className="py-2 pr-3 font-medium">Name</th>
                                     <th className="py-2 pr-3 font-medium">Token</th>
                                     <th className="py-2 pr-3 font-medium">Role</th>
+                                    <th className="py-2 pr-3 font-medium"><Abbr term="MCP" /> detail</th>
                                     <th className="py-2 pr-3 font-medium">Expires</th>
                                     <th className="py-2 pr-3 font-medium">Last used</th>
                                     <th className="py-2 font-medium" />
@@ -222,6 +229,9 @@ export function ApiTokensSection() {
                                             }`}>
                                                 {t.role}
                                             </span>
+                                        </td>
+                                        <td className="py-2 pr-3 text-foreground-secondary">
+                                            {MCP_DETAIL_OPTIONS.find(o => o.value === (t.mcpDetail ?? DEFAULT_MCP_DETAIL))?.label}
                                         </td>
                                         <td className="py-2 pr-3 text-foreground-secondary">{t.expiresAt ? formatDate(t.expiresAt) : 'Never'}</td>
                                         <td className="py-2 pr-3 text-foreground-secondary">{formatDate(t.lastUsedAt)}</td>
@@ -284,6 +294,22 @@ export function ApiTokensSection() {
                                             <option value="readonly">Read-only</option>
                                             <option value="edit">Read and write</option>
                                         </select>
+                                    </label>
+                                    <label className="block space-y-1">
+                                        <span className="text-sm text-foreground">Detail for AI clients</span>
+                                        <select
+                                            value={mcpDetail}
+                                            onChange={e => setMcpDetail(e.target.value as McpDetail)}
+                                            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground"
+                                        >
+                                            {MCP_DETAIL_OPTIONS.map(o => (
+                                                <option key={o.value} value={o.value}>{o.label}</option>
+                                            ))}
+                                        </select>
+                                        <span className="block text-xs text-foreground-muted">
+                                            {MCP_DETAIL_OPTIONS.find(o => o.value === mcpDetail)?.what} Your AI privacy
+                                            mode in Settings → AI can lower this, never raise it.
+                                        </span>
                                     </label>
                                     <label className="block space-y-1">
                                         <span className="text-sm text-foreground">Expires</span>

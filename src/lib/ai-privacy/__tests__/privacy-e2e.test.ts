@@ -9,6 +9,8 @@
  *   - Ask your books (route: generate → unmask SQL → guardrails → execute (mocked) → answer)
  *   - digest narrative
  *   - insights polish
+ *   - AI rule suggestions (suggestRulesWithAi: tokens out, validated proposals back)
+ *   - AI budget suggestions (suggestBudgetChangesWithAi: tokens + rounded actuals out)
  *   - receipt extraction (exempt)
  */
 
@@ -36,6 +38,24 @@ const state = vi.hoisted(() => ({
     executedSql: [] as string[],
 }));
 
+// Accounts for the suggestion flows (rule targets, budget lines).
+const BOOK_ROOT = 'f0'.repeat(16);
+const EXP_GUID = 'e1'.repeat(16);
+const CAT_GUID = 'c1'.repeat(16);
+const CHK_GUID = 'd1'.repeat(16);
+const BOOK_ACCOUNT_ROWS = [
+    { guid: BOOK_ROOT, name: 'Root Account', account_type: 'ROOT', parent_guid: null, placeholder: 0, hidden: 0 },
+    { guid: EXP_GUID, name: 'Expenses', account_type: 'EXPENSE', parent_guid: BOOK_ROOT, placeholder: 1, hidden: 0 },
+    { guid: CAT_GUID, name: CATEGORY, account_type: 'EXPENSE', parent_guid: EXP_GUID, placeholder: 0, hidden: 0 },
+    { guid: CHK_GUID, name: ACCOUNT, account_type: 'BANK', parent_guid: BOOK_ROOT, placeholder: 0, hidden: 0 },
+];
+
+const suggestMocks = vi.hoisted(() => ({
+    queryRaw: vi.fn(),
+    budgetGetById: vi.fn(),
+    sumByMonth: vi.fn(),
+}));
+
 vi.mock('@/lib/db', () => ({
     query: vi.fn(async (sql: string) => {
         if (/gnucash_web_ai_config/.test(sql)) return { rows: state.row ? [state.row] : [] };
@@ -43,8 +63,27 @@ vi.mock('@/lib/db', () => ({
     }),
     toDecimal: vi.fn(),
 }));
-vi.mock('@/lib/prisma', () => ({ default: { $queryRaw: vi.fn(), $executeRaw: vi.fn() } }));
-vi.mock('@/lib/currency', () => ({ getBaseCurrency: vi.fn(async () => ({ mnemonic: 'USD' })) }));
+vi.mock('@/lib/prisma', () => ({
+    default: {
+        $queryRaw: suggestMocks.queryRaw,
+        $executeRaw: vi.fn(),
+        books: { findUnique: vi.fn(async () => ({ root_account_guid: BOOK_ROOT })) },
+        accounts: { findMany: vi.fn(async () => BOOK_ACCOUNT_ROWS) },
+    },
+}));
+vi.mock('@/lib/currency', () => ({
+    getBaseCurrency: vi.fn(async () => ({ mnemonic: 'USD' })),
+    getBaseCurrencyForBook: vi.fn(async () => ({ mnemonic: 'USD' })),
+}));
+vi.mock('@/lib/services/categorization.service', () => ({
+    listRules: vi.fn(async () => []),
+    suggestRules: vi.fn(async () => []),
+}));
+vi.mock('@/lib/services/budget.service', () => ({ BudgetService: { getById: suggestMocks.budgetGetById } }));
+vi.mock('@/lib/reports/utils', async (orig) => ({
+    ...(await orig<typeof import('@/lib/reports/utils')>()),
+    sumSplitsByAccountAndMonth: suggestMocks.sumByMonth,
+}));
 vi.mock('@/lib/services/financial-summary.service', () => ({ FinancialSummaryService: {} }));
 vi.mock('@/lib/ai-privacy/names-source', () => ({
     loadNamesSource: vi.fn(async () => ({
@@ -83,6 +122,9 @@ import { detectBalanceDrops, detectNewMerchants, polishInsightsGated } from '@/l
 import { extractReceiptData } from '@/lib/receipt-extraction';
 import { getAiConfig } from '@/lib/ai-config';
 import { clearNamesCache } from '@/lib/ai-privacy/gate';
+import { suggestRulesWithAi } from '@/lib/ai-suggest/rule-suggest';
+import { suggestBudgetChangesWithAi } from '@/lib/ai-suggest/budget-suggest';
+import { completeMonths } from '@/lib/ai-suggest/budget-proposals';
 import type { MonthlyDigest } from '@/lib/digest';
 import type { NextRequest } from 'next/server';
 
@@ -142,6 +184,28 @@ function reply(messages: Array<{ role: string; content: string }>): string {
             })),
         });
     }
+    if (system.includes('You suggest categorization rules')) {
+        const p = JSON.parse(user) as { descriptions: Array<{ d: string }>; accounts: Array<{ a: string }> };
+        return JSON.stringify({
+            rules: [
+                { match: p.descriptions[0].d, account: p.accounts[0].a, why: 'A coffee roaster.' },
+                // A token the server never issued: dropped, never guessed.
+                { match: p.descriptions[0].d, account: 'Expenses:⟨A999⟩' },
+            ],
+        });
+    }
+    if (system.includes('You review a personal budget')) {
+        const p = JSON.parse(user) as { lines: Array<{ a: string; budget: number; actuals: number[] }> };
+        const line = p.lines[0];
+        const spent = line.actuals[0].toLocaleString('en-US');
+        return JSON.stringify({
+            changes: [{
+                account: line.a,
+                amount: line.budget + 60,
+                why: invent ? `${line.a} overshot by $4,321.` : `${line.a} ran $${spent} in one month.`,
+            }],
+        });
+    }
     if (system.includes('Extract structured data from this receipt')) {
         return JSON.stringify({ amount: 1873.42, currency: 'USD', date: EXACT_DATE, vendor: MERCHANT });
     }
@@ -178,7 +242,38 @@ beforeEach(() => {
     state.executedSql.length = 0;
     invent = false;
     clearNamesCache();
+
+    // Rule suggestions: payee history and the transaction total.
+    suggestMocks.queryRaw.mockImplementation(async (strings: TemplateStringsArray) => {
+        const sql = Array.isArray(strings) ? strings.join('?') : String(strings);
+        if (sql.includes('AS payee')) {
+            return [
+                { description: MERCHANT, count: 2, uncategorized: 2 },
+                { description: MERCHANT_2, count: 1, uncategorized: 1 },
+            ];
+        }
+        if (sql.includes('COUNT(DISTINCT s.tx_guid)')) return [{ n: 40 }];
+        return [];
+    });
+    // Budget suggestions: one monthly line with exact amounts and exact actuals.
+    suggestMocks.budgetGetById.mockResolvedValue({
+        num_periods: 12,
+        recurrence: { period_type: 'month', mult: 1 },
+        amounts: Array.from({ length: 12 }, (_, p) => ({ account_guid: CAT_GUID, period_num: p, amount_decimal: '987.65' })),
+    });
+    const { months } = completeMonths(new Date(), 3);
+    suggestMocks.sumByMonth.mockResolvedValue([
+        { month: months[0], accountGuid: CAT_GUID, quantity: 1873.42 },
+        { month: months[1], accountGuid: CAT_GUID, quantity: 73.21 },
+        { month: months[2], accountGuid: CAT_GUID, quantity: 2345.67 },
+    ]);
 });
+
+async function runSuggestionFlows() {
+    const rules = await suggestRulesWithAi({ userId: 7, bookGuid: 'book1' });
+    const budget = await suggestBudgetChangesWithAi({ userId: 7, bookGuid: 'book1', budgetGuid: 'ab'.repeat(16) });
+    return { rules, budget };
+}
 
 function configure(privacyMode: 'off' | 'summary' | 'full' | undefined, selfHosted = false) {
     state.row = {
@@ -345,6 +440,84 @@ describe('privacy e2e: full mode', () => {
         expect(captured).toHaveLength(4);
         expect(leaks()).toEqual([]);
         expect(askResult.body.privacy).toBe('summary');
+    });
+});
+
+describe('privacy e2e: AI suggestions you apply yourself', () => {
+    it('summary: sends no names or exact amounts, and returns unmasked, validated proposals', async () => {
+        configure('summary');
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { rules, budget } = await runSuggestionFlows();
+        warn.mockRestore();
+
+        expect(captured).toHaveLength(2);
+        expect(leaks()).toEqual([]);
+        expect(captured.every(c => /⟨[MA]\d+⟩/.test(c.messages.map(m => m.content).join('\n')))).toBe(true);
+
+        expect(rules.ok).toBe(true);
+        if (!rules.ok) return;
+        expect(rules.level).toBe('summary');
+        expect(rules.proposals).toEqual([{
+            match: MERCHANT,
+            matchType: 'contains',
+            accountGuid: CAT_GUID,
+            accountPath: `Expenses:${CATEGORY}`,
+            accountType: 'EXPENSE',
+            why: 'A coffee roaster.',
+            matchCount: 2,
+            uncategorizedCount: 2,
+            share: 0.05,
+            samples: [MERCHANT],
+        }]);
+        expect(rules.reasons).toEqual({ 'unknown-token': 1 });
+
+        expect(budget.ok).toBe(true);
+        if (!budget.ok) return;
+        expect(budget.level).toBe('summary');
+        // The model saw 990 (987.65 rounded) and proposed 990 + 60.
+        expect(budget.proposals).toEqual([{
+            accountGuid: CAT_GUID,
+            accountPath: `Expenses:${CATEGORY}`,
+            accountType: 'EXPENSE',
+            from: 987.65,
+            fromVaries: false,
+            to: 1050,
+            rawTo: 1050,
+            why: `Expenses:${CATEGORY} ran $1,900 in one month.`,
+            requires: [],
+        }]);
+    });
+
+    it('drops a budget why that brings a figure the code never sent', async () => {
+        configure('summary');
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        invent = true;
+        const { budget } = await runSuggestionFlows();
+        expect(budget.ok && budget.proposals[0].why).toBeNull();
+        expect(budget.ok && budget.whyDropped).toBe(1);
+        expect(warn.mock.calls.some(c => String(c[0]).includes('budget-suggest'))).toBe(true);
+        warn.mockRestore();
+    });
+
+    it('off: no model request on either path', async () => {
+        configure('off');
+        const { rules, budget } = await runSuggestionFlows();
+        expect(captured).toHaveLength(0);
+        expect(rules).toEqual({ ok: false, reason: 'off' });
+        expect(budget).toEqual({ ok: false, reason: 'off' });
+    });
+
+    it('full on a self-hosted endpoint: real names and exact amounts go out', async () => {
+        configure('full', true);
+        const { rules, budget } = await runSuggestionFlows();
+        expect(captured).toHaveLength(2);
+        const all = captured.map(c => c.messages.map(m => m.content).join('\n')).join('\n');
+        expect(all).toContain(MERCHANT);
+        expect(all).toContain(CATEGORY);
+        expect(all).toContain('987.65');
+        expect(all).toContain('1873.42');
+        expect(rules.ok && rules.proposals[0].match).toBe(MERCHANT);
+        expect(budget.ok && budget.proposals[0]).toMatchObject({ to: 1048, why: `Expenses:${CATEGORY} ran $1,873.42 in one month.` });
     });
 });
 

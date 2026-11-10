@@ -39,6 +39,7 @@ import { fetchScheduledTransactions } from '@/lib/scheduled-transactions';
 import { computeNextOccurrencesForPatterns, type RecurrencePattern } from '@/lib/recurrence';
 import { listFinancialActions } from '@/lib/financial-actions/store';
 import type { Role } from '@/lib/services/permission.service';
+import type { McpDetail } from '@/lib/ai-privacy/privacy';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,6 +49,8 @@ export interface McpToolContext {
     bookGuid: string;
     userId: number;
     role: Role;
+    /** The token's MCP detail (privacy); tools never read it, ./shape.ts does. */
+    mcpDetail?: McpDetail;
 }
 
 export interface McpTool<S extends z.ZodType = z.ZodType> {

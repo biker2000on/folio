@@ -18,8 +18,9 @@ month?", "which subscriptions went up in price?", "how is the 2026 budget pacing
 1. Open the book you want Claude to see. Tokens belong to the book that is active
    when you create them.
 2. Go to **Settings → API Tokens → Create token**.
-3. Name it after the client (for example `Claude Code`), choose **Read-only**, and
-   pick an expiration.
+3. Name it after the client (for example `Claude Code`), choose **Read-only**, pick
+   the **Detail for AI clients** (Summary by default, see [Privacy](#privacy)), and pick
+   an expiration.
 4. Copy the `gcw_…` secret. It is shown once.
 
 A token can never do more than you can: its access is capped at your own role for
@@ -132,6 +133,48 @@ double-entry signs (positive = debit, negative = credit). Each tool's descriptio
 tells the model which convention it uses. Amounts are in the book's report currency
 unless a field names another commodity, such as shares for an investment account.
 
+## Privacy
+
+An MCP client is somebody else's model, usually in the cloud. Folio's own screens can
+swap placeholder tokens back into real names before you see them; an MCP client
+cannot. So every tool result goes through Folio's AI privacy gate
+(`src/lib/ai-privacy`) on the server before it leaves.
+
+Each `tools/call` runs at the **stricter** of two settings:
+
+| Your AI privacy mode (Settings → AI) | Token detail: Summary (default) | Token detail: Full detail |
+| --- | --- | --- |
+| Off | refused | refused |
+| Summary only (default) | summary | summary |
+| Full detail on my own hardware | summary | full |
+
+- **Off.** Every `tools/call` returns an error result saying AI access is turned off
+  in Settings. `tools/list` still works, so the client can show what exists.
+- **Summary.** Names become placeholder tokens: `⟨A1⟩` an account, `⟨M1⟩` a payee,
+  description or memo, `⟨H1⟩` a holding. Account paths keep their generic top level
+  (`Expenses:⟨A2⟩:⟨A3⟩`). Money is rounded (to 5 under 100, to 10 under 1,000, to 100
+  above). Dates become months (`YYYY-MM`). Counts, percentages, account types, currency
+  codes and GUIDs are kept. Folio's own explanatory notes (sign conventions) stay as
+  written, and free-text fields such as Action Center titles are scrubbed in place.
+  Tool errors are scrubbed too, since they can echo an account name.
+- **Full.** Results pass through unchanged. This needs both your AI privacy mode set
+  to full detail and the token created with full detail. The "own hardware" endpoint
+  flag in Settings → AI plays no part here: the MCP client is never that endpoint.
+
+**Drilling into a token.** In summary mode the model can pass a token back as an
+argument, for example `search_transactions { "text": "⟨M3⟩" }` or
+`account_balance_history { "account": "Expenses:⟨A2⟩" }`. The server swaps exact tokens
+for the real names before the arguments are validated and the tool runs, then scrubs
+the answer again. A token the server never issued is refused with an error instead of
+being searched for. The server's `instructions` explain all of this to the client.
+
+Tokens live only in the Folio server's memory, per book. They stay stable across
+calls, and are the same ones Folio's own AI features use, for as long as the server
+keeps the map: it is dropped after 30 idle minutes and on restart. After that a
+client gets "Unknown placeholder" and calls the listing tool again. With several app
+replicas, each keeps its own map, so a token from one replica may be unknown to
+another.
+
 ## Security notes
 
 - **Least privilege.** Use a dedicated read-only token per client, with an
@@ -143,9 +186,9 @@ unless a field names another commodity, such as shares for an investment account
   request carrying a Folio session cookie is rejected with `401`, so a web page you
   visit cannot ride your browser session into it.
 - **Your data goes to the model provider.** Tool results are sent to whichever model
-  your client uses, including account names, payees, and amounts. Decide whether that
-  is acceptable for the book before you connect it. All results pass through one
-  shaping step on the server, which is where Folio's AI privacy controls apply.
+  your client uses. By default that is a summary (placeholders, rounded amounts,
+  months); with full detail it includes account names, payees, and exact amounts.
+  Decide which is acceptable for the book before you connect it. See [Privacy](#privacy).
 - **Keep the token out of history and process lists.** Prefer environment variables
   (`.mcp.json` `${VAR}` expansion, or the bridge's `FOLIO_TOKEN`) over pasting the token
   into commands.
