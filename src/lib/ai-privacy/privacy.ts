@@ -113,6 +113,41 @@ export function levelFor(mode: PrivacyMode, selfHosted: boolean, baseUrl?: strin
 }
 
 /* ------------------------------------------------------------------ */
+/* External clients (MCP)                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How much an external MCP client may see, chosen per API token. An MCP client
+ * is somebody else's cloud model, and it cannot swap tokens back the way
+ * Folio's own screens do, so summary is the default.
+ */
+export type McpDetail = 'summary' | 'full';
+
+export const MCP_DETAILS: readonly McpDetail[] = ['summary', 'full'];
+export const DEFAULT_MCP_DETAIL: McpDetail = 'summary';
+
+export const MCP_DETAIL_OPTIONS: ReadonlyArray<{ value: McpDetail; label: string; what: string }> = [
+    { value: 'summary', label: 'Summary', what: 'Names become placeholders, amounts are rounded and dates become months.' },
+    { value: 'full', label: 'Full detail', what: 'Real names, exact amounts and dates.' },
+];
+
+/** Summary unless the value is exactly 'full' (including rows saved before the column existed). */
+export function parseMcpDetail(value: unknown): McpDetail {
+    return value === 'full' ? 'full' : 'summary';
+}
+
+/**
+ * The level an MCP tool call runs at: the stricter of the token owner's AI
+ * privacy mode and the token's MCP detail. Off wins over everything; full
+ * needs both. The self-hosted endpoint flag plays no part: the MCP client is
+ * never the user's configured endpoint.
+ */
+export function externalLevel(mode: PrivacyMode, detail: McpDetail): PrivacyLevel {
+    if (mode === 'off') return 'off';
+    return mode === 'full' && detail === 'full' ? 'full' : 'summary';
+}
+
+/* ------------------------------------------------------------------ */
 /* Rounding                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -178,6 +213,48 @@ export function ph(names: Names, kind: TokenKind, real: string | null | undefine
 
 /** True for text that is already a token. */
 export const isToken = (s: string) => /^⟨[MAHV]\d+⟩$/.test(s);
+
+/** Top-level and system account names: generic words, never masked. */
+const GENERIC_ACCOUNT = /^(root account|assets?|liabilit(y|ies)|income|expenses?|equity|template root|(imbalance|orphan)(-[a-z]{3})?)$/i;
+
+/** True for a top-level or system account name ("Expenses", "Imbalance-USD") that needs no placeholder. */
+export function isGenericAccountName(name: string | null | undefined): boolean {
+    return typeof name === 'string' && GENERIC_ACCOUNT.test(name.trim());
+}
+
+/**
+ * An account path with each segment tokenised, generic top-level names kept:
+ * "Expenses:Food:Groceries" -> "Expenses:⟨A2⟩:⟨A3⟩". The model keeps the
+ * shape of the tree; unmask() turns it back into the real path.
+ */
+export function tokenizeAccountPath(names: Names, path: string): string {
+    return path
+        .split(':')
+        .map(segment => (!segment.trim() || isGenericAccountName(segment) || isToken(segment.trim()) ? segment : ph(names, 'Account', segment)))
+        .join(':');
+}
+
+const KNOWN_TOKEN = /[⟨〈]\s*([MAHV])\s*(\d+)\s*[⟩〉]/g;
+
+/**
+ * Tokens back to real names for text that will be USED, not shown: a search
+ * term or an account reference an external model passes back. Only exact
+ * tokens are swapped. Unknown tokens are left in place and reported, so the
+ * caller can refuse instead of searching for "a merchant".
+ */
+export function unmaskStrict(text: string, names: Names): { text: string; unknown: string[] } {
+    const unknown: string[] = [];
+    if (typeof text !== 'string' || !text) return { text, unknown };
+    const out = text.replace(KNOWN_TOKEN, (all, l: string, d: string) => {
+        const real = names.back.get(`⟨${l}${d}⟩`);
+        if (real === undefined) {
+            unknown.push(`⟨${l}${d}⟩`);
+            return all;
+        }
+        return real;
+    });
+    return { text: out, unknown };
+}
 
 // Bank events are not companies: "Interest charged" or "Transfer" get no
 // placeholder, because masking a common word would mangle every sentence that

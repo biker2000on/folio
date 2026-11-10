@@ -34,6 +34,22 @@ export const AI_GATED_MODULES: Readonly<Record<string, string>> = {
     'src/lib/ai-query/answer.ts': 'Ask your books: answer from scrubbed rows, number-checked.',
     'src/lib/digest-narrative.ts': 'Monthly digest narrative from a summarised payload, number-checked.',
     'src/lib/insights.ts': 'Insight title/detail polish, scrubbed per item, number-checked.',
+    'src/lib/ai-suggest/rule-suggest.ts': 'AI rule suggestions: tokenised descriptions and accounts, validated, applied by the user.',
+    'src/app/api/categorization/ai-suggestions/route.ts': 'AI rule suggestions route: availability and the gated call; saves nothing.',
+    'src/lib/ai-suggest/budget-suggest.ts': 'AI budget suggestions: tokenised lines, rounded actuals, validated, applied by the user.',
+    'src/app/api/budgets/[guid]/ai-suggestions/route.ts': 'AI budget suggestions route: availability and the gated call; saves nothing.',
+};
+
+/**
+ * Modules that hand book data to an EXTERNAL model (one Folio does not call,
+ * so no AI-call primitive appears in them): the MCP server. They must resolve
+ * the level through the gate (openExternalAccess) and scrub with its helpers.
+ * The registry test checks each one exists, uses src/lib/ai-privacy, and stays
+ * off the primitives.
+ */
+export const AI_EXTERNAL_MODULES: Readonly<Record<string, string>> = {
+    'src/lib/mcp/shape.ts': 'MCP: resolves the level per token (openExternalAccess); scrubs every tool result and error.',
+    'src/lib/mcp/server.ts': 'MCP: refuses tools/call when AI is off; unmasks tool inputs before running a tool.',
 };
 
 export const AI_EXEMPT_MODULES: Readonly<Record<string, string>> = {

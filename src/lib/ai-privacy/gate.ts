@@ -22,16 +22,23 @@ import { createHash } from 'crypto';
 import { getAiConfigWithPrivacy } from '@/lib/ai-config';
 import { isAiConfigured } from '@/lib/ai-query/client';
 import { loadNamesSource, type NamesSource } from './names-source';
-import { isBankEvent, levelFor, newNames, ph, type Names, type PrivacyLevel } from './privacy';
+import {
+    externalLevel,
+    isBankEvent,
+    isGenericAccountName,
+    levelFor,
+    newNames,
+    ph,
+    type McpDetail,
+    type Names,
+    type PrivacyLevel,
+} from './privacy';
 import { createGatedAi, type GatedAi, type GatedAiPath } from './session';
 
 export type { GatedAi, GatedAiPath } from './session';
 
 const RELOAD_MS = 60_000;
 const IDLE_MS = 30 * 60_000;
-
-/** Top-level and system account names: generic words, never masked. */
-const GENERIC_ACCOUNT = /^(root account|assets?|liabilit(y|ies)|income|expenses?|equity|template root|(imbalance|orphan)(-[a-z]{3})?)$/i;
 
 interface CacheEntry {
     names: Names;
@@ -46,8 +53,8 @@ const cache: Map<string, CacheEntry> = (g.__folioAiNames ??= new Map());
 /** Add a book's names to a map in a fixed order. Pure; exported for tests. */
 export function addNamesFromSource(names: Names, source: NamesSource): Names {
     for (const a of source.accounts) {
-        if (a.name && !GENERIC_ACCOUNT.test(a.name.trim())) ph(names, 'Account', a.name);
-        if (a.fullname && a.fullname !== a.name && !GENERIC_ACCOUNT.test(a.fullname.trim())) ph(names, 'Account', a.fullname);
+        if (a.name && !isGenericAccountName(a.name)) ph(names, 'Account', a.name);
+        if (a.fullname && a.fullname !== a.name && !isGenericAccountName(a.fullname)) ph(names, 'Account', a.fullname);
     }
     for (const d of source.descriptions) {
         // Bank events ("Interest charged", "Transfer") get no placeholder: masking a common word mangles prose.
@@ -132,4 +139,37 @@ export async function openGatedAi(opts: {
     const guids = typeof opts.accountGuids === 'function' ? await opts.accountGuids() : opts.accountGuids;
     const names = await namesFor(guids);
     return { ok: true, ai: createGatedAi({ path: opts.path, level, config, names }) };
+}
+
+/* ------------------------------------------------------------------ */
+/* External clients (MCP)                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What an external client (the MCP server's caller) may see. Folio calls no
+ * model here: the client's own model reads the tool results, so the gate only
+ * decides the level and hands over the names map to scrub with.
+ */
+export type ExternalAccess =
+    | { level: 'off'; names: null }
+    | { level: 'full'; names: null }
+    | { level: 'summary'; names: Names };
+
+/**
+ * Resolve the level for an external client: the stricter of the owner's AI
+ * privacy mode and the requested detail (the token's MCP detail). Works
+ * whether or not an AI endpoint is configured: the mode is the user's choice
+ * about their data, not about Folio's own model.
+ */
+export async function openExternalAccess(opts: {
+    userId: number;
+    detail: McpDetail;
+    accountGuids: readonly string[] | (() => Promise<readonly string[]>);
+}): Promise<ExternalAccess> {
+    const { privacyMode } = await getAiConfigWithPrivacy(opts.userId);
+    const level = externalLevel(privacyMode, opts.detail);
+    if (level === 'off') return { level: 'off', names: null };
+    if (level === 'full') return { level: 'full', names: null };
+    const guids = typeof opts.accountGuids === 'function' ? await opts.accountGuids() : opts.accountGuids;
+    return { level: 'summary', names: await namesFor(guids) };
 }

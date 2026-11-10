@@ -17,6 +17,12 @@
  *
  * Every tool result leaves through `shapeToolResult` (./shape.ts) — the hook
  * the AI privacy gate plugs into. Do not add a second exit.
+ *
+ * Privacy (src/lib/ai-privacy): each tools/call resolves the level as the
+ * stricter of the token owner's AI privacy mode and the token's MCP detail.
+ * Off refuses the call. Summary unmasks exact tokens in the tool inputs
+ * (so the model can drill into "⟨M3⟩"), then scrubs the result and any error
+ * text. Full passes everything through.
  */
 
 import { z } from 'zod';
@@ -31,11 +37,12 @@ import {
     type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { authenticateBearer, parseBearerToken } from '@/lib/api-tokens';
+import { parseMcpDetail } from '@/lib/ai-privacy/privacy';
 import { sessionOptions } from '@/lib/session-config';
 import { roleAtLeast } from '@/lib/services/permission.service';
 import { product } from '@/lib/product';
 import { MCP_TOOLS, McpToolError, findMcpTool, type McpTool, type McpToolContext } from './tools';
-import { shapeToolResult } from './shape';
+import { MCP_OFF_MESSAGE, resolveMcpAccess, shapeToolResult, shapeToolText, unmaskMcpArgs } from './shape';
 
 export const MCP_SERVER_NAME = 'folio';
 export const MCP_SERVER_VERSION = '1.0.0';
@@ -49,7 +56,14 @@ const SERVER_INSTRUCTIONS =
     'and debt as positive numbers; search_transactions and upcoming_scheduled_transactions keep raw ' +
     'double-entry signs (positive = debit, negative = credit). Accounts are referenced by path such as ' +
     '"Expenses:Food:Groceries" (see list_accounts), a bare name, or a guid. Nothing can be changed ' +
-    'through these tools.';
+    'through these tools.\n\n' +
+    'Privacy: unless the book owner allows full detail, results are a summary. Names are placeholder ' +
+    'tokens: ⟨A1⟩ an account (paths keep generic top levels, e.g. "Expenses:⟨A2⟩:⟨A3⟩"), ⟨M1⟩ a payee, ' +
+    'description or memo, ⟨H1⟩ a holding. Amounts are rounded, so say "about". Dates are months (YYYY-MM). ' +
+    'GUIDs are real. To drill into a token, pass it back unchanged as an argument, e.g. ' +
+    'search_transactions { "text": "⟨M3⟩" } or account_balance_history { "account": "Expenses:⟨A2⟩" }. ' +
+    'Copy tokens exactly, brackets included, and never guess the real name behind one. ' +
+    'If the owner turned AI off in Settings, every tool call returns an error saying so.';
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -87,7 +101,7 @@ export async function authenticateMcpRequest(request: Request): Promise<McpToolC
     if (!auth || !roleAtLeast(auth.role, 'readonly')) {
         return unauthorized('Invalid, revoked, or expired API token, or the token has no access to its book.');
     }
-    return { bookGuid: auth.bookGuid, userId: auth.user.id, role: auth.role };
+    return { bookGuid: auth.bookGuid, userId: auth.user.id, role: auth.role, mcpDetail: parseMcpDetail(auth.mcpDetail) };
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +138,8 @@ function toolError(text: string): CallToolResult {
 /**
  * Run one tool. Protocol-level problems (unknown tool, arguments that fail the
  * schema) throw McpError and become JSON-RPC errors; failures while running
- * the tool become `isError` results, as the MCP spec asks.
+ * the tool become `isError` results, as the MCP spec asks. AI access turned
+ * off, or a token the server does not know, is an `isError` result too.
  */
 export async function callTool(
     name: string,
@@ -135,7 +150,22 @@ export async function callTool(
     if (!tool) {
         throw new McpError(ErrorCode.InvalidParams, `Unknown tool: ${name}`);
     }
-    const parsed = tool.inputSchema.safeParse(args ?? {});
+
+    // The privacy level for this call: stricter of owner mode and token detail.
+    const access = await resolveMcpAccess(ctx);
+    if (access.level === 'off') return toolError(MCP_OFF_MESSAGE);
+
+    // Summary: tokens the model was given become real names BEFORE validation,
+    // so the schema checks what will actually run.
+    const unmasked = unmaskMcpArgs(args ?? {}, access);
+    if (unmasked.unknown.length > 0) {
+        return toolError(
+            `Unknown placeholder ${unmasked.unknown.slice(0, 5).join(', ')}. Placeholders expire after 30 idle ` +
+            'minutes; call the tool that returned it again and use the new one.',
+        );
+    }
+
+    const parsed = tool.inputSchema.safeParse(unmasked.args);
     if (!parsed.success) {
         const detail = parsed.error.issues
             .map((issue) => `${issue.path.join('.') || '(arguments)'}: ${issue.message}`)
@@ -147,13 +177,14 @@ export async function callTool(
     try {
         result = await tool.run(parsed.data, ctx);
     } catch (error) {
-        if (error instanceof McpToolError) return toolError(error.message);
+        // A tool error can echo an account or budget name: it leaves through the gate too.
+        if (error instanceof McpToolError) return toolError(shapeToolText(error.message, access));
         console.error(`MCP tool ${name} failed:`, error);
         return toolError(`${name} failed. Try again, or narrow the request.`);
     }
 
     // The ONE exit for tool data. See ./shape.ts.
-    const shaped = await shapeToolResult(name, result, ctx);
+    const shaped = await shapeToolResult(name, result, ctx, access);
     const text = JSON.stringify(shaped);
     if (text.length > MAX_TOOL_RESULT_CHARS) {
         return toolError(`${name} returned too much data (${text.length} characters). Use a smaller limit or a narrower filter.`);

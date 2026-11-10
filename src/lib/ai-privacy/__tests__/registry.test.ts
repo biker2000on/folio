@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { AI_CORE_MODULES, AI_EXEMPT_MODULES, AI_GATED_MODULES } from '../registry';
+import { AI_CORE_MODULES, AI_EXEMPT_MODULES, AI_EXTERNAL_MODULES, AI_GATED_MODULES } from '../registry';
 
 const ROOT = process.cwd();
 const SRC = path.join(ROOT, 'src');
@@ -40,6 +40,7 @@ const usesPrimitive = (text: string) => PRIMITIVES.filter(p => p.re.test(text)).
 const core = Object.keys(AI_CORE_MODULES);
 const gated = Object.keys(AI_GATED_MODULES);
 const exempt = Object.keys(AI_EXEMPT_MODULES);
+const external = Object.keys(AI_EXTERNAL_MODULES);
 
 describe('AI module registry', () => {
     it('scans a real tree', () => {
@@ -59,7 +60,7 @@ describe('AI module registry', () => {
     });
 
     it('lists only modules that exist, each in one list', () => {
-        const all = [...core, ...gated, ...exempt];
+        const all = [...core, ...gated, ...exempt, ...external];
         expect(all.filter(p => !fs.existsSync(path.join(ROOT, p)))).toEqual([]);
         expect(all.filter((p, i) => all.indexOf(p) !== i)).toEqual([]);
     });
@@ -70,6 +71,17 @@ describe('AI module registry', () => {
             expect(usesPrimitive(text), `${p} must call the model through the gate session, not directly`).toEqual([]);
             expect(text, `${p} must use src/lib/ai-privacy`).toMatch(/@\/lib\/ai-privacy\//);
         }
+    });
+
+    it('keeps external-client modules (MCP) on the gate and off the primitives', () => {
+        expect(external.length).toBeGreaterThan(0);
+        for (const p of external) {
+            const text = fs.readFileSync(path.join(ROOT, p), 'utf8');
+            expect(usesPrimitive(text), `${p} serves an external model and must not call one`).toEqual([]);
+            expect(text, `${p} must use src/lib/ai-privacy`).toMatch(/@\/lib\/ai-privacy\//);
+        }
+        const shape = fs.readFileSync(path.join(ROOT, 'src/lib/mcp/shape.ts'), 'utf8');
+        expect(shape, 'the MCP result hook must resolve the level through the gate').toMatch(/openExternalAccess/);
     });
 
     it('keeps exempt modules out of the gate (they ignore the privacy mode)', () => {
