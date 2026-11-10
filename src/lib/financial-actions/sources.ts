@@ -29,6 +29,7 @@ import { getFarmCertificateObligations } from '@/lib/tax/farm-certificates';
 import { listEntityDocuments } from '@/lib/services/entity-documents.service';
 import { findMissingTaxForms, isTaxFormSeasonFor } from '@/lib/tax-records';
 import { detectOpportunities, type OpportunitySignal, type OpportunitySnapshot } from './opportunity-engine';
+import { annotatePriorityLadder, HIGH_APR_PERCENT, type LadderFacts } from './priority-ladder';
 import { listJobsEx, generateJobReport } from '@/lib/business/jobs.service';
 import { get1099Compliance } from '@/lib/business/vendor-1099.service';
 import { getReconciliationCoverage } from '@/lib/reconciliation-coverage';
@@ -1535,12 +1536,16 @@ async function retirementSequencingSignals(bookGuid: string): Promise<Opportunit
   return signals;
 }
 
+/** Days of history behind the cash-flow averages the opportunities and the ladder read. */
+const CASH_FLOW_WINDOW_DAYS = 90;
+
 async function cashAndExpenseSnapshot(bookAccountGuids: string[]): Promise<{
   cash: number;
   monthlyExpenses: number;
+  monthlyIncome: number;
 }> {
   const now = new Date();
-  const ninetyDaysAgo = new Date(now.getTime() - 90 * DAY_MS);
+  const ninetyDaysAgo = new Date(now.getTime() - CASH_FLOW_WINDOW_DAYS * DAY_MS);
   const baseCurrency = await getBaseCurrency();
   const [cashRows, incomeExpense] = await Promise.all([
     prisma.$queryRaw<Array<{ total: number | null }>>`
@@ -1568,6 +1573,106 @@ async function cashAndExpenseSnapshot(bookAccountGuids: string[]): Promise<{
     // Net expense-account activity correctly lets refunds reduce the run rate,
     // and the summary service converts foreign-currency expenses.
     monthlyExpenses: Math.max(0, incomeExpense.totalExpenses / 3),
+    monthlyIncome: Math.max(0, incomeExpense.totalIncome / 3),
+  };
+}
+
+interface LiabilityDebt {
+  guid: string;
+  name: string;
+  accountType: string;
+  owed: number;
+  apr: number;
+  include: boolean;
+}
+
+/**
+ * Liability accounts with their balances, merged with the APRs the user
+ * entered in the Debt Payoff planner. Shared by the debt opportunity and the
+ * priority ladder's high-interest check.
+ */
+async function liabilityDebts(
+  userId: number,
+  bookGuid: string,
+  bookAccountGuids: string[],
+): Promise<LiabilityDebt[]> {
+  const rows = await prisma.$queryRaw<Array<{ guid: string; name: string; account_type: string; balance: number | null }>>`
+    SELECT a.guid, a.name, a.account_type,
+      COALESCE(SUM(s.value_num::numeric / NULLIF(s.value_denom, 0)::numeric), 0)::float8 AS balance
+    FROM accounts a
+    LEFT JOIN splits s ON s.account_guid = a.guid
+    WHERE a.guid = ANY(${bookAccountGuids}::text[])
+      AND a.account_type IN ('LIABILITY', 'CREDIT', 'PAYABLE')
+      AND COALESCE(a.placeholder, 0) = 0
+    GROUP BY a.guid, a.name, a.account_type
+  `;
+  const configRow = await prisma.gnucash_web_tool_config.findFirst({
+    where: { user_id: userId, book_guid: bookGuid, tool_type: 'debt-payoff' },
+    orderBy: { updated_at: 'desc' },
+  });
+  const config = (configRow?.config ?? {}) as {
+    debts?: Record<string, { apr?: number; include?: boolean }>;
+  };
+  return rows.map(row => ({
+    guid: row.guid,
+    name: row.name,
+    accountType: row.account_type,
+    owed: Math.max(0, -(row.balance ?? 0)),
+    apr: config.debts?.[row.guid]?.apr ?? 0,
+    include: config.debts?.[row.guid]?.include ?? true,
+  }));
+}
+
+/**
+ * Interest and finance charges posted against credit-card accounts over the
+ * cash-flow window: the expense side of any transaction that also touches a
+ * CREDIT account, on an expense account named for interest or finance
+ * charges. A card paid in full every month has a balance but no such charge.
+ */
+async function cardInterestCharged(bookAccountGuids: string[], since: Date): Promise<number> {
+  const rows = await prisma.$queryRaw<Array<{ total: number | null }>>`
+    SELECT COALESCE(SUM(e.value_num::numeric / NULLIF(e.value_denom, 0)::numeric), 0)::float8 AS total
+    FROM splits e
+    JOIN accounts ea ON ea.guid = e.account_guid
+    JOIN transactions t ON t.guid = e.tx_guid
+    WHERE e.account_guid = ANY(${bookAccountGuids}::text[])
+      AND ea.account_type = 'EXPENSE'
+      AND (ea.name ILIKE '%interest%' OR ea.name ILIKE '%finance charge%')
+      AND t.post_date >= ${since}
+      AND EXISTS (
+        SELECT 1
+        FROM splits c
+        JOIN accounts ca ON ca.guid = c.account_guid
+        WHERE c.tx_guid = e.tx_guid
+          AND ca.account_type = 'CREDIT'
+          AND c.account_guid = ANY(${bookAccountGuids}::text[])
+      )
+  `;
+  return Math.max(0, rows[0]?.total ?? 0);
+}
+
+/**
+ * Debt facts for the priority ladder. A failed card-interest check reports
+ * null (unknown) instead of zero so the trace can say so.
+ */
+async function ladderDebtFacts(
+  userId: number,
+  bookGuid: string,
+  bookAccountGuids: string[],
+  now: Date,
+): Promise<Pick<LadderFacts, 'cardInterest' | 'highAprDebts'>> {
+  const since = new Date(now.getTime() - CASH_FLOW_WINDOW_DAYS * DAY_MS);
+  const [cardInterest, debts] = await Promise.all([
+    safe<number | null>('priority ladder card interest', () => cardInterestCharged(bookAccountGuids, since), null),
+    safe<LiabilityDebt[]>('priority ladder debts', () => liabilityDebts(userId, bookGuid, bookAccountGuids), []),
+  ]);
+  return {
+    cardInterest,
+    // Cards are judged by interest actually charged, not APR: a card paid in
+    // full carries no interest whatever its rate.
+    highAprDebts: debts
+      .filter(debt => debt.accountType === 'LIABILITY' && debt.include && debt.owed > 0 && debt.apr >= HIGH_APR_PERCENT)
+      .map(debt => ({ name: debt.name, apr: debt.apr, owed: Math.round(debt.owed * 100) / 100 })),
   };
 }
 
@@ -1578,30 +1683,7 @@ async function debtSignal(
   cash: number,
   monthlyExpenses: number,
 ): Promise<OpportunitySignal | null> {
-  const rows = await prisma.$queryRaw<Array<{ guid: string; name: string; balance: number | null }>>`
-    SELECT a.guid, a.name,
-      COALESCE(SUM(s.value_num::numeric / NULLIF(s.value_denom, 0)::numeric), 0)::float8 AS balance
-    FROM accounts a
-    LEFT JOIN splits s ON s.account_guid = a.guid
-    WHERE a.guid = ANY(${bookAccountGuids}::text[])
-      AND a.account_type IN ('LIABILITY', 'CREDIT', 'PAYABLE')
-      AND COALESCE(a.placeholder, 0) = 0
-    GROUP BY a.guid, a.name
-  `;
-  const configRow = await prisma.gnucash_web_tool_config.findFirst({
-    where: { user_id: userId, book_guid: bookGuid, tool_type: 'debt-payoff' },
-    orderBy: { updated_at: 'desc' },
-  });
-  const config = (configRow?.config ?? {}) as {
-    debts?: Record<string, { apr?: number; include?: boolean }>;
-  };
-  const debts = rows
-    .map(row => ({
-      ...row,
-      owed: Math.max(0, -(row.balance ?? 0)),
-      apr: config.debts?.[row.guid]?.apr ?? 0,
-      include: config.debts?.[row.guid]?.include ?? true,
-    }))
+  const debts = (await liabilityDebts(userId, bookGuid, bookAccountGuids))
     .filter(row => row.include && row.owed > 0 && row.apr >= 7)
     .sort((a, b) => b.apr - a.apr);
   const debt = debts[0];
@@ -1916,11 +1998,15 @@ export async function loadOpportunityActions(input: {
 }): Promise<FinancialActionCandidate[]> {
   const { userId, bookGuid, bookAccountGuids } = input;
   const now = new Date();
-  const cash = await safe('cash and expense snapshot', () => cashAndExpenseSnapshot(bookAccountGuids), {
-    cash: 0,
-    monthlyExpenses: 0,
-  });
-  const [contributionCapacity, debtPaydown, investments, subscriptions, notifications, retirementSequencing] = await Promise.all([
+  // Null on failure so the priority ladder can tell "unknown" from "broke";
+  // the opportunity packs still read zeros, as before.
+  const snapshotResult = await safe<Awaited<ReturnType<typeof cashAndExpenseSnapshot>> | null>(
+    'cash and expense snapshot',
+    () => cashAndExpenseSnapshot(bookAccountGuids),
+    null,
+  );
+  const cash = snapshotResult ?? { cash: 0, monthlyExpenses: 0, monthlyIncome: 0 };
+  const [contributionCapacity, debtPaydown, investments, subscriptions, notifications, retirementSequencing, debtFacts] = await Promise.all([
     safe('contribution opportunity', () => contributionSignals(bookAccountGuids, now.getFullYear()), []),
     safe('debt opportunity', () => debtSignal(
       userId,
@@ -1939,6 +2025,7 @@ export async function loadOpportunityActions(input: {
       budgetGaps: [],
     }),
     safe('retirement sequencing opportunities', () => retirementSequencingSignals(bookGuid), []),
+    ladderDebtFacts(userId, bookGuid, bookAccountGuids, now),
   ]);
   const snapshot: OpportunitySnapshot = {
     asOfDate: isoDate(now),
@@ -1952,5 +2039,17 @@ export async function loadOpportunityActions(input: {
     budgetGaps: notifications.budgetGaps,
     retirementSequencing,
   };
-  return detectOpportunities(snapshot);
+  // The ladder facts are stored with every opportunity: the Action Center's
+  // "Priority steps" order and its affordability gate read them at list time.
+  const facts: LadderFacts | null = snapshotResult
+    ? {
+        asOfDate: snapshot.asOfDate,
+        windowDays: CASH_FLOW_WINDOW_DAYS,
+        cash: snapshotResult.cash,
+        monthlyIncome: snapshotResult.monthlyIncome,
+        monthlySpending: snapshotResult.monthlyExpenses,
+        ...debtFacts,
+      }
+    : null;
+  return annotatePriorityLadder(detectOpportunities(snapshot), facts);
 }

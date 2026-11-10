@@ -9,6 +9,12 @@ import {
 import type { FinancialActionState } from '@/lib/financial-actions/types';
 import { getAuthorizedFamilyGraph } from '@/lib/family-office/service';
 import { compareFinancialActions } from '@/lib/financial-actions/order';
+import {
+  ACTION_ORDER_PREFERENCE_KEY,
+  DEFAULT_ACTION_ORDER,
+  parseActionOrderMode,
+} from '@/lib/financial-actions/priority-ladder';
+import { getPreference } from '@/lib/user-preferences';
 
 const WRITABLE_STATES = new Set<FinancialActionState>([
   'open',
@@ -30,6 +36,14 @@ export async function GET(request: NextRequest) {
         { status: 403 },
       );
     }
+    // An explicit ?order= wins (the page passes it right after a switch);
+    // otherwise the user's saved preference, defaulting to the weighted score.
+    const orderParam = request.nextUrl.searchParams.get('order');
+    const order = orderParam === 'weighted' || orderParam === 'ladder'
+      ? orderParam
+      : parseActionOrderMode(
+          await getPreference<unknown>(roleResult.user.id, ACTION_ORDER_PREFERENCE_KEY, DEFAULT_ACTION_ORDER),
+        );
     const bookGuids = familyScope
       ? (await getAuthorizedFamilyGraph(roleResult.user.id, roleResult.bookGuid)).entities.map(entity => entity.bookGuid)
       : [roleResult.bookGuid];
@@ -41,12 +55,15 @@ export async function GET(request: NextRequest) {
         bookAccountGuids,
         includeCompleted,
         refresh,
+        order,
       });
     }));
     if (!familyScope) return NextResponse.json(results[0]);
     const verifiedDates = results.map(result => result.verifiedThrough).filter((date): date is string => !!date);
     return NextResponse.json({
-      actions: results.flatMap(result => result.actions).sort(compareFinancialActions),
+      actions: results
+        .flatMap(result => result.actions)
+        .sort((left, right) => compareFinancialActions(left, right, order)),
       summary: results.reduce((summary, result) => ({
         new: summary.new + result.summary.new,
         resolved: summary.resolved + result.summary.resolved,
@@ -55,6 +72,7 @@ export async function GET(request: NextRequest) {
       }), { new: 0, resolved: 0, automated: 0, overdue: 0 }),
       verifiedThrough: verifiedDates.length === results.length ? verifiedDates.sort()[0] : null,
       generatedAt: new Date().toISOString(),
+      order,
       scope: 'family',
     });
   } catch (error) {
