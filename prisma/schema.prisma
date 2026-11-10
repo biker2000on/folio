@@ -835,6 +835,10 @@ model gnucash_web_ai_config {
   api_key_encrypted String?   @db.Text
   model             String?   @db.VarChar(100)
   enabled           Boolean   @default(false)
+  /// AI privacy mode: off | summary | full (see src/lib/ai-privacy)
+  privacy_mode      String    @default("summary") @db.VarChar(20)
+  /// User marked the endpoint as running on their own hardware (needed for full)
+  self_hosted       Boolean   @default(false)
   created_at        DateTime  @default(now())
   updated_at        DateTime  @default(now())
 

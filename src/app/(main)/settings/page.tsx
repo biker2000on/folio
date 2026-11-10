@@ -18,6 +18,7 @@ import { ReportSchedulesSection } from '@/components/settings/ReportSchedulesSec
 import { ShareLinksSection } from '@/components/settings/ShareLinksSection';
 import { CalendarFeedSection } from '@/components/settings/CalendarFeedSection';
 import { EmailIngestSection } from '@/components/settings/EmailIngestSection';
+import { AiSettingsSection } from '@/components/settings/AiSettingsSection';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { SettingsLinkRow } from '@/components/ui/SettingsLinkRow';
 import { Field, FieldGrid, INPUT, RecordCard } from '@/components/ui/form';
@@ -1449,6 +1450,7 @@ export default function SettingsPage() {
       {/* ── Integrations & Automation ─────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className={SETTINGS_GROUP_HEADING}>Integrations &amp; Automation</h2>
+        <AiSettingsSection />
         <EmailIngestSection />
         <ApiTokensSection />
         <WebhooksSection />

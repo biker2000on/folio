@@ -7,14 +7,21 @@
  * Returns { narrative } or null on ANY failure — callers treat the narrative
  * as strictly optional and never let it block digest generation.
  *
+ * Privacy: the call goes through the AI privacy gate. In summary mode the
+ * payload is summarised (names to tokens, money rounded, month as YYYY-MM) and
+ * the reply is unmasked. In every mode each currency figure and percentage in
+ * the reply must match a number in the payload actually sent; otherwise the
+ * narrative is dropped (null), like any other failure.
+ *
  * Pure pieces (payload/message builders, reply validation) are exported for
  * unit tests in src/lib/__tests__/digest-narrative.test.ts.
  */
 
 import type { MonthlyDigest } from '@/lib/digest';
 import type { AiChatMessage } from '@/lib/ai-query/client';
-import { chatComplete } from '@/lib/ai-query/client';
-import type { AiConfig } from '@/lib/receipt-extraction';
+import { roundMoney, SUMMARY_PROMPT_NOTE } from '@/lib/ai-privacy/privacy';
+import { collectKnownNumbers, unsupportedFigures, warnUnsupported } from '@/lib/ai-privacy/number-check';
+import type { GatedAi } from '@/lib/ai-privacy/session';
 
 /** Chat function the narrative generator runs on (injectable for tests). */
 export type NarrativeAiClient = (messages: AiChatMessage[]) => Promise<string>;
@@ -100,17 +107,79 @@ export function buildNarrativePayload(digest: MonthlyDigest): NarrativePayload {
     };
 }
 
-/** Build the chat messages for the narrative call. Pure. */
-export function buildNarrativeMessages(digest: MonthlyDigest): AiChatMessage[] {
+/** The privacy helpers summarisation needs (a GatedAi satisfies it). */
+export type NarrativePrivacy = Pick<GatedAi, 'level' | 'token' | 'unmask'>;
+
+/**
+ * The payload as a summary-mode model may see it: category and subscription
+ * names as tokens, money rounded, percentages and counts kept, the month as
+ * YYYY-MM and the budget unnamed. Pure.
+ *
+ * Listed field by field, no spread: a new NarrativePayload field fails the
+ * type check here until someone decides how to summarise it.
+ */
+export function summarizeNarrativePayload(
+    p: NarrativePayload,
+    month: string,
+    token: NarrativePrivacy['token'],
+): NarrativePayload {
+    const r = roundMoney;
+    return {
+        month,
+        currency: p.currency,
+        netWorth: { end: r(p.netWorth.end), change: r(p.netWorth.change), changePercent: p.netWorth.changePercent },
+        cashFlow: { income: r(p.cashFlow.income), expenses: r(p.cashFlow.expenses), savingsRate: p.cashFlow.savingsRate },
+        topCategories: p.topCategories.map(c => ({
+            name: token('Account', c.name),
+            amount: r(c.amount),
+            delta: r(c.delta),
+            percent: c.percent,
+        })),
+        subscriptions: {
+            new: p.subscriptions.new.map(s => ({ label: token('Merchant', s.label), amount: r(s.amount) })),
+            changed: p.subscriptions.changed.map(s => ({
+                label: token('Merchant', s.label),
+                amount: r(s.amount),
+                changePercent: s.changePercent,
+            })),
+            stopped: p.subscriptions.stopped.map(s => ({ label: token('Merchant', s.label), amount: r(s.amount) })),
+        },
+        budget: p.budget
+            ? {
+                name: 'your budget',
+                overCount: p.budget.overCount,
+                underCount: p.budget.underCount,
+                totalBudgeted: r(p.budget.totalBudgeted),
+                totalActual: r(p.budget.totalActual),
+            }
+            : null,
+    };
+}
+
+/** The payload the model gets at a given privacy level. Pure. */
+export function narrativePayloadFor(digest: MonthlyDigest, privacy?: NarrativePrivacy): NarrativePayload {
     const payload = buildNarrativePayload(digest);
+    return privacy && privacy.level === 'summary'
+        ? summarizeNarrativePayload(payload, digest.month, privacy.token)
+        : payload;
+}
+
+/** Build the chat messages for the narrative call. Pure. */
+export function buildNarrativeMessages(
+    digest: MonthlyDigest,
+    payload: NarrativePayload = buildNarrativePayload(digest),
+    summary = false,
+): AiChatMessage[] {
     const system = [
         'You write a short narrative summary of a personal monthly financial digest.',
         'Rules:',
         '- 3 to 5 sentences, plain prose, no markdown, no bullet points.',
         '- Strictly factual: every number must come from the provided data. Do not invent figures.',
+        '- Quote amounts and percentages exactly as given; do not add, subtract or derive new ones (the reply is checked).',
         '- No advice, no hype, no exclamation marks, no second-person coaching ("you should...").',
         '- Mention the net worth change, the cash-flow picture, and the most notable category or subscription movement.',
         `- Amounts are in ${payload.currency}.`,
+        ...(summary ? ['', SUMMARY_PROMPT_NOTE] : []),
     ].join('\n');
 
     return [
@@ -139,22 +208,58 @@ export function sanitizeNarrative(raw: string): string | null {
 /**
  * Generate the digest narrative via the provided chat client.
  * Returns { narrative } on success, null on ANY failure (bad reply, network
- * error, timeout) — never throws.
+ * error, timeout, a figure the payload does not back) — never throws.
+ *
+ * @param privacy the gated session's helpers; omitted means full detail.
  */
 export async function generateDigestNarrative(
     digestData: MonthlyDigest,
-    aiClient: NarrativeAiClient
+    aiClient: NarrativeAiClient,
+    privacy?: NarrativePrivacy,
 ): Promise<{ narrative: string } | null> {
     try {
-        const reply = await aiClient(buildNarrativeMessages(digestData));
+        const summary = privacy?.level === 'summary';
+        const payload = narrativePayloadFor(digestData, privacy);
+        const reply = await aiClient(buildNarrativeMessages(digestData, payload, summary));
         const narrative = sanitizeNarrative(reply);
-        return narrative ? { narrative } : null;
+        if (!narrative) return null;
+        // Known numbers are exactly what was sent (after summary rounding).
+        const bad = unsupportedFigures(narrative, collectKnownNumbers(payload));
+        if (bad.length > 0) {
+            warnUnsupported('digest-narrative', bad);
+            return null;
+        }
+        return { narrative: privacy ? privacy.unmask(narrative) : narrative };
     } catch {
         return null;
     }
 }
 
-/** Adapt an AiConfig into the NarrativeAiClient shape (bounded timeout). */
-export function narrativeClientFor(config: AiConfig): NarrativeAiClient {
-    return messages => chatComplete(config, messages, { maxTokens: 500, timeoutMs: 20000 });
+/**
+ * The digest narrative through the AI privacy gate. Null when AI is not
+ * configured, the user's mode is off, or anything fails. Never throws.
+ */
+export async function generateGatedDigestNarrative(
+    digestData: MonthlyDigest,
+    opts: { userId: number; bookGuid: string },
+): Promise<{ narrative: string } | null> {
+    try {
+        const { openGatedAi } = await import('@/lib/ai-privacy/gate');
+        const { getAccountGuidsForBook } = await import('@/lib/book-scope');
+        const gate = await openGatedAi({
+            userId: opts.userId,
+            path: 'digest-narrative',
+            accountGuids: () => getAccountGuidsForBook(opts.bookGuid),
+        });
+        if (!gate.ok) return null;
+        const { ai } = gate;
+        return await generateDigestNarrative(
+            digestData,
+            messages => ai.chat(messages, { maxTokens: 500, timeoutMs: 20000 }),
+            ai,
+        );
+    } catch (error) {
+        console.error('Digest: narrative generation failed:', error);
+        return null;
+    }
 }

@@ -12,9 +12,11 @@ import type { Job } from 'bullmq';
  * Suggested schedule: daily at 06:00 UTC (setScheduleGeneric('daily-insights', '06:00', ...)).
  *
  * The optional AI polish inside runInsights resolves its provider from the
- * first user's AI config (falling back to env vars); when nothing is
- * configured the deterministic template text is used — the job never fails
- * because AI is absent.
+ * first user's AI config (falling back to env vars) and goes through the AI
+ * privacy gate with that user's privacy mode (off skips it, summary sends
+ * placeholders and rounded amounts); when nothing is configured or the mode is
+ * off, the deterministic template text is used — the job never fails because
+ * AI is absent.
  */
 export async function handleRunInsights(job: Job): Promise<void> {
   const prisma = (await import('@/lib/prisma')).default;

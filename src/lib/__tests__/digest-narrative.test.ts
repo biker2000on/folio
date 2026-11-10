@@ -4,7 +4,9 @@
  * Pure — the AI client is injected as a fake.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { newNames } from '../ai-privacy/privacy';
+import { createGatedAi } from '../ai-privacy/session';
 import {
     buildNarrativePayload,
     buildNarrativeMessages,
@@ -200,5 +202,57 @@ describe('generateDigestNarrative', () => {
             throw new Error('boom');
         }) as unknown as Parameters<typeof generateDigestNarrative>[1];
         await expect(generateDigestNarrative(mkDigest(), bad)).resolves.toBeNull();
+    });
+});
+
+/* ------------------------------------------------------------------ */
+/* Privacy: summary payload and code-verified numbers                  */
+/* ------------------------------------------------------------------ */
+
+describe('generateDigestNarrative privacy', () => {
+    const summaryPrivacy = () =>
+        createGatedAi({
+            path: 'digest-narrative',
+            level: 'summary',
+            config: { provider: 'custom', base_url: 'http://x', api_key: null, model: 'm', enabled: true },
+            names: newNames(),
+            chatFn: async () => '',
+        });
+
+    it('drops a narrative that brings a figure the payload does not back', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        expect(await generateDigestNarrative(mkDigest(), async () => 'Net worth rose by $2,345.67, and you saved $3,000.')).toBeNull();
+        expect(await generateDigestNarrative(mkDigest(), async () => 'The savings rate was 45%.')).toBeNull();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('digest-narrative'));
+        warn.mockRestore();
+    });
+
+    it('accepts rounded figures and ignores plain counts and years', async () => {
+        const result = await generateDigestNarrative(mkDigest(), async () =>
+            'In 2026, net worth rose about $2,300 to roughly $123k, a 1.9% gain across 2 budget lines.'
+        );
+        expect(result).not.toBeNull();
+    });
+
+    it('sends tokens and rounded money in summary mode, and unmasks the reply', async () => {
+        const sent: string[] = [];
+        const result = await generateDigestNarrative(
+            mkDigest(),
+            async messages => {
+                sent.push(messages[1].content);
+                const p = JSON.parse(messages[1].content);
+                return `${p.topCategories[0].name} cost $${p.topCategories[0].amount}; net worth ended near $${p.netWorth.end.toLocaleString('en-US')}.`;
+            },
+            summaryPrivacy(),
+        );
+        const payload = JSON.parse(sent[0]);
+        expect(payload.month).toBe('2026-07');
+        expect(payload.netWorth).toEqual({ end: 123500, change: 2300, changePercent: 1.94 });
+        expect(payload.topCategories[0].name).toBe('⟨A1⟩');
+        expect(payload.subscriptions.new[0].label).toBe('⟨M1⟩');
+        expect(payload.budget.name).toBe('your budget');
+        expect(sent[0]).not.toContain('Category 1');
+        expect(sent[0]).not.toContain('123456.78');
+        expect(result).toEqual({ narrative: 'Category 1 cost $100; net worth ended near $123,500.' });
     });
 });

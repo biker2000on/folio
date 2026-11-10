@@ -1,21 +1,26 @@
 /**
  * "Ask your books" — natural-language query endpoint.
  *
- * GET  -> { configured: boolean }  (whether an AI provider is available)
- * POST -> { question, history? } -> { answer, sql, rows, links, error? }
+ * GET  -> { configured, off, privacy }  (whether questions can be asked, and at which privacy level)
+ * POST -> { question, history? } -> { answer, sql, rows, links, privacy, error? }
  *
- * Pipeline: generate SQL (AI) → validate (guardrails) → execute (READ ONLY
- * transaction, book-scoped via $1) → compose answer (AI). This route never
- * writes to the GnuCash tables; the guardrails reject anything that is not a
- * single SELECT, and execution runs inside SET TRANSACTION READ ONLY.
+ * Pipeline: generate SQL (AI) → unmask name tokens → validate (guardrails) →
+ * execute (READ ONLY transaction, book-scoped via $1) → compose answer (AI).
+ * This route never writes to the GnuCash tables; the guardrails reject anything
+ * that is not a single SELECT, and execution runs inside SET TRANSACTION READ
+ * ONLY.
+ *
+ * Both AI calls go through the privacy gate (src/lib/ai-privacy/gate.ts). Off:
+ * no model call. Summary: the model sees tokens for names and rounded rows; any
+ * token in its SQL is swapped for the quoted real name BEFORE the guardrails
+ * run, so validation always sees the statement that will execute.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
-import { getAiConfig } from '@/lib/ai-config';
+import { aiAvailability, openGatedAi } from '@/lib/ai-privacy/gate';
 import { getAccountGuidsForBook, getBookAccountGuids } from '@/lib/book-scope';
 import { getAuthorizedFamilyGraph } from '@/lib/family-office/service';
-import { isAiConfigured } from '@/lib/ai-query/client';
 import { generateQuery, type ChatTurn } from '@/lib/ai-query/generate';
 import { validateGeneratedSql } from '@/lib/ai-query/guardrails';
 import { executeReadOnlyQuery, type QueryRow } from '@/lib/ai-query/execute';
@@ -23,6 +28,8 @@ import { composeAnswer } from '@/lib/ai-query/answer';
 
 const NOT_CONFIGURED_MESSAGE =
     'AI is not configured. Set up a provider under Settings → AI first.';
+const OFF_MESSAGE =
+    'AI analysis is off. Choose a privacy mode other than Off under Settings → AI to ask questions.';
 
 export async function GET() {
     try {
@@ -30,11 +37,11 @@ export async function GET() {
         if (roleResult instanceof NextResponse) return roleResult;
         const { user } = roleResult;
 
-        const config = await getAiConfig(user.id);
-        return NextResponse.json({ configured: isAiConfigured(config) });
+        const { configured, level } = await aiAvailability(user.id);
+        return NextResponse.json({ configured: configured && level !== 'off', off: configured && level === 'off', privacy: level });
     } catch (error) {
         console.error('AI query config check error:', error);
-        return NextResponse.json({ configured: false });
+        return NextResponse.json({ configured: false, off: false, privacy: 'off' });
     }
 }
 
@@ -67,11 +74,6 @@ export async function POST(request: NextRequest) {
         }
         const history = sanitizeHistory(body?.history);
 
-        const config = await getAiConfig(user.id);
-        if (!isAiConfigured(config)) {
-            return NextResponse.json({ error: NOT_CONFIGURED_MESSAGE }, { status: 400 });
-        }
-
         const familyScope = body?.scope === 'family';
         const accountGuids = familyScope
             ? (await Promise.all(
@@ -83,19 +85,29 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'The active book has no accounts to query.' }, { status: 400 });
         }
 
+        const gate = await openGatedAi({ userId: user.id, path: 'ask', accountGuids });
+        if (!gate.ok) {
+            return NextResponse.json(
+                { error: gate.reason === 'off' ? OFF_MESSAGE : NOT_CONFIGURED_MESSAGE },
+                { status: 400 },
+            );
+        }
+        const { ai } = gate;
+
         // Generate SQL; give the model one shot at fixing a guardrail rejection.
-        let generated = await generateQuery(question, history, config);
-        let check = validateGeneratedSql(generated.sql);
+        // Tokens become quoted real names BEFORE validation, never after.
+        let generated = await generateQuery(question, history, ai);
+        let check = validateGeneratedSql(ai.unmaskSql(generated.sql));
         if (!check.ok) {
-            generated = await generateQuery(question, history, config, {
+            generated = await generateQuery(question, history, ai, {
                 rejectedSql: generated.sql,
                 reason: check.reason!,
             });
-            check = validateGeneratedSql(generated.sql);
+            check = validateGeneratedSql(ai.unmaskSql(generated.sql));
         }
         if (!check.ok || !check.sql) {
             return NextResponse.json(
-                { error: `Could not generate a safe query: ${check.reason}`, sql: generated.sql },
+                { error: `Could not generate a safe query: ${check.reason}`, sql: ai.unmaskSql(generated.sql) },
                 { status: 422 },
             );
         }
@@ -114,14 +126,14 @@ export async function POST(request: NextRequest) {
 
         const { answer, links } = await composeAnswer({
             question,
-            sql,
+            sql: ai.level === 'summary' ? generated.sql : sql,
             plan: generated.plan,
             rows,
-            config,
+            ai,
             accountGuids,
         });
 
-        return NextResponse.json({ answer, sql, rows, links, scope: familyScope ? 'family' : 'book' });
+        return NextResponse.json({ answer, sql, rows, links, scope: familyScope ? 'family' : 'book', privacy: ai.level });
     } catch (error) {
         console.error('AI query error:', error);
         const message = error instanceof Error && error.name === 'TimeoutError'
