@@ -212,6 +212,14 @@ describe('scrubMcpResult', () => {
         ph(names, 'Account', CATEGORY);
         expect(scrubMcpText(`"${CATEGORY}" matches 2 accounts`, names)).toBe('"⟨A1⟩" matches 2 accounts');
     });
+
+    it('keeps a currency code even when an account shares its name, but still tokenizes a held security', () => {
+        const names = newNames();
+        ph(names, 'Account', 'USD'); // e.g. an "Assets:Cash:USD" account
+        const held = ph(names, 'Holding', 'VTI');
+        expect(scrubMcpResult({ commodity: 'USD' }, names)).toEqual({ commodity: 'USD' });
+        expect(scrubMcpResult({ commodity: 'VTI' }, names)).toEqual({ commodity: held });
+    });
 });
 
 describe('unmaskToolArgs', () => {

@@ -86,8 +86,10 @@ function scrubString(key: string, s: string, names: Names): string | number {
     if (t.length === 1) return s;
     if (ACCOUNT_PATH_KEYS.has(key)) return tokenizeAccountPath(names, t);
     // A currency code in a commodity column is not a holding; the book's own
-    // securities are in the names map already and stay tokens.
-    if (KIND_BY_KEY[key] === 'Holding' && CURRENCY_CODE.test(t) && !names.fwd.has(t.toLowerCase())) return s;
+    // securities are in the names map already (as Holding tokens) and stay tokens.
+    // An ACCOUNT that happens to be named "USD" must not turn the currency into
+    // that account's token, so only a Holding token counts here.
+    if (KIND_BY_KEY[key] === 'Holding' && CURRENCY_CODE.test(t) && !names.fwd.get(t.toLowerCase())?.startsWith('⟨H')) return s;
     return ph(names, KIND_BY_KEY[key] ?? textColumnKind(key), t);
 }
 
