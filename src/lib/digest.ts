@@ -24,6 +24,8 @@ import { detectRecurringCharges, type RecurringSeries, type Cadence } from '@/li
 import { loadForecastData } from '@/lib/forecast-data';
 import type { ForecastEvent } from '@/lib/forecast';
 import { formatCurrency } from '@/lib/format';
+import { tipsSummaryLines, type DigestTip, type DigestTipCheck } from '@/lib/digest-tips';
+import { resolveDigestTips, type DigestTipsSection } from '@/lib/digest-tips-store';
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -128,6 +130,13 @@ export interface MonthlyDigest {
     subscriptions: DigestSubscriptions;
     upcomingBills: DigestBill[];
     budget: DigestBudget | null;
+    /**
+     * Up to 3 tips for the next month, issued once from a completed month and
+     * stored (digest-tips.ts). Absent when none were issued for this month.
+     */
+    tips?: DigestTip[];
+    /** The prior month's tips graded against this month. Absent when none exist. */
+    tipChecks?: DigestTipCheck[];
     /**
      * Optional AI-written 3-5 sentence narrative. Present only when an AI
      * provider is configured AND the call succeeded — strictly best-effort.
@@ -477,6 +486,8 @@ export function digestToSummaryText(digest: MonthlyDigest): string {
         );
     }
 
+    lines.push(...tipsSummaryLines(digest));
+
     return lines.join('\n');
 }
 
@@ -699,6 +710,26 @@ export async function generateDigest(
         console.error('Digest: budget section failed:', error);
     }
 
+    // Monthly tips (best-effort): issue next month's from a completed month,
+    // and grade last month's against this one.
+    let tipsSection: DigestTipsSection = {};
+    try {
+        tipsSection = await resolveDigestTips({
+            bookGuid,
+            bookAccountGuids,
+            bounds,
+            baseCurrency,
+            currency,
+            income: round2(currentIE.totalIncome),
+            expenses: round2(currentIE.totalExpenses),
+            budget,
+            subscriptions,
+            expenseByAccount: currentIE.expenseByAccount,
+        });
+    } catch (error) {
+        console.error('Digest: tips failed:', error);
+    }
+
     const digest: MonthlyDigest = {
         month: bounds.month,
         monthLabel: bounds.label,
@@ -718,6 +749,7 @@ export async function generateDigest(
         subscriptions,
         upcomingBills,
         budget,
+        ...tipsSection,
     };
 
     // Optional AI narrative — strictly best-effort, never blocks the digest.
