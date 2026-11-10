@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { CollapsibleConfigSection } from '@/components/ui/CollapsibleConfigSection';
+import { Abbr } from '@/components/ui/Abbr';
 import { useToast } from '@/contexts/ToastContext';
 import { extractErrorMessage } from '@/lib/api-error';
 
@@ -27,6 +28,63 @@ const EXPIRY_OPTIONS: Array<{ key: string; label: string; days: number | null }>
 function formatDate(iso: string | null): string {
     if (!iso) return '—';
     return new Date(iso).toLocaleDateString();
+}
+
+// The origin never changes after load; reading it through useSyncExternalStore
+// keeps the server render (no window) and the first client render consistent.
+const noopSubscribe = () => () => {};
+const getOrigin = () => window.location.origin;
+const getServerOrigin = () => 'https://<your-folio-host>';
+
+/**
+ * "Use with Claude (MCP)": the endpoint and a copyable `claude mcp add`
+ * command. The command carries a gcw_... placeholder, never a real token.
+ */
+function McpHint({ onCopyFailed }: { onCopyFailed: () => void }) {
+    const origin = useSyncExternalStore(noopSubscribe, getOrigin, getServerOrigin);
+    const endpoint = `${origin}/api/mcp`;
+    const command = `claude mcp add --transport http folio ${endpoint} --header "Authorization: Bearer gcw_..."`;
+    const [copied, setCopied] = useState(false);
+
+    const copy = async () => {
+        try {
+            await navigator.clipboard.writeText(command);
+            setCopied(true);
+        } catch {
+            onCopyFailed();
+        }
+    };
+
+    return (
+        <div className="space-y-2 rounded-lg border border-border p-4">
+            <h4 className="text-sm font-medium text-foreground">
+                Use with Claude (<Abbr term="MCP" />)
+            </h4>
+            <p className="text-sm text-foreground-muted">
+                Claude Code, Claude Desktop, and other MCP clients can query this book through the
+                read-only endpoint <code className="px-1 py-0.5 bg-surface-hover rounded-sm text-xs font-mono">{endpoint}</code>.
+                Create a read-only token, then run this with your token in place of <code className="px-1 py-0.5 bg-surface-hover rounded-sm text-xs font-mono">gcw_...</code>:
+            </p>
+            <div className="flex items-start gap-2">
+                <code className="flex-1 bg-background border border-border rounded-md px-3 py-2 text-xs font-mono text-foreground break-all select-all">
+                    {command}
+                </code>
+                <button
+                    type="button"
+                    onClick={() => void copy()}
+                    className="px-3 py-2 text-sm rounded-lg border border-border text-foreground hover:bg-surface-hover shrink-0"
+                >
+                    {copied ? 'Copied' : 'Copy'}
+                </button>
+            </div>
+            <p className="text-xs text-foreground-muted">
+                Tool results, including account names and amounts, go to the model your client uses.{' '}
+                <Link href="/docs/admin/api-automation-and-webhooks" className="text-primary hover:underline">
+                    Claude Desktop setup and security notes
+                </Link>
+            </p>
+        </div>
+    );
 }
 
 export function ApiTokensSection() {
@@ -196,6 +254,8 @@ export function ApiTokensSection() {
                 >
                     Create token
                 </button>
+
+                <McpHint onCopyFailed={() => error('Copy failed — select and copy manually')} />
 
                 {showCreate && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-black/50 p-4" role="dialog" aria-modal="true">

@@ -27,6 +27,13 @@ curl -H "Authorization: Bearer gcw_0123456789abcdef0123456789abcdef" \
 > handlers (see the middleware note in the repo). Session cookies are not
 > needed when a token is supplied.
 
+### Using a token with Claude (MCP)
+
+A read-only token also unlocks Folio's read-only MCP server at `/api/mcp`, so
+Claude Code, Claude Desktop, and other MCP clients can query the token's book in
+plain language. See [Use Folio from Claude (MCP)](mcp.md) for setup, the tool
+list, and security notes.
+
 ### Role semantics
 
 Roles per book are `readonly` < `edit` < `admin`.

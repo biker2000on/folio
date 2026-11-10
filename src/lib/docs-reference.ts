@@ -322,6 +322,17 @@ export const ADMIN_PAGES: ReferenceDocPage[] = [
           'Test report schedules, calendar feeds, email ingest, and outbound webhooks after upgrades.',
         ],
       },
+      {
+        heading: 'Query your books from Claude (MCP)',
+        paragraphs: [
+          'The read-only Model Context Protocol endpoint at /api/mcp lets Claude Code, Claude Desktop, and other MCP clients answer questions about one book: account balances, transaction search, spending by category, net worth, budget status, recurring charges, investments, scheduled transactions, and Action Center items. It authenticates a gcw_ token only and rejects session cookies.',
+        ],
+        bullets: [
+          'Create a dedicated read-only token while the book you want to expose is active; the token reaches that book and nothing else.',
+          'Claude Code: claude mcp add --transport http folio https://<host>/api/mcp --header "Authorization: Bearer gcw_...". Clients that only speak stdio use the dependency-free bridge in scripts/folio-mcp.mjs with FOLIO_URL and FOLIO_TOKEN set in its environment.',
+          'Tool results are sent to the model provider your client uses. Revoke the token in Settings when you stop using the client.',
+        ],
+      },
     ],
   },
 ];
