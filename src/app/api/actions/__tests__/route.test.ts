@@ -7,12 +7,14 @@ const {
   listFinancialActionsMock,
   updateFinancialActionsMock,
   getAuthorizedFamilyGraphMock,
+  getPreferenceMock,
 } = vi.hoisted(() => ({
   requireRoleMock: vi.fn(),
   getAccountGuidsForBookMock: vi.fn(),
   listFinancialActionsMock: vi.fn(),
   updateFinancialActionsMock: vi.fn(),
   getAuthorizedFamilyGraphMock: vi.fn(),
+  getPreferenceMock: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({ requireRole: requireRoleMock }));
@@ -26,6 +28,9 @@ vi.mock('@/lib/financial-actions/store', () => ({
 }));
 vi.mock('@/lib/family-office/service', () => ({
   getAuthorizedFamilyGraph: getAuthorizedFamilyGraphMock,
+}));
+vi.mock('@/lib/user-preferences', () => ({
+  getPreference: getPreferenceMock,
 }));
 
 import { GET, PATCH } from '../route';
@@ -50,6 +55,7 @@ beforeEach(() => {
   });
   getAccountGuidsForBookMock.mockResolvedValue(['account-a']);
   updateFinancialActionsMock.mockResolvedValue(1);
+  getPreferenceMock.mockImplementation(async (_userId: number, _key: string, fallback: unknown) => fallback);
 });
 
 describe('GET /api/actions', () => {
@@ -124,6 +130,32 @@ describe('GET /api/actions', () => {
 
     expect(response.status).toBe(200);
     expect(body.actions.map(action => action.id)).toEqual(['critical', 'warning']);
+  });
+
+  it('orders by the saved preference, and an explicit order param wins', async () => {
+    listFinancialActionsMock.mockResolvedValue({
+      actions: [],
+      summary: { new: 0, resolved: 0, automated: 0, overdue: 0 },
+      verifiedThrough: null,
+      generatedAt: '2026-07-23T00:00:00.000Z',
+    });
+
+    await GET(new NextRequest('http://localhost/api/actions'));
+    expect(getPreferenceMock).toHaveBeenCalledWith(7, 'action_center.order', 'weighted');
+    expect(listFinancialActionsMock).toHaveBeenLastCalledWith(expect.objectContaining({ order: 'weighted' }));
+
+    getPreferenceMock.mockResolvedValueOnce('ladder');
+    await GET(new NextRequest('http://localhost/api/actions'));
+    expect(listFinancialActionsMock).toHaveBeenLastCalledWith(expect.objectContaining({ order: 'ladder' }));
+
+    getPreferenceMock.mockResolvedValueOnce('garbage');
+    await GET(new NextRequest('http://localhost/api/actions'));
+    expect(listFinancialActionsMock).toHaveBeenLastCalledWith(expect.objectContaining({ order: 'weighted' }));
+
+    getPreferenceMock.mockClear();
+    await GET(new NextRequest('http://localhost/api/actions?order=ladder'));
+    expect(getPreferenceMock).not.toHaveBeenCalled();
+    expect(listFinancialActionsMock).toHaveBeenLastCalledWith(expect.objectContaining({ order: 'ladder' }));
   });
 });
 

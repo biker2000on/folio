@@ -16,8 +16,63 @@ import type {
 import { subscribeToActionCenterUpdates } from '@/lib/financial-actions/client-events';
 import { usePopoutHost } from '@/lib/popout/usePopout';
 import { Tip } from '@/components/ui/Tooltip';
+import { Segmented } from '@/components/investments/ui';
+import {
+  ACTION_ORDER_PREFERENCE_KEY,
+  LADDER_STEPS,
+  LADDER_STEP_LABEL,
+  isLadderRanked,
+  priorityLadderOf,
+  type ActionOrderMode,
+  type LadderStep,
+} from '@/lib/financial-actions/priority-ladder';
 
 const RESOLUTION_POPOUT_PREF = 'gnucash-web:action-center:popout-resolution';
+
+const ORDER_OPTIONS = [
+  {
+    value: 'weighted' as const,
+    label: 'Best value',
+    hint: 'Rank by estimated value, urgency, and confidence.',
+  },
+  {
+    value: 'ladder' as const,
+    label: 'Priority steps',
+    hint: 'Group by priority step. Contributions you cannot fund yet are held back.',
+  },
+];
+
+type LaneGroup = { key: string; label: string | null; actions: FinancialAction[] };
+
+/**
+ * Decide-lane groups for the Priority steps order: one group per step that
+ * has opportunities, then every other decision in its usual order. The
+ * server already sorted ladder items by step, then fundable value.
+ */
+function laneGroups(actions: FinancialAction[], order: ActionOrderMode): LaneGroup[] {
+  if (order !== 'ladder' || !actions.some(isLadderRanked)) {
+    return [{ key: 'all', label: null, actions }];
+  }
+  const byStep = new Map<LadderStep, FinancialAction[]>();
+  const others: FinancialAction[] = [];
+  for (const action of actions) {
+    if (!isLadderRanked(action)) {
+      others.push(action);
+      continue;
+    }
+    const step = priorityLadderOf(action).step;
+    byStep.set(step, [...(byStep.get(step) ?? []), action]);
+  }
+  const groups: LaneGroup[] = LADDER_STEPS
+    .filter(step => byStep.has(step))
+    .map(step => ({
+      key: `step-${step}`,
+      label: `Step ${step}: ${LADDER_STEP_LABEL[step]}`,
+      actions: byStep.get(step)!,
+    }));
+  if (others.length > 0) groups.push({ key: 'other', label: 'Other decisions', actions: others });
+  return groups;
+}
 
 const LANES: Array<{
   id: FinancialActionLane;
@@ -153,6 +208,7 @@ function ActionCard({
   onExplain,
   onOpenOperation,
   bookName,
+  order = 'weighted',
 }: {
   action: FinancialAction;
   selected: boolean;
@@ -162,7 +218,10 @@ function ActionCard({
   onExplain: () => void;
   onOpenOperation: (href: string) => void;
   bookName?: string;
+  order?: ActionOrderMode;
 }) {
+  const ladder = order === 'ladder' && isLadderRanked(action) ? priorityLadderOf(action) : null;
+  const gateMessage = ladder?.gate.message ?? null;
   const touchStart = useRef<number | null>(null);
   const primary = action.operations.find(operation => operation.primary && operation.href)
     ?? action.operations.find(operation => operation.href);
@@ -239,6 +298,9 @@ function ActionCard({
           >
             {action.summary}
           </p>
+          {gateMessage && (
+            <p className="mt-2 text-xs font-medium leading-5 text-warning">{gateMessage}</p>
+          )}
 
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
             {amount && (
@@ -251,7 +313,12 @@ function ActionCard({
                 Cash required {formatCurrency(cashRequired)}
               </span>
             )}
-            {action.score && (
+            {ladder?.gate.status === 'capped' && ladder.gate.fundable !== null && (
+              <span className="font-mono text-foreground-secondary">
+                Fundable {formatCurrency(ladder.gate.fundable)}
+              </span>
+            )}
+            {action.score && !ladder && (
               <span className="font-mono text-foreground-secondary">Score {Math.round(action.score.total)}</span>
             )}
             {action.dueDate && (
@@ -326,6 +393,10 @@ export default function FinancialActionCenterPage() {
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [actionView, setActionView] = useState<ActionView>('pending');
   const [trace, setTrace] = useState<CalculationTrace | null>(null);
+  // The order the user picked this visit. Until then the server applies the
+  // saved preference and reports it back in `data.order`.
+  const [chosenOrder, setChosenOrder] = useState<ActionOrderMode | null>(null);
+  const order: ActionOrderMode = chosenOrder ?? data?.order ?? 'weighted';
   // Two-window triage: route action resolution surfaces into a separate
   // pop-out window so the lanes keep driving on this monitor.
   const [popOutResolution, setPopOutResolution] = useState(false);
@@ -395,8 +466,9 @@ export default function FinancialActionCenterPage() {
     }
     try {
       const includeCompleted = actionView !== 'pending';
+      const orderParam = chosenOrder ? `&order=${chosenOrder}` : '';
       const response = await fetch(
-        `/api/actions?includeCompleted=${includeCompleted}&refresh=${refresh}&scope=${familyScope ? 'family' : 'book'}`,
+        `/api/actions?includeCompleted=${includeCompleted}&refresh=${refresh}&scope=${familyScope ? 'family' : 'book'}${orderParam}`,
         { cache: 'no-store' },
       );
       if (!response.ok) throw new Error('The Action Center could not be loaded.');
@@ -419,11 +491,25 @@ export default function FinancialActionCenterPage() {
     } finally {
       if (!background) setLoading(false);
     }
-  }, [actionView, applyActionData, familyScope]);
+  }, [actionView, applyActionData, chosenOrder, familyScope]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const changeOrder = useCallback((next: ActionOrderMode) => {
+    if (next === order) return;
+    setChosenOrder(next);
+    void fetch('/api/user/preferences', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preferences: { [ACTION_ORDER_PREFERENCE_KEY]: next } }),
+    }).then(response => {
+      if (!response.ok) throw new Error('save failed');
+    }).catch(() => {
+      toast.error('The order applies now but could not be saved for next time.');
+    });
+  }, [order, toast]);
 
   useEffect(() => subscribeToActionCenterUpdates(() => {
     void load(false, true);
@@ -651,6 +737,15 @@ export default function FinancialActionCenterPage() {
           >
             Export evidence
           </Link>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-foreground-secondary">Order</span>
+            <Segmented
+              ariaLabel="Order"
+              options={ORDER_OPTIONS}
+              value={order}
+              onChange={changeOrder}
+            />
+          </div>
           <label className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-foreground-secondary">
             <span>View</span>
             <select
@@ -768,12 +863,16 @@ export default function FinancialActionCenterPage() {
         <div className="grid gap-5 xl:grid-cols-3">
           {LANES.map(lane => {
             const actions = data.actions.filter(action => action.lane === lane.id);
+            const groups = laneGroups(actions, order);
+            const description = lane.id === 'decide' && order === 'ladder'
+              ? 'Work through the priority steps in order'
+              : lane.description;
             return (
               <section key={lane.id} className={`rounded-lg border-t-2 ${lane.accent}`}>
                 <div className="flex items-end justify-between px-1 py-3">
                   <div>
                     <h2 className="text-base font-semibold text-foreground">{lane.label}</h2>
-                    <p className="text-xs text-foreground-muted">{lane.description}</p>
+                    <p className="text-xs text-foreground-muted">{description}</p>
                   </div>
                   <span className="font-mono text-sm text-foreground-secondary">{actions.length}</span>
                 </div>
@@ -783,22 +882,32 @@ export default function FinancialActionCenterPage() {
                       Nothing in this lane.
                     </div>
                   )}
-                  {actions.map(action => {
-                    const index = visibleActions.findIndex(item => item.id === action.id);
-                    return (
-                      <ActionCard
-                        key={action.id}
-                        action={action}
-                        selected={selected.has(action.id)}
-                        focused={index === focusedIndex}
-                        onSelect={() => toggleSelected(action.id)}
-                        onState={(state, until) => void updateState([action.id], state, until)}
-                        onExplain={() => setTrace(action.trace)}
-                        onOpenOperation={href => void openOperation(action, href)}
-                        bookName={familyScope ? bookNameByGuid.get(action.bookGuid) : undefined}
-                      />
-                    );
-                  })}
+                  {groups.map(group => (
+                    <div key={group.key} className="space-y-3">
+                      {group.label && (
+                        <h3 className="px-1 pt-1 text-xs font-semibold text-foreground-secondary">
+                          {group.label}
+                        </h3>
+                      )}
+                      {group.actions.map(action => {
+                        const index = visibleActions.findIndex(item => item.id === action.id);
+                        return (
+                          <ActionCard
+                            key={action.id}
+                            action={action}
+                            selected={selected.has(action.id)}
+                            focused={index === focusedIndex}
+                            onSelect={() => toggleSelected(action.id)}
+                            onState={(state, until) => void updateState([action.id], state, until)}
+                            onExplain={() => setTrace(action.trace)}
+                            onOpenOperation={href => void openOperation(action, href)}
+                            bookName={familyScope ? bookNameByGuid.get(action.bookGuid) : undefined}
+                            order={order}
+                          />
+                        );
+                      })}
+                    </div>
+                  ))}
                 </div>
               </section>
             );
