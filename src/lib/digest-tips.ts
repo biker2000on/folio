@@ -27,6 +27,10 @@ export const MAX_TIPS = 3;
 export const MIN_HISTORY_MONTHS = 3; // tunable: complete prior months needed before "typical" means anything
 export const PACE_ABOVE_TYPICAL_RATIO = 1.2; // tunable: pace fires when spending >= typical x this...
 export const PACE_MIN_EXCESS = 100; // tunable: ...and is at least this many units above typical
+// tunable: the "spent more than income" tip needs income of at least this share of a typical month's
+// spending (this month's when there is no history). Below it, income is likely recorded elsewhere
+// (another book, an untracked account) and "keep spending under $37" would be nonsense.
+export const PACE_MIN_INCOME_SHARE = 0.5;
 export const BUDGET_MIN_OVER = 10; // tunable: budget fires when over by >= max(this,
 export const BUDGET_MIN_OVER_PCT = 0.05; // tunable: ...this share of the budgeted amount)
 export const SPIKE_RATIO = 1.5; // tunable: spike fires when a category >= typical x this...
@@ -298,7 +302,8 @@ export function generateTips(input: TipGenerationInput): DigestTip[] {
     const income = round2(input.income);
     const pastMonths = input.expenseHistory.filter(v => v > 0);
     const typicalSpend = pastMonths.length >= MIN_HISTORY_MONTHS ? round2(median(pastMonths)) : 0;
-    if (income > 0 && expenses > income) {
+    const incomeLooksComplete = income >= (typicalSpend > 0 ? typicalSpend : expenses) * PACE_MIN_INCOME_SHARE;
+    if (income > 0 && expenses > income && incomeLooksComplete) {
         const cap = Math.floor(income);
         candidates.push({
             ...base,

@@ -184,6 +184,16 @@ describe('generateTips', () => {
         expect(generateTips(mkInput({ income: 0, expenses: 3000 }))).toEqual([]);
     });
 
+    it('pace: ignores the income rule when recorded income looks incomplete', () => {
+        // $37 of income against a ~$3,025 typical month: income lives elsewhere, so no
+        // "keep spending under $37" tip; the spend is not far enough above typical either.
+        expect(generateTips(mkInput({ income: 37.76, expenses: 3100 }))).toEqual([]);
+        // Still falls through to the typical-month rule when spending ran well above it.
+        const tip = tipOf({ income: 37.76, expenses: 3700 }, 'pace');
+        expect(tip.amount).toBe(3025);
+        expect(tip.why).toContain('above a typical month');
+    });
+
     it('budget: keeps an over-budget line under its budget', () => {
         const tip = tipOf({ budgetRows: [mkBudgetRow()] }, 'budget');
         expect(tip.key).toBe('acct-groceries');
