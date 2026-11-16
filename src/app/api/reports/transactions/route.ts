@@ -8,7 +8,11 @@ import { requireRole } from '@/lib/auth';
  * descendants) over a date range, book-scoped. Powers the account links in
  * report drill-down tables (net-worth attribution, breakdowns, etc.).
  *
- * GET /api/reports/transactions?accountGuid=...&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ * GET /api/reports/transactions?accountGuid=...&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD[&opening=1]
+ *
+ * `opening=1` adds `openingBalance` (the tree's balance before startDate), for
+ * drilling into a point-in-time balance rather than a period's activity.
+ * `descendants=0` limits it to the account itself, without sub-accounts.
  */
 export async function GET(request: NextRequest) {
     try {
@@ -36,6 +40,8 @@ export async function GET(request: NextRequest) {
             startDate,
             endDate,
             bookAccountGuids,
+            includeOpening: searchParams.get('opening') === '1',
+            accountOnly: searchParams.get('descendants') === '0',
         });
 
         return NextResponse.json(result);

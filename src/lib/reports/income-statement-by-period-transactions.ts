@@ -13,6 +13,18 @@ export interface PeriodTransactionInput {
    * holdings, equity).
    */
   accountTypes?: string[];
+  /**
+   * Also return the balance of the account tree before `startDate`, so a
+   * point-in-time figure (a balance-sheet line) can be shown as opening
+   * balance + the listed activity = the figure.
+   */
+  includeOpening?: boolean;
+  /**
+   * Only the account itself, not its sub-accounts. For reports that list
+   * every account as its own line (the cash flow statement) rather than a
+   * tree whose parent rows include their children.
+   */
+  accountOnly?: boolean;
 }
 
 export interface PeriodTransactionRow {
@@ -28,6 +40,8 @@ export interface PeriodTransactionRow {
 export interface PeriodTransactionResponse {
   transactions: PeriodTransactionRow[];
   total: number;
+  /** Balance before startDate, in the same sign as `total`. Present only when asked for. */
+  openingBalance?: number;
 }
 
 interface AccountRow {
@@ -60,7 +74,7 @@ function toIsoDate(d: Date): string {
 export async function fetchPeriodTransactions(
   input: PeriodTransactionInput,
 ): Promise<PeriodTransactionResponse> {
-  const { accountGuid, startDate, endDate, bookAccountGuids, accountTypes } = input;
+  const { accountGuid, startDate, endDate, bookAccountGuids, accountTypes, includeOpening, accountOnly } = input;
 
   // 1. Fetch the candidate accounts (same book scope as the report itself). The
   //    caller may restrict to specific account types; otherwise any type is
@@ -93,7 +107,7 @@ export async function fetchPeriodTransactions(
     byParent.set(a.parent_guid, list);
   }
   const inScope: AccountRow[] = [root];
-  collectDescendants(byParent, root.guid, inScope);
+  if (!accountOnly) collectDescendants(byParent, root.guid, inScope);
   const inScopeGuids = inScope.map(a => a.guid);
   const nameByGuid = new Map(inScope.map(a => [a.guid, a.name]));
 
@@ -150,5 +164,18 @@ export async function fetchPeriodTransactions(
   });
 
   const total = rows.reduce((s, r) => s + r.amount, 0);
-  return { transactions: rows, total };
+  if (!includeOpening) return { transactions: rows, total };
+
+  const opening = await prisma.$queryRaw<Array<{ sum: number | null }>>`
+    SELECT SUM(s.quantity_num::numeric / NULLIF(s.quantity_denom, 0)::numeric)::float8 AS sum
+    FROM splits s
+    JOIN transactions t ON t.guid = s.tx_guid
+    WHERE s.account_guid = ANY(${inScopeGuids}::text[])
+      AND t.post_date < ${rangeStart}
+  `;
+  return {
+    transactions: rows,
+    total,
+    openingBalance: flip * Number(opening[0]?.sum ?? 0),
+  };
 }

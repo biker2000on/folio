@@ -5,6 +5,7 @@ import { ReportViewer } from '@/components/reports/ReportViewer';
 import { ReportTable } from '@/components/reports/ReportTable';
 import { ReportFilters, ReportData } from '@/lib/reports/types';
 import { formatCurrency } from '@/lib/format';
+import { periodRange, previousPeriodRange } from '@/lib/reports/drill-ranges';
 
 function getDefaultFilters(): ReportFilters {
     const now = new Date();
@@ -67,6 +68,12 @@ export default function IncomeStatementPage() {
                     <ReportTable
                         sections={reportData.sections}
                         showComparison={filters.compareToPrevious}
+                        drilldown={({ column }) => {
+                            if (!filters.startDate || !filters.endDate) return null;
+                            return column === 'previous'
+                                ? previousPeriodRange(filters.startDate, filters.endDate)
+                                : periodRange(filters.startDate, filters.endDate);
+                        }}
                     />
 
                     {/* Net Income Summary */}

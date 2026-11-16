@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ReportViewer } from '@/components/reports/ReportViewer';
 import { ReportTable } from '@/components/reports/ReportTable';
 import { ReportFilters, ReportData } from '@/lib/reports/types';
+import { periodRange } from '@/lib/reports/drill-ranges';
 import { formatCurrency } from '@/lib/format';
 
 function getDefaultFilters(): ReportFilters {
@@ -68,6 +69,11 @@ export default function CashFlowPage() {
                     <ReportTable
                         sections={reportData.sections}
                         showComparison={filters.compareToPrevious}
+                        // Every account is its own line here (no tree), so the
+                        // popup lists the account's own splits, not its children's.
+                        drilldown={({ column }) => (column === 'current' && filters.startDate && filters.endDate
+                            ? { ...periodRange(filters.startDate, filters.endDate), accountOnly: true }
+                            : null)}
                     />
 
                     {/* Net Cash Change Summary */}

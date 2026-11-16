@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ReportViewer } from '@/components/reports/ReportViewer';
 import { ReportTable } from '@/components/reports/ReportTable';
 import { ReportFilters, ReportData } from '@/lib/reports/types';
+import { balanceRange, dayBefore } from '@/lib/reports/drill-ranges';
 
 function getDefaultFilters(): ReportFilters {
     const now = new Date();
@@ -65,6 +66,14 @@ export default function AccountSummaryPage() {
                 <ReportTable
                     sections={reportData.sections}
                     showComparison={true}
+                    // Balance is the closing balance at the end date; the
+                    // comparison column is the opening balance before the start.
+                    drilldown={({ column }) => {
+                        if (!filters.startDate || !filters.endDate) return null;
+                        return column === 'current'
+                            ? balanceRange(filters.endDate, filters.startDate ?? undefined)
+                            : balanceRange(dayBefore(filters.startDate));
+                    }}
                 />
             ) : reportData && reportData.sections.length === 0 ? (
                 <div className="p-8 text-center text-foreground-secondary">

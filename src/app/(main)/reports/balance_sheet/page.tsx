@@ -5,6 +5,7 @@ import { ReportViewer } from '@/components/reports/ReportViewer';
 import { ReportTable } from '@/components/reports/ReportTable';
 import { ValuationCoverageNotice } from '@/components/reports/ValuationCoverageNotice';
 import { ReportFilters, ReportData } from '@/lib/reports/types';
+import { balanceRange } from '@/lib/reports/drill-ranges';
 
 function getDefaultFilters(): ReportFilters {
     const now = new Date();
@@ -66,6 +67,11 @@ export default function BalanceSheetPage() {
                     <ReportTable
                         sections={reportData.sections}
                         showComparison={filters.compareToPrevious}
+                        // A balance at the end date: the opening balance before the
+                        // report's start, plus the activity listed in between.
+                        drilldown={({ column }) => (column === 'current' && filters.endDate
+                            ? balanceRange(filters.endDate, filters.startDate ?? undefined)
+                            : null)}
                     />
                 </>
             )}

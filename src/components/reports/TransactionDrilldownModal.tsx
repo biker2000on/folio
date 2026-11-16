@@ -5,6 +5,8 @@ import { createPortal } from 'react-dom';
 import { ErrorLiveRegion } from '@/components/a11y/LiveRegion';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/format';
+import { MONEY_DISPLAY_EPSILON } from '@/lib/tolerances';
+import { displaySignFor, type DrillMode } from '@/lib/reports/drill-ranges';
 
 export interface DrilldownTarget {
     accountGuid: string;
@@ -12,6 +14,18 @@ export interface DrilldownTarget {
     periodLabel: string;
     startDate: string;
     endDate: string;
+    /**
+     * `balance` lists an opening balance plus the activity, for a figure that
+     * is a balance at a date. Defaults to `period` (activity only).
+     */
+    mode?: DrillMode;
+    /**
+     * The number that was clicked. The popup shows its rows in the same sign
+     * and says so when what it lists does not add up to it.
+     */
+    reportAmount?: number;
+    /** Only the account itself, not its sub-accounts. */
+    accountOnly?: boolean;
 }
 
 interface DrilldownRow {
@@ -27,6 +41,7 @@ interface DrilldownRow {
 interface DrilldownResponse {
     transactions: DrilldownRow[];
     total: number;
+    openingBalance?: number;
 }
 
 type SortKey = keyof Pick<DrilldownRow, 'date' | 'description' | 'accountName' | 'amount'>;
@@ -73,6 +88,8 @@ export function TransactionDrilldownModal({ target, onClose, endpoint = '/api/re
                 startDate: target.startDate,
                 endDate: target.endDate,
             });
+            if (target.mode === 'balance') params.set('opening', '1');
+            if (target.accountOnly) params.set('descendants', '0');
 
             fetch(`${endpoint}?${params}`)
                 .then(async res => {
@@ -106,8 +123,29 @@ export function TransactionDrilldownModal({ target, onClose, endpoint = '/api/re
         return () => window.removeEventListener('keydown', onKey);
     }, [target, onClose]);
 
+    // Rows read in the report's sign (a liability shown positive on the
+    // balance sheet lists positive here too).
+    const balanceMode = target?.mode === 'balance';
+    const sign = data
+        ? displaySignFor(data.total + (balanceMode ? data.openingBalance ?? 0 : 0), target?.reportAmount)
+        : 1;
+    const shown = useMemo(() => {
+        if (!data) return null;
+        return {
+            transactions: sign === 1
+                ? data.transactions
+                : data.transactions.map(row => ({ ...row, amount: -row.amount })),
+            total: sign * data.total,
+            opening: balanceMode ? sign * (data.openingBalance ?? 0) : null,
+        };
+    }, [data, sign, balanceMode]);
+    const listedFigure = shown ? shown.total + (shown.opening ?? 0) : null;
+    const mismatch = shown && target?.reportAmount !== undefined && listedFigure !== null
+        && Math.abs(listedFigure - target.reportAmount) >= MONEY_DISPLAY_EPSILON * 2;
+
     const visibleRows = useMemo(() => {
-        if (!data) return [];
+        if (!shown) return [];
+        const data = shown;
 
         const filter = globalFilter.trim().toLowerCase();
         const filteredRows = filter
@@ -139,7 +177,7 @@ export function TransactionDrilldownModal({ target, onClose, endpoint = '/api/re
                 sensitivity: 'base',
             }) * multiplier;
         });
-    }, [data, globalFilter, sortState]);
+    }, [shown, globalFilter, sortState]);
 
     const handleSort = (key: SortKey) => {
         setSortState(prev => {
@@ -170,10 +208,22 @@ export function TransactionDrilldownModal({ target, onClose, endpoint = '/api/re
             >
                 {/* Header */}
                 <div className="flex items-start justify-between gap-4 px-4 py-3 border-b border-border">
-                    <div>
-                        <div className="text-base font-semibold text-foreground">{target.accountName}</div>
+                    <div className="min-w-0">
+                        <Link
+                            href={`/accounts/${target.accountGuid}`}
+                            className="text-base font-semibold text-foreground hover:text-primary hover:underline"
+                        >
+                            {target.accountName}
+                        </Link>
                         <div className="text-xs text-foreground-muted">{target.periodLabel}</div>
                     </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                    <Link
+                        href={`/accounts/${target.accountGuid}`}
+                        className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground-secondary transition-colors hover:border-primary/50 hover:text-primary"
+                    >
+                        Open ledger
+                    </Link>
                     <button
                         ref={closeBtnRef}
                         onClick={onClose}
@@ -182,10 +232,11 @@ export function TransactionDrilldownModal({ target, onClose, endpoint = '/api/re
                     >
                         ✕
                     </button>
+                    </div>
                 </div>
 
                 {/* Sub-header: count + total */}
-                {data && (
+                {data && shown && (
                     <div className="px-4 py-2 bg-background-tertiary/30 border-b border-border">
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <span className="text-xs text-foreground-secondary">
@@ -193,14 +244,30 @@ export function TransactionDrilldownModal({ target, onClose, endpoint = '/api/re
                                 {visibleRows.length !== data.transactions.length && ` of ${data.transactions.length}`}{' '}
                                 {data.transactions.length === 1 ? 'transaction' : 'transactions'}
                             </span>
-                            <span
-                                className={`font-mono font-medium text-xs ${
-                                    data.total >= 0 ? 'text-foreground-secondary' : 'text-negative'
-                                }`}
-                            >
-                                {formatCurrency(data.total, 'USD')}
-                            </span>
+                            {shown.opening !== null ? (
+                                <span className="flex flex-wrap items-baseline gap-x-3 text-xs text-foreground-muted">
+                                    <span>Opening <span className="font-mono text-foreground-secondary">{formatCurrency(shown.opening, 'USD')}</span></span>
+                                    <span>Activity <span className="font-mono text-foreground-secondary">{formatCurrency(shown.total, 'USD')}</span></span>
+                                    <span>Balance <span className={`font-mono font-medium ${listedFigure! < 0 ? 'text-negative' : 'text-foreground'}`}>{formatCurrency(listedFigure!, 'USD')}</span></span>
+                                </span>
+                            ) : (
+                                <span
+                                    className={`font-mono font-medium text-xs ${
+                                        shown.total >= 0 ? 'text-foreground-secondary' : 'text-negative'
+                                    }`}
+                                >
+                                    {formatCurrency(shown.total, 'USD')}
+                                </span>
+                            )}
                         </div>
+                        {mismatch && (
+                            <p className="mt-1.5 text-xs text-warning">
+                                The report shows {formatCurrency(target.reportAmount!, 'USD')}; the transactions listed here
+                                {shown.opening !== null ? ', with the opening balance,' : ''} come to{' '}
+                                {formatCurrency(listedFigure!, 'USD')}. The report figure can include currency conversion,
+                                cash-basis allocation or hidden accounts that this list leaves out.
+                            </p>
+                        )}
                         <input
                             type="search"
                             value={globalFilter}
@@ -349,7 +416,11 @@ function DrilldownRows({
                                 </Link>
                             </td>
                             <td className="px-3 py-2 text-foreground">{r.description || <span className="text-foreground-muted">—</span>}</td>
-                            <td className="px-3 py-2 text-foreground-secondary">{r.accountName}</td>
+                            <td className="px-3 py-2 text-foreground-secondary">
+                                <Link href={`/accounts/${r.accountGuid}`} className="hover:text-primary hover:underline">
+                                    {r.accountName}
+                                </Link>
+                            </td>
                             <td className={`px-4 py-2 text-right font-mono ${r.amount >= 0 ? 'text-foreground' : 'text-negative'}`}>
                                 {formatCurrency(r.amount, 'USD')}
                             </td>

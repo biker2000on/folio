@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ReportViewer } from '@/components/reports/ReportViewer';
 import { ReportTable } from '@/components/reports/ReportTable';
 import { ReportFilters, ReportData } from '@/lib/reports/types';
+import { balanceRange, dayBefore, periodRange } from '@/lib/reports/drill-ranges';
 
 function getDefaultFilters(): ReportFilters {
     const now = new Date();
@@ -63,6 +64,14 @@ export default function EquityStatementPage() {
                 <ReportTable
                     sections={reportData.sections}
                     showComparison={filters.compareToPrevious}
+                    // Each section means something different: a balance before
+                    // the period, the changes during it, a balance at its end.
+                    drilldown={({ section, column }) => {
+                        if (column !== 'current' || !filters.startDate || !filters.endDate) return null;
+                        if (section.title === 'Opening Equity') return balanceRange(dayBefore(filters.startDate));
+                        if (section.title === 'Closing Equity') return balanceRange(filters.endDate, filters.startDate ?? undefined);
+                        return periodRange(filters.startDate, filters.endDate);
+                    }}
                 />
             )}
         </ReportViewer>

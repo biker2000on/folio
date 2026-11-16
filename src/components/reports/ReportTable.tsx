@@ -1,24 +1,91 @@
 'use client';
 
+import Link from 'next/link';
 import { LineItem, ReportSection } from '@/lib/reports/types';
 import { formatCurrency } from '@/lib/format';
+import { MONEY_DISPLAY_EPSILON } from '@/lib/tolerances';
+import { isAccountGuid, type DrillRange } from '@/lib/reports/drill-ranges';
+import { TransactionDrilldownModal, type DrilldownTarget } from './TransactionDrilldownModal';
 import { useState } from 'react';
+
+/** Which figure in a row was clicked. */
+export type DrillColumn = 'current' | 'previous';
+
+/**
+ * Decides what a figure covers. Return null for a figure that is not one
+ * account's transactions (a synthetic row, a column with no range).
+ */
+export type ResolveDrill = (context: {
+    section: ReportSection;
+    item: LineItem;
+    column: DrillColumn;
+}) => DrillRange | null;
 
 interface ReportTableProps {
     sections: ReportSection[];
     showComparison?: boolean;
     currencyCode?: string;
+    /**
+     * Turns the table into a way in: account names link to their ledger and
+     * every figure opens the transactions behind it. Omit for reports whose
+     * rows are not accounts.
+     */
+    drilldown?: ResolveDrill;
 }
 
 interface LineItemRowProps {
     item: LineItem;
+    section: ReportSection;
     showComparison?: boolean;
     currencyCode: string;
     expanded: Set<string>;
     toggleExpanded: (guid: string) => void;
+    drilldown?: ResolveDrill;
+    onDrill: (target: DrilldownTarget) => void;
 }
 
-function LineItemRow({ item, showComparison, currencyCode, expanded, toggleExpanded }: LineItemRowProps) {
+/** A figure that opens its transactions when the report allows it, else plain text. */
+function Figure({
+    amount,
+    currencyCode,
+    className,
+    range,
+    item,
+    onDrill,
+}: {
+    amount: number;
+    currencyCode: string;
+    className: string;
+    range: DrillRange | null;
+    item: LineItem;
+    onDrill: (target: DrilldownTarget) => void;
+}) {
+    const text = formatCurrency(amount, currencyCode);
+    if (!range || Math.abs(amount) < MONEY_DISPLAY_EPSILON) return <span className={className}>{text}</span>;
+    return (
+        <button
+            type="button"
+            onClick={() => onDrill({
+                accountGuid: item.guid,
+                accountName: item.name,
+                periodLabel: range.label,
+                startDate: range.startDate,
+                endDate: range.endDate,
+                mode: range.mode,
+                reportAmount: amount,
+                accountOnly: range.accountOnly,
+            })}
+            aria-label={`Show transactions behind ${item.name}, ${text}, ${range.label}`}
+            className={`${className} rounded-sm decoration-dotted underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none`}
+        >
+            {text}
+        </button>
+    );
+}
+
+function LineItemRow({ item, section, showComparison, currencyCode, expanded, toggleExpanded, drilldown, onDrill }: LineItemRowProps) {
+    const account = Boolean(drilldown) && isAccountGuid(item.guid);
+    const rangeFor = (column: DrillColumn) => (account && drilldown ? drilldown({ section, item, column }) : null);
     const hasChildren = item.children && item.children.length > 0;
     const isExpanded = expanded.has(item.guid);
     const indent = (item.depth || 0) * 24;
@@ -52,23 +119,43 @@ function LineItemRow({ item, showComparison, currencyCode, expanded, toggleExpan
                             </button>
                         )}
                         {!hasChildren && <span className="w-7" />}
-                        <span className={item.isTotal || item.isSubtotal ? 'text-foreground' : 'text-foreground-secondary'}>
-                            {item.name}
-                        </span>
+                        {account ? (
+                            <Link
+                                href={`/accounts/${item.guid}`}
+                                className={`${item.isTotal || item.isSubtotal ? 'text-foreground' : 'text-foreground-secondary'} hover:text-primary hover:underline`}
+                            >
+                                {item.name}
+                            </Link>
+                        ) : (
+                            <span className={item.isTotal || item.isSubtotal ? 'text-foreground' : 'text-foreground-secondary'}>
+                                {item.name}
+                            </span>
+                        )}
                     </div>
                 </td>
                 <td className="py-2 px-4 text-right font-mono">
-                    <span className={item.amount >= 0 ? 'text-foreground' : 'text-negative'}>
-                        {formatCurrency(item.amount, currencyCode)}
-                    </span>
+                    <Figure
+                        amount={item.amount}
+                        currencyCode={currencyCode}
+                        className={item.amount >= 0 ? 'text-foreground' : 'text-negative'}
+                        range={rangeFor('current')}
+                        item={item}
+                        onDrill={onDrill}
+                    />
                 </td>
                 {showComparison && (
                     <>
                         <td className="py-2 px-4 text-right font-mono text-foreground-secondary">
-                            {item.previousAmount !== undefined
-                                ? formatCurrency(item.previousAmount, currencyCode)
-                                : '-'
-                            }
+                            {item.previousAmount !== undefined ? (
+                                <Figure
+                                    amount={item.previousAmount}
+                                    currencyCode={currencyCode}
+                                    className="text-foreground-secondary"
+                                    range={rangeFor('previous')}
+                                    item={item}
+                                    onDrill={onDrill}
+                                />
+                            ) : '-'}
                         </td>
                         <td className="py-2 px-4 text-right font-mono">
                             {change !== undefined ? (
@@ -89,17 +176,21 @@ function LineItemRow({ item, showComparison, currencyCode, expanded, toggleExpan
                 <LineItemRow
                     key={child.guid}
                     item={child}
+                    section={section}
                     showComparison={showComparison}
                     currencyCode={currencyCode}
                     expanded={expanded}
                     toggleExpanded={toggleExpanded}
+                    drilldown={drilldown}
+                    onDrill={onDrill}
                 />
             ))}
         </>
     );
 }
 
-export function ReportTable({ sections, showComparison, currencyCode = 'USD' }: ReportTableProps) {
+export function ReportTable({ sections, showComparison, currencyCode = 'USD', drilldown }: ReportTableProps) {
+    const [drill, setDrill] = useState<DrilldownTarget | null>(null);
     const [expanded, setExpanded] = useState<Set<string>>(() => {
         // Start with all top-level items expanded
         const initial = new Set<string>();
@@ -223,10 +314,13 @@ export function ReportTable({ sections, showComparison, currencyCode = 'USD' }: 
                                 <LineItemRow
                                     key={item.guid}
                                     item={item}
+                                    section={section}
                                     showComparison={showComparison}
                                     currencyCode={currencyCode}
                                     expanded={expanded}
                                     toggleExpanded={toggleExpanded}
+                                    drilldown={drilldown}
+                                    onDrill={setDrill}
                                 />
                             ))}
                         </tbody>
@@ -261,6 +355,9 @@ export function ReportTable({ sections, showComparison, currencyCode = 'USD' }: 
                     </table>
                 </div>
             ))}
+            {drilldown && (
+                <TransactionDrilldownModal target={drill} onClose={() => setDrill(null)} />
+            )}
         </div>
     );
 }
