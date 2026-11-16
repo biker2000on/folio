@@ -21,6 +21,7 @@ import {
     WidgetId,
     WidgetLayoutItem,
     DEFAULT_LAYOUT,
+    offerLaterDefaults,
     WIDTH_ORDER,
     WIDTH_CLASSES,
     isCustomWidgetId,
@@ -43,6 +44,14 @@ import SubscriptionsWidget from '@/components/dashboard/widgets/SubscriptionsWid
 import DataHealthWidget from '@/components/dashboard/widgets/DataHealthWidget';
 import InsightsWidget from '@/components/dashboard/widgets/InsightsWidget';
 import CustomWidget from '@/components/dashboard/widgets/CustomWidget';
+import {
+    AccountsWidget,
+    AttentionWidget,
+    FreshnessLine,
+    LoadFailed,
+    RecentActivityWidget,
+    UpcomingWidget,
+} from '@/components/dashboard/widgets/OverviewWidgets';
 import { product } from '@/lib/product';
 import { Tip } from '@/components/ui/Tooltip';
 
@@ -60,6 +69,7 @@ interface KPIData {
     topExpenseCategory: string;
     topExpenseAmount: number;
     investmentValue: number;
+    prior?: { totalIncome: number; totalExpenses: number; startDate: string; endDate: string } | null;
     traces?: Partial<Record<
         'netWorth' | 'totalIncome' | 'totalExpenses' | 'savingsRate' | 'investmentValue',
         { traceId: string; href: string }
@@ -334,6 +344,13 @@ function DashboardContent() {
     const [sankeyLoading, setSankeyLoading] = useState(true);
     const [cashFlowLoading, setCashFlowLoading] = useState(true);
 
+    // A failed request is not an empty book: each feed remembers that it
+    // failed so its card can say so and offer a retry.
+    const [failed, setFailed] = useState({ kpis: false, netWorth: false, sankey: false, cashFlow: false });
+    const markFailed = useCallback((key: 'kpis' | 'netWorth' | 'sankey' | 'cashFlow', value: boolean) => {
+        setFailed(current => (current[key] === value ? current : { ...current, [key]: value }));
+    }, []);
+
     // Layout states
     const [layout, setLayout] = useState<WidgetLayoutItem[]>(DEFAULT_LAYOUT);
     const [layoutLoaded, setLayoutLoaded] = useState(false);
@@ -355,64 +372,62 @@ function DashboardContent() {
         setKpiLoading(true);
         try {
             const res = await fetch(`/api/dashboard/kpis${qs}`);
-            if (res.ok) {
-                const data = await res.json();
-                setKpiData(data);
-            }
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            setKpiData(await res.json());
+            markFailed('kpis', false);
         } catch {
-            // silently fail, show empty state
+            setKpiData(null);
+            markFailed('kpis', true);
         } finally {
             setKpiLoading(false);
         }
-    }, []);
+    }, [markFailed]);
 
     // Fetch net worth
     const fetchNetWorth = useCallback(async (qs: string) => {
         setNetWorthLoading(true);
         try {
             const res = await fetch(`/api/dashboard/net-worth${qs}`);
-            if (res.ok) {
-                const data = await res.json();
-                setNetWorthData(data.timeSeries || []);
-            }
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            setNetWorthData(data.timeSeries || []);
+            markFailed('netWorth', false);
         } catch {
-            // silently fail
+            markFailed('netWorth', true);
         } finally {
             setNetWorthLoading(false);
         }
-    }, []);
+    }, [markFailed]);
 
     // Fetch sankey
     const fetchSankey = useCallback(async (qs: string) => {
         setSankeyLoading(true);
         try {
             const res = await fetch(`/api/dashboard/sankey${qs}`);
-            if (res.ok) {
-                const data = await res.json();
-                setSankeyData(data);
-            }
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            setSankeyData(await res.json());
+            markFailed('sankey', false);
         } catch {
-            // silently fail
+            markFailed('sankey', true);
         } finally {
             setSankeyLoading(false);
         }
-    }, []);
+    }, [markFailed]);
 
     // Fetch cash flow
     const fetchCashFlow = useCallback(async (qs: string) => {
         setCashFlowLoading(true);
         try {
             const res = await fetch(`/api/dashboard/cash-flow-chart${qs}`);
-            if (res.ok) {
-                const data = await res.json();
-                setCashFlowData(cashFlowResponseToData(data));
-            }
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            setCashFlowData(cashFlowResponseToData(await res.json()));
+            markFailed('cashFlow', false);
         } catch {
-            // silently fail
+            markFailed('cashFlow', true);
         } finally {
             setCashFlowLoading(false);
         }
-    }, []);
+    }, [markFailed]);
 
     // Fetch tax account guids (tag-driven; not period dependent)
     useEffect(() => {
@@ -468,7 +483,30 @@ function DashboardContent() {
                     pickDashboardPref(prefs, keys.layoutKey, keys.legacyLayoutKey),
                     defs.map(d => d.id)
                 );
-                if (stored) setLayout(stored);
+                if (stored) {
+                    // Widgets added to the default since this layout was saved
+                    // are offered to it once; removing one afterwards sticks.
+                    const offeredKey = `${keys.layoutKey}.offered`;
+                    const offeredBefore = Array.isArray(prefs?.[offeredKey])
+                        ? (prefs![offeredKey] as unknown[]).filter((id): id is string => typeof id === 'string')
+                        : [];
+                    const offer = offerLaterDefaults(stored, offeredBefore);
+                    setLayout(offer.layout);
+                    if (offer.offered.length !== offeredBefore.length) {
+                        fetch('/api/user/preferences', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                preferences: {
+                                    [offeredKey]: offer.offered,
+                                    ...(offer.layout !== stored ? { [keys.layoutKey]: offer.layout } : {}),
+                                },
+                            }),
+                        }).catch(() => {
+                            // non-fatal: the widgets are offered again next load
+                        });
+                    }
+                }
             } catch {
                 // keep default layout
             } finally {
@@ -654,7 +692,24 @@ function DashboardContent() {
         }
         switch (id) {
             case 'kpis':
-                return <KPIGrid data={kpiData} loading={kpiLoading} periodLabel={periodLabel} asOfLabel={asOfLabel} />;
+                return (
+                    <KPIGrid
+                        data={kpiData}
+                        loading={kpiLoading}
+                        periodLabel={periodLabel}
+                        asOfLabel={asOfLabel}
+                        error={failed.kpis}
+                        onRetry={() => fetchKpis(queryString)}
+                    />
+                );
+            case 'attention':
+                return <AttentionWidget />;
+            case 'upcoming':
+                return <UpcomingWidget />;
+            case 'accounts':
+                return <AccountsWidget netWorth={kpiData?.netWorth ?? null} investments={kpiData?.investmentValue ?? null} />;
+            case 'recent':
+                return <RecentActivityWidget />;
             case 'goals':
                 return <GoalsWidget />;
             case 'budget-pacing':
@@ -670,6 +725,9 @@ function DashboardContent() {
             case 'insights':
                 return <InsightsWidget />;
             case 'netWorth':
+                if (failed.netWorth && !netWorthLoading) {
+                    return <LoadFailed title="Net Worth Over Time" onRetry={() => fetchNetWorth(queryString)} />;
+                }
                 return (
                     <ExpandableChart
                         title="Net Worth Over Time"
@@ -681,6 +739,9 @@ function DashboardContent() {
                     </ExpandableChart>
                 );
             case 'sankey':
+                if (failed.sankey && !sankeyLoading) {
+                    return <LoadFailed title="Income flow" onRetry={() => fetchSankey(queryString)} />;
+                }
                 return (
                     <ExpandableChart
                         title="Income Flow"
@@ -725,6 +786,9 @@ function DashboardContent() {
                     </ExpandableChart>
                 );
             case 'cashFlow':
+                if (failed.cashFlow && !cashFlowLoading) {
+                    return <LoadFailed title="Cash flow by month" onRetry={() => fetchCashFlow(queryString)} />;
+                }
                 return (
                     <ExpandableChart
                         title="Cash Flow"
@@ -747,6 +811,9 @@ function DashboardContent() {
                     <p className="text-sm text-foreground-secondary mt-1">
                         {rangeLabel}
                     </p>
+                    <div className="mt-1.5">
+                        <FreshnessLine />
+                    </div>
                 </div>
                 <div className="flex items-center gap-2">
                     <DateRangePicker

@@ -5,6 +5,7 @@ import { cacheGet, cacheSet } from '@/lib/cache';
 import { requireRole } from '@/lib/auth';
 import { FinancialSummaryService } from '@/lib/services/financial-summary.service';
 import prisma from '@/lib/prisma';
+import { getBaseCurrencyForBook } from '@/lib/currency';
 import {
     createCalculationTrace,
     persistCalculationTraces,
@@ -32,7 +33,7 @@ export async function GET(request: NextRequest) {
         // Bump on EVERY payload-shape change: a stale entry that lacks a
         // disclosure field reads as "nothing to disclose" for the whole TTL.
         // v3 added coverage; v4 added changeCoverage.
-        const cacheKey = `cache:${bookGuid}:user:${roleResult.user.id}:kpis:v4:${dateRange}`;
+        const cacheKey = `cache:${bookGuid}:user:${roleResult.user.id}:kpis:v5:${dateRange}`;
 
         // Check cache first
         const cached = await cacheGet(cacheKey);
@@ -244,8 +245,40 @@ export async function GET(request: NextRequest) {
         };
         await persistCalculationTraces(roleResult.user.id, bookGuid, Object.values(traces));
 
+        // Same period a year earlier, cut off at today so a year-to-date range
+        // is compared with the same days of last year, not the whole year.
+        let prior: { totalIncome: number; totalExpenses: number; startDate: string; endDate: string } | null = null;
+        try {
+            const cutoff = endDate.getTime() > now.getTime() ? now : endDate;
+            const priorStart = new Date(startDate);
+            priorStart.setUTCFullYear(priorStart.getUTCFullYear() - 1);
+            const priorEnd = new Date(cutoff);
+            priorEnd.setUTCFullYear(priorEnd.getUTCFullYear() - 1);
+            if (priorEnd > priorStart) {
+                const priorSummary = await FinancialSummaryService.computeIncomeExpenses(
+                    bookAccountGuids,
+                    priorStart,
+                    priorEnd,
+                    await getBaseCurrencyForBook(bookGuid),
+                );
+                if (priorSummary.totalIncome !== 0 || priorSummary.totalExpenses !== 0) {
+                    prior = {
+                        totalIncome: Math.round(priorSummary.totalIncome * 100) / 100,
+                        totalExpenses: Math.round(priorSummary.totalExpenses * 100) / 100,
+                        startDate: priorStart.toISOString().slice(0, 10),
+                        endDate: priorEnd.toISOString().slice(0, 10),
+                    };
+                }
+            }
+        } catch (error) {
+            // A comparison is context, not the figure: without it the card
+            // falls back to its plain line.
+            console.warn('KPI prior-period comparison unavailable:', error);
+        }
+
         const responseData = {
             ...summary,
+            prior,
             traces: Object.fromEntries(
                 Object.entries(traces).map(([key, trace]) => [
                     key,

@@ -56,6 +56,8 @@ interface KPIData {
     /** Optional so a payload cached before coverage existed still renders. */
     coverage?: ValuationCoverage;
     changeCoverage?: ValuationChangeCoverage;
+    /** The same period a year earlier; absent on older cached payloads, null when the book has nothing there. */
+    prior?: { totalIncome: number; totalExpenses: number; startDate: string; endDate: string } | null;
     traces?: Partial<Record<'netWorth' | 'totalIncome' | 'totalExpenses' | 'savingsRate' | 'investmentValue', TraceReference>>;
 }
 
@@ -66,6 +68,28 @@ interface KPIGridProps {
     periodLabel?: string;
     /** Date the balances are valued at, shown beside them ("16 Nov"). */
     asOfLabel?: string;
+    /** The request failed (as opposed to returning nothing). */
+    error?: boolean;
+    onRetry?: () => void;
+}
+
+/**
+ * A figure against the same period last year: the change, then what it was.
+ * `upIsGood` colours the change for income; spending is stated without a
+ * verdict, since more spending is not in itself a loss.
+ */
+function YearOverYear({ current, prior, upIsGood }: { current: number; prior: number; upIsGood: boolean }) {
+    if (!(prior > 0)) return null;
+    const change = ((current - prior) / prior) * 100;
+    const tone = !upIsGood || formatPercent(change) === formatPercent(0)
+        ? 'text-foreground-secondary'
+        : change > 0 ? 'text-positive' : 'text-negative';
+    return (
+        <span>
+            <span className={`font-mono ${tone}`} style={TNUM}>{formatPercent(change)}</span> vs{' '}
+            <span className="font-mono" style={TNUM}>{formatCurrency(prior)}</span> a year earlier
+        </span>
+    );
 }
 
 function formatCurrency(value: number): string {
@@ -179,7 +203,7 @@ function KPICard({ label, period, value, negative, detail, caveat, href, cta, tr
     );
 }
 
-export default function KPIGrid({ data, loading, periodLabel, asOfLabel }: KPIGridProps) {
+export default function KPIGrid({ data, loading, periodLabel, asOfLabel, error = false, onRetry }: KPIGridProps) {
     const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
     if (loading) {
         return (
@@ -199,7 +223,23 @@ export default function KPIGrid({ data, loading, periodLabel, asOfLabel }: KPIGr
     if (!data) {
         return (
             <div className="rounded-lg border border-border bg-surface px-6 py-8 text-center">
-                <p className="text-sm text-foreground-muted">No figures are available for this period.</p>
+                <p className="text-sm text-foreground">
+                    {error ? 'The headline figures could not be loaded.' : 'No figures are available for this period.'}
+                </p>
+                {error && (
+                    <>
+                        <p className="mt-1 text-xs text-foreground-muted">The request failed; nothing here is zero.</p>
+                        {onRetry && (
+                            <button
+                                type="button"
+                                onClick={onRetry}
+                                className="mt-3 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors duration-150 hover:border-border-hover hover:bg-surface-hover"
+                            >
+                                Try again
+                            </button>
+                        )}
+                    </>
+                )}
             </div>
         );
     }
@@ -271,7 +311,9 @@ export default function KPIGrid({ data, loading, periodLabel, asOfLabel }: KPIGr
             label: 'Income',
             period: periodLabel,
             value: formatCurrency(data.totalIncome),
-            detail: (
+            detail: data.prior && data.prior.totalIncome > 0 ? (
+                <YearOverYear current={data.totalIncome} prior={data.prior.totalIncome} upIsGood />
+            ) : (
                 <span>
                     <span className={`${mono} ${net > 0 ? 'text-positive' : net < 0 ? 'text-negative' : ''}`} style={TNUM}>
                         {formatCurrency(net)}
@@ -288,7 +330,9 @@ export default function KPIGrid({ data, loading, periodLabel, asOfLabel }: KPIGr
             label: 'Expenses',
             period: periodLabel,
             value: formatCurrency(data.totalExpenses),
-            detail: data.topExpenseCategory ? (
+            detail: data.prior && data.prior.totalExpenses > 0 ? (
+                <YearOverYear current={data.totalExpenses} prior={data.prior.totalExpenses} upIsGood={false} />
+            ) : data.topExpenseCategory ? (
                 <span className="flex min-w-0 gap-1.5">
                     <span className="truncate">Top: {data.topExpenseCategory}</span>
                     <span className={`shrink-0 ${mono}`} style={TNUM}>{formatCurrency(data.topExpenseAmount)}</span>

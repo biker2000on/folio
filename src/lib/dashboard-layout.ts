@@ -24,7 +24,11 @@ export type BuiltinWidgetId =
     | 'dividends'
     | 'subscriptions'
     | 'data-health'
-    | 'insights';
+    | 'insights'
+    | 'attention'
+    | 'upcoming'
+    | 'accounts'
+    | 'recent';
 
 export type CustomWidgetId = `custom:${string}`;
 
@@ -61,24 +65,80 @@ export const WIDGET_META: Record<BuiltinWidgetId, WidgetMeta> = {
     subscriptions: { title: 'Subscriptions', description: 'Detected recurring charges and monthly total' },
     'data-health': { title: 'Data Health', description: 'Book data quality score and grade' },
     insights: { title: 'Insights', description: 'Proactive alerts: spending spikes, new merchants, milestones' },
+    attention: { title: 'Needs Attention', description: 'Action Center lane counts and the most pressing items' },
+    upcoming: { title: 'Next 30 Days', description: 'Scheduled transactions and deadlines against cash on hand' },
+    accounts: { title: 'Accounts', description: 'Cash, card balances, investments and the rest of net worth' },
+    recent: { title: 'Recent Activity', description: 'Latest ledger entries and imports still to review' },
 };
 
 export const ALL_WIDGET_IDS = Object.keys(WIDGET_META) as BuiltinWidgetId[];
 
 /**
- * Default layout. Intentionally unchanged from before composable widgets
- * shipped so existing users (and users with no saved layout) see the same
- * default set.
+ * Default layout: the figures, then what needs doing and what is coming,
+ * then the charts that explain the figures, then the ledger's latest.
  */
 export const DEFAULT_LAYOUT: WidgetLayoutItem[] = [
     { id: 'kpis', width: 'full' },
+    { id: 'attention', width: 'third' },
+    { id: 'upcoming', width: 'third' },
+    { id: 'accounts', width: 'third' },
     { id: 'netWorth', width: 'full' },
     { id: 'sankey', width: 'full' },
     { id: 'incomePie', width: 'third' },
     { id: 'expensePie', width: 'third' },
     { id: 'taxPie', width: 'third' },
     { id: 'cashFlow', width: 'full' },
+    { id: 'recent', width: 'half' },
+    { id: 'budget-pacing', width: 'half' },
 ];
+
+/**
+ * Widgets added to the default after layouts could be saved. A saved layout
+ * predates them, so each is offered to it once: placed where the default has
+ * it, and recorded as offered so removing it sticks.
+ */
+export const LATER_DEFAULT_WIDGETS: BuiltinWidgetId[] = [
+    'attention',
+    'upcoming',
+    'accounts',
+    'recent',
+    'budget-pacing',
+];
+
+/**
+ * Add the later-default widgets a saved layout has never been offered.
+ * Returns the layout unchanged (same reference) when there is nothing to add.
+ */
+export function offerLaterDefaults(
+    layout: WidgetLayoutItem[],
+    alreadyOffered: readonly string[],
+): { layout: WidgetLayoutItem[]; offered: string[] } {
+    const offeredSet = new Set(alreadyOffered);
+    const present = new Set<string>(layout.map(item => item.id));
+    const toOffer = LATER_DEFAULT_WIDGETS.filter(id => !offeredSet.has(id));
+    const offered = [...alreadyOffered, ...toOffer];
+    const toAdd = toOffer.filter(id => !present.has(id));
+    if (toAdd.length === 0) return { layout, offered };
+
+    const next = [...layout];
+    for (const id of toAdd) {
+        const item = DEFAULT_LAYOUT.find(entry => entry.id === id)!;
+        // After the nearest default predecessor already in the layout, so the
+        // top row lands under the KPIs and the rest at the end.
+        const defaultIndex = DEFAULT_LAYOUT.findIndex(entry => entry.id === id);
+        let insertAt = next.length;
+        for (let index = defaultIndex - 1; index >= 0; index--) {
+            const anchor = next.findIndex(entry => entry.id === DEFAULT_LAYOUT[index].id);
+            if (anchor >= 0) {
+                insertAt = anchor + 1;
+                break;
+            }
+            if (index === 0) insertAt = 0;
+        }
+        next.splice(insertAt, 0, { ...item });
+    }
+    return { layout: next, offered };
+}
 
 export const WIDTH_ORDER: WidgetWidth[] = ['full', 'half', 'third'];
 

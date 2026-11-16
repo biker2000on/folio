@@ -9,10 +9,17 @@ import {
   SankeyNode as D3SankeyNode,
   SankeyLink as D3SankeyLink,
 } from 'd3-sankey';
-import { formatCurrency } from '@/lib/format';
+
+/**
+ * What a node is, which decides its colour. Colour here is a role, not a
+ * category: money coming in, money kept, money spent, and the total they pass
+ * through. A dozen hues for a dozen categories said nothing the labels did not.
+ */
+export type SankeyNodeKind = 'income' | 'total' | 'expense' | 'savings';
 
 interface SankeyNode {
   name: string;
+  kind?: SankeyNodeKind;
 }
 
 interface SankeyLink {
@@ -26,31 +33,52 @@ interface SankeyChartProps {
   links: SankeyLink[];
   width?: number;
   height?: number;
+  /** The figure shares are quoted against (total income). */
+  total?: number;
+  /** Accessible summary of what the diagram shows. */
+  ariaLabel?: string;
 }
 
-const COLORS = [
-  '#34d399',
-  '#22d3ee',
-  '#818cf8',
-  '#f472b6',
-  '#fb923c',
-  '#a3e635',
-  '#2dd4bf',
-  '#c084fc',
-  '#f87171',
-  '#fbbf24',
-  '#60a5fa',
-  '#e879f9',
-];
+type LaidOutNode = D3SankeyNode<SankeyNode, SankeyLink>;
+type LaidOutLink = D3SankeyLink<SankeyNode, SankeyLink>;
 
-const NODE_WIDTH = 12;
-const NODE_PADDING = 16;
+const KIND_COLOR: Record<SankeyNodeKind, string> = {
+  income: 'var(--positive)',
+  savings: 'var(--primary)',
+  total: 'var(--foreground-secondary)',
+  expense: 'var(--foreground-muted)',
+};
+
+const NODE_WIDTH = 10;
+const NODE_PADDING = 18;
+/** Below this width the amounts leave the labels; names alone must fit. */
+const COMPACT_WIDTH = 560;
+const MARGIN = { top: 12, right: 8, bottom: 12, left: 8 };
+
+function money(value: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function share(value: number, total: number | undefined): string | null {
+  if (!total || total <= 0) return null;
+  const percent = Math.round((value / total) * 100);
+  return value > 0 && percent < 1 ? '<1%' : `${percent}%`;
+}
+
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
 
 interface TooltipState {
-  visible: boolean;
   x: number;
   y: number;
-  content: string;
+  title: string;
+  value: number;
 }
 
 export default function SankeyChart({
@@ -58,18 +86,15 @@ export default function SankeyChart({
   links,
   width: propWidth,
   height: propHeight,
+  total,
+  ariaLabel,
 }: SankeyChartProps) {
-  const minHeight = Math.max(propHeight ?? 600, nodes.length * 25);
-  const defaultHeight = minHeight;
+  const defaultHeight = Math.max(propHeight ?? 600, 240);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: propWidth || 800, height: defaultHeight });
-  const [tooltip, setTooltip] = useState<TooltipState>({
-    visible: false,
-    x: 0,
-    y: 0,
-    content: '',
-  });
-  const [hoveredLink, setHoveredLink] = useState<number | null>(null);
+  const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const [activeNode, setActiveNode] = useState<number | null>(null);
+  const [activeLink, setActiveLink] = useState<number | null>(null);
 
   // Measure container dimensions using ResizeObserver
   useEffect(() => {
@@ -89,152 +114,209 @@ export default function SankeyChart({
     return () => observer.disconnect();
   }, [propWidth, propHeight]);
 
-  // Compute sankey layout
   const sankeyData = useMemo(() => {
-    const sankeyGenerator = sankey<SankeyNode, SankeyLink>()
+    const generator = sankey<SankeyNode, SankeyLink>()
       .nodeWidth(NODE_WIDTH)
       .nodePadding(NODE_PADDING)
       .extent([
-        [20, 20],
-        [dimensions.width - 20, dimensions.height - 20],
+        [MARGIN.left, MARGIN.top],
+        [Math.max(dimensions.width - MARGIN.right, MARGIN.left + 1), dimensions.height - MARGIN.bottom],
       ])
-      .nodeAlign(sankeyJustify);
+      .nodeAlign(sankeyJustify)
+      // Largest first in every column, with what was kept at the foot of its
+      // column: the ranking is the reading order.
+      .nodeSort((a, b) => {
+        if (a.kind === 'savings') return 1;
+        if (b.kind === 'savings') return -1;
+        return (b.value ?? 0) - (a.value ?? 0);
+      });
 
     const graph: SankeyGraph<SankeyNode, SankeyLink> = {
       nodes: nodes.map((d) => ({ ...d })),
       links: links.map((d) => ({ ...d })),
     };
 
-    return sankeyGenerator(graph);
+    return generator(graph);
   }, [nodes, links, dimensions]);
 
   const linkPath = sankeyLinkHorizontal();
+  const compact = dimensions.width < COMPACT_WIDTH;
+  const centerX = sankeyData.nodes.find(node => node.kind === 'total')?.x0 ?? dimensions.width / 2;
 
-  const getNodeColor = (index: number) => COLORS[index % COLORS.length];
+  const nodeColor = (node: LaidOutNode) => KIND_COLOR[node.kind ?? 'expense'];
+  // A band takes the colour of whichever end is not the total, so the income
+  // side reads as one colour and what was kept stands apart from what was spent.
+  const linkColor = (link: LaidOutLink) => {
+    const source = link.source as LaidOutNode;
+    const target = link.target as LaidOutNode;
+    return nodeColor(source.kind === 'total' ? target : source);
+  };
 
-  const handleNodeMouseEnter = (
-    node: D3SankeyNode<SankeyNode, SankeyLink>,
-    event: React.MouseEvent
-  ) => {
-    const value = node.value || 0;
+  const linkIsActive = (link: LaidOutLink, index: number) => {
+    if (activeLink !== null) return activeLink === index;
+    if (activeNode === null) return false;
+    return (link.source as LaidOutNode).index === activeNode || (link.target as LaidOutNode).index === activeNode;
+  };
+  const somethingActive = activeLink !== null || activeNode !== null;
+
+  const showTooltip = (event: React.MouseEvent, title: string, value: number) => {
+    const bounds = containerRef.current?.getBoundingClientRect();
     setTooltip({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      content: `${node.name}: ${formatCurrency(value)}`,
+      x: event.clientX - (bounds?.left ?? 0),
+      y: event.clientY - (bounds?.top ?? 0),
+      title,
+      value,
     });
   };
 
-  const handleLinkMouseEnter = (
-    link: D3SankeyLink<SankeyNode, SankeyLink>,
-    index: number,
-    event: React.MouseEvent
-  ) => {
-    setHoveredLink(index);
-    const sourceNode = typeof link.source === 'object' ? link.source as D3SankeyNode<SankeyNode, SankeyLink> : null;
-    const targetNode = typeof link.target === 'object' ? link.target as D3SankeyNode<SankeyNode, SankeyLink> : null;
-    const sourceName = sourceNode?.name ?? '';
-    const targetName = targetNode?.name ?? '';
-    setTooltip({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      content: `${sourceName} → ${targetName}: ${formatCurrency(link.value)}`,
-    });
-  };
-
-  const handleMouseLeave = () => {
-    setTooltip({ visible: false, x: 0, y: 0, content: '' });
-    setHoveredLink(null);
+  const clear = () => {
+    setTooltip(null);
+    setActiveNode(null);
+    setActiveLink(null);
   };
 
   return (
-    <div ref={containerRef} style={{ position: 'relative', width: '100%', height: propHeight === undefined ? '100%' : undefined }}>
-      <svg width={dimensions.width} height={dimensions.height}>
-        <defs>
-          {sankeyData.links.map((link, i) => {
-            const sourceIndex = sankeyData.nodes.indexOf(link.source as D3SankeyNode<SankeyNode, SankeyLink>);
-            const targetIndex = sankeyData.nodes.indexOf(link.target as D3SankeyNode<SankeyNode, SankeyLink>);
-            const sourceColor = getNodeColor(sourceIndex);
-            const targetColor = getNodeColor(targetIndex);
-
-            return (
-              <linearGradient key={i} id={`gradient-${i}`} gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stopColor={sourceColor} />
-                <stop offset="100%" stopColor={targetColor} />
-              </linearGradient>
-            );
-          })}
-        </defs>
-
-        {/* Render links */}
+    <div
+      ref={containerRef}
+      style={{ position: 'relative', width: '100%', height: propHeight === undefined ? '100%' : undefined }}
+    >
+      <svg width={dimensions.width} height={dimensions.height} role="img" aria-label={ariaLabel ?? 'Flow diagram'}>
         <g>
           {sankeyData.links.map((link, i) => (
             <path
               key={i}
               d={linkPath(link) || ''}
               fill="none"
-              stroke={`url(#gradient-${i})`}
+              stroke={linkColor(link)}
               strokeWidth={Math.max(1, link.width || 0)}
-              opacity={hoveredLink === i ? 0.6 : 0.3}
-              style={{ cursor: 'pointer', transition: 'opacity 0.2s' }}
-              onMouseEnter={(e) => handleLinkMouseEnter(link, i, e)}
-              onMouseLeave={handleMouseLeave}
+              opacity={linkIsActive(link, i) ? 0.5 : somethingActive ? 0.1 : 0.22}
+              style={{ transition: 'opacity 150ms ease-out' }}
+              onMouseEnter={(event) => {
+                setActiveLink(i);
+                showTooltip(
+                  event,
+                  `${(link.source as LaidOutNode).name} to ${(link.target as LaidOutNode).name}`,
+                  link.value,
+                );
+              }}
+              onMouseMove={(event) => showTooltip(
+                event,
+                `${(link.source as LaidOutNode).name} to ${(link.target as LaidOutNode).name}`,
+                link.value,
+              )}
+              onMouseLeave={clear}
             />
           ))}
         </g>
 
-        {/* Render nodes */}
         <g>
-          {sankeyData.nodes.map((node, i) => (
-            <g key={i}>
-              <rect
-                x={node.x0}
-                y={node.y0}
-                width={node.x1! - node.x0!}
-                height={node.y1! - node.y0!}
-                fill={getNodeColor(i)}
-                stroke="var(--border)"
-                strokeWidth={1}
-                style={{ cursor: 'pointer' }}
-                onMouseEnter={(e) => handleNodeMouseEnter(node, e)}
-                onMouseLeave={handleMouseLeave}
-              />
-              <text
-                x={node.x0! < dimensions.width / 2 ? node.x1! + 6 : node.x0! - 6}
-                y={(node.y0! + node.y1!) / 2}
-                dy="0.35em"
-                textAnchor={node.x0! < dimensions.width / 2 ? 'start' : 'end'}
-                fontSize={12}
-                fill="var(--foreground)"
-                style={{ pointerEvents: 'none', userSelect: 'none' }}
+          {sankeyData.nodes.map((node, i) => {
+            const x0 = node.x0 ?? 0;
+            const x1 = node.x1 ?? 0;
+            const y0 = node.y0 ?? 0;
+            const y1 = node.y1 ?? 0;
+            const value = node.value ?? 0;
+            // Labels point toward the middle: the spending side labels to its
+            // left, over its own incoming band, so a middle column never writes
+            // across the column beside it.
+            const labelLeft = x0 > centerX;
+            const dimmed = somethingActive && activeNode !== null && activeNode !== i
+              && !sankeyData.links.some((link, index) => linkIsActive(link, index)
+                && ((link.source as LaidOutNode).index === i || (link.target as LaidOutNode).index === i));
+            const emphasised = node.kind === 'total' || node.kind === 'savings';
+            const percent = share(value, total);
+            return (
+              <g
+                key={i}
+                opacity={dimmed ? 0.45 : 1}
+                style={{ transition: 'opacity 150ms ease-out' }}
+                onMouseEnter={(event) => {
+                  setActiveNode(i);
+                  showTooltip(event, node.name, value);
+                }}
+                onMouseMove={(event) => showTooltip(event, node.name, value)}
+                onMouseLeave={clear}
               >
-                {node.name}
-              </text>
-            </g>
-          ))}
+                <rect
+                  x={x0}
+                  y={y0}
+                  width={x1 - x0}
+                  height={Math.max(1, y1 - y0)}
+                  rx={1}
+                  fill={nodeColor(node)}
+                />
+                <text
+                  x={labelLeft ? x0 - 8 : x1 + 8}
+                  y={(y0 + y1) / 2}
+                  dy="0.35em"
+                  textAnchor={labelLeft ? 'end' : 'start'}
+                  fontSize={12}
+                  style={{ pointerEvents: 'none', userSelect: 'none' }}
+                >
+                  <tspan fill="var(--foreground)" fontWeight={emphasised ? 600 : 400}>
+                    {clip(node.name, compact ? 16 : 30)}
+                  </tspan>
+                  {/* The total is stated once, in the card header. */}
+                  {!compact && node.kind !== 'total' && (
+                    <tspan
+                      dx={8}
+                      fill="var(--foreground-secondary)"
+                      fontFamily="var(--font-mono, 'JetBrains Mono', monospace)"
+                      fontSize={11}
+                      style={{ fontFeatureSettings: "'tnum'" }}
+                    >
+                      {money(value)}
+                    </tspan>
+                  )}
+                  {!compact && percent && node.kind !== 'total' && (
+                    <tspan
+                      dx={6}
+                      fill="var(--foreground-muted)"
+                      fontFamily="var(--font-mono, 'JetBrains Mono', monospace)"
+                      fontSize={11}
+                      style={{ fontFeatureSettings: "'tnum'" }}
+                    >
+                      {percent}
+                    </tspan>
+                  )}
+                </text>
+              </g>
+            );
+          })}
         </g>
       </svg>
 
-      {/* Tooltip */}
-      {tooltip.visible && (
+      {tooltip && (
         <div
+          role="presentation"
           style={{
-            position: 'fixed',
-            left: tooltip.x + 10,
-            top: tooltip.y + 10,
-            background: 'var(--background)',
+            position: 'absolute',
+            left: Math.min(tooltip.x + 12, Math.max(0, dimensions.width - 220)),
+            top: tooltip.y + 12,
+            maxWidth: 220,
+            background: 'var(--surface-elevated)',
             border: '1px solid var(--border)',
-            borderRadius: '4px',
-            padding: '8px 12px',
-            fontSize: '12px',
+            borderRadius: 6,
+            padding: '8px 10px',
+            fontSize: 12,
             color: 'var(--foreground)',
             pointerEvents: 'none',
-            zIndex: 1000,
-            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+            zIndex: 20,
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.25)',
           }}
         >
-          {tooltip.content}
+          <div style={{ fontWeight: 600 }}>{tooltip.title}</div>
+          <div
+            style={{
+              marginTop: 2,
+              color: 'var(--foreground-secondary)',
+              fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
+              fontFeatureSettings: "'tnum'",
+            }}
+          >
+            {money(tooltip.value)}
+            {share(tooltip.value, total) && ` · ${share(tooltip.value, total)} of income`}
+          </div>
         </div>
       )}
     </div>

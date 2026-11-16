@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
     DEFAULT_LAYOUT,
+    LATER_DEFAULT_WIDGETS,
+    offerLaterDefaults,
     ALL_WIDGET_IDS,
     WIDGET_META,
     isCustomWidgetId,
@@ -92,16 +94,48 @@ describe('sanitizeLayout', () => {
         expect(sanitizeLayout(legacy)).toEqual(legacy);
     });
 
-    it('default layout is the pre-composable widget set', () => {
+    it('default layout leads with figures, then what needs doing, then the charts', () => {
         expect(DEFAULT_LAYOUT.map(i => i.id)).toEqual([
             'kpis',
+            'attention',
+            'upcoming',
+            'accounts',
             'netWorth',
             'sankey',
             'incomePie',
             'expensePie',
             'taxPie',
             'cashFlow',
+            'recent',
+            'budget-pacing',
         ]);
+    });
+
+    describe('offerLaterDefaults', () => {
+        const saved = [
+            { id: 'kpis' as const, width: 'full' as const },
+            { id: 'netWorth' as const, width: 'full' as const },
+            { id: 'cashFlow' as const, width: 'full' as const },
+        ];
+
+        it('adds the later defaults to a layout saved before they existed', () => {
+            const { layout, offered } = offerLaterDefaults(saved, []);
+            expect(layout.map(i => i.id)).toEqual([
+                'kpis', 'attention', 'upcoming', 'accounts', 'netWorth', 'cashFlow', 'recent', 'budget-pacing',
+            ]);
+            expect(offered).toEqual(LATER_DEFAULT_WIDGETS);
+        });
+
+        it('never re-adds a widget the user removed after it was offered', () => {
+            const result = offerLaterDefaults(saved, LATER_DEFAULT_WIDGETS);
+            expect(result.layout).toBe(saved);
+        });
+
+        it('does not duplicate a widget the layout already has', () => {
+            const withPacing = [...saved, { id: 'budget-pacing' as const, width: 'third' as const }];
+            const { layout } = offerLaterDefaults(withPacing, []);
+            expect(layout.filter(i => i.id === 'budget-pacing')).toEqual([{ id: 'budget-pacing', width: 'third' }]);
+        });
     });
 
     it('accepts new builtin widget ids', () => {

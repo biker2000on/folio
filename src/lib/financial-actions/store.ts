@@ -334,7 +334,7 @@ async function materializeActions(input: {
   });
 }
 
-async function verifiedThroughDate(bookAccountGuids: string[]): Promise<string | null> {
+export async function verifiedThroughDate(bookAccountGuids: string[]): Promise<string | null> {
   const rows = await prisma.$queryRaw<Array<{
     verified_through: Date | null;
     account_count: number;

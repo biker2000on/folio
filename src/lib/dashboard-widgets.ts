@@ -140,6 +140,10 @@ export const WIDGET_REGISTRY: WidgetRegistryEntry[] = [
     entry('subscriptions', 'tools', 'third'),
     entry('data-health', 'tools', 'third'),
     entry('insights', 'overview', 'third'),
+    entry('attention', 'overview', 'third'),
+    entry('upcoming', 'overview', 'third'),
+    entry('accounts', 'overview', 'third'),
+    entry('recent', 'overview', 'half'),
 ];
 
 export function getRegistryEntry(id: string): WidgetRegistryEntry | undefined {

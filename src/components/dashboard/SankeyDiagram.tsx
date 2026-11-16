@@ -3,6 +3,9 @@
 import { useContext, useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { ExpandedContext } from '@/components/charts/ExpandableChart';
+import { Segmented } from '@/components/investments/ui';
+import { TNUM } from '@/components/ui/form';
+import type { SankeyNodeKind } from '@/components/charts/SankeyChart';
 
 const SankeyChart = dynamic(() => import('@/components/charts/SankeyChart'), { ssr: false });
 
@@ -32,15 +35,18 @@ interface SankeyDiagramProps {
 // Flatten hierarchical tree to flat Sankey nodes/links for D3
 // ---------------------------------------------------------------------------
 
+interface FlowNode {
+    name: string;
+    kind: SankeyNodeKind;
+}
+
 function flattenToSankey(
     incomeTree: SankeyHierarchyNode[],
     expenseTree: SankeyHierarchyNode[],
-    totalIncome: number,
-    totalExpenses: number,
     savings: number,
     displayLevels: number
-): { nodes: { name: string }[]; links: { source: number; target: number; value: number }[] } {
-    const nodes: { name: string }[] = [];
+): { nodes: FlowNode[]; links: { source: number; target: number; value: number }[] } {
+    const nodes: FlowNode[] = [];
     const links: { source: number; target: number; value: number }[] = [];
 
     // --- Collect income-side level nodes ---
@@ -87,16 +93,17 @@ function flattenToSankey(
         for (const ln of levelNodes) {
             const name = uniqueName(ln.name, 'income');
             const idx = nodes.length;
-            nodes.push({ name });
+            nodes.push({ name, kind: 'income' });
             incomeNodeIndices.set(`${level}:${ln.name}`, idx);
         }
     }
 
-    // Central nodes
+    // One central node. Income arrives on its left and leaves on its right as
+    // spending and savings; a second "expenses + savings" node only repeated
+    // the same total across a band as tall as the chart.
     const totalIncomeIdx = nodes.length;
-    nodes.push({ name: 'Total Income' });
-    const totalExpSavingsIdx = nodes.length;
-    nodes.push({ name: 'Total Expenses + Savings' });
+    nodes.push({ name: 'Income', kind: 'total' });
+    const totalExpSavingsIdx = totalIncomeIdx;
 
     // --- Collect expense-side level nodes ---
     const expenseLevelNodes: Map<number, { name: string; value: number; parentName: string | null }[]> = new Map();
@@ -129,7 +136,7 @@ function flattenToSankey(
         for (const ln of levelNodes) {
             const name = uniqueName(ln.name, 'expense');
             const idx = nodes.length;
-            nodes.push({ name });
+            nodes.push({ name, kind: 'expense' });
             expenseNodeIndices.set(`${level}:${ln.name}`, idx);
         }
     }
@@ -138,7 +145,7 @@ function flattenToSankey(
     let savingsIdx = -1;
     if (savings > 0) {
         savingsIdx = nodes.length;
-        nodes.push({ name: 'Savings' });
+        nodes.push({ name: 'Saved', kind: 'savings' });
     }
 
     // --- Build links ---
@@ -162,11 +169,6 @@ function flattenToSankey(
         if (sourceIdx !== undefined && ln.value > 0) {
             links.push({ source: sourceIdx, target: totalIncomeIdx, value: ln.value });
         }
-    }
-
-    // Total Income links to Total Expenses + Savings
-    if (totalIncome > 0) {
-        links.push({ source: totalIncomeIdx, target: totalExpSavingsIdx, value: totalIncome });
     }
 
     // Total Expenses + Savings links to shallowest expense level (level 0) and savings
@@ -202,11 +204,29 @@ function flattenToSankey(
 
 function ChartSkeleton() {
     return (
-        <div className="bg-surface border border-border rounded-lg p-6 animate-pulse">
+        <div className="bg-surface border border-border rounded-lg p-6 animate-pulse" aria-busy="true">
             <div className="h-5 w-48 bg-background-secondary rounded mb-6" />
-            <div className="h-[500px] bg-background-secondary rounded" />
+            <div className="h-[420px] bg-background-secondary rounded" />
         </div>
     );
+}
+
+function formatCurrency(value: number): string {
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0,
+    }).format(value);
+}
+
+/** Tall enough for the busiest column to keep one label per row. */
+function chartHeight(nodes: FlowNode[]): number {
+    const perKind = (kind: SankeyNodeKind) => nodes.filter(node => node.kind === kind).length;
+    const busiest = Math.max(perKind('income'), perKind('expense') + perKind('savings'));
+    // Every node needs its padding plus room to show its share; a fixed height
+    // squeezes a deep level into hairlines.
+    return Math.max(300, Math.min(busiest * 34, 440) + Math.max(0, busiest - 13) * 26);
 }
 
 export default function SankeyDiagram({ data, loading }: SankeyDiagramProps) {
@@ -222,8 +242,6 @@ export default function SankeyDiagram({ data, loading }: SankeyDiagramProps) {
         return flattenToSankey(
             data.income,
             data.expense,
-            data.totalIncome,
-            data.totalExpenses,
             data.savings,
             displayLevel
         );
@@ -234,33 +252,84 @@ export default function SankeyDiagram({ data, loading }: SankeyDiagramProps) {
     if (!data || (nodes.length === 0 && links.length === 0)) {
         return (
             <div className={`bg-surface border border-border rounded-lg p-6 ${expanded ? 'h-full' : ''}`}>
-                <h3 className="text-base font-semibold text-foreground mb-4">Income Flow</h3>
-                <div className="h-[500px] flex items-center justify-center">
-                    <p className="text-foreground-muted text-sm">No flow data available for this period.</p>
+                <h3 className="text-base font-semibold text-foreground mb-4">Income flow</h3>
+                <div className="h-[300px] flex items-center justify-center">
+                    <p className="text-foreground-muted text-sm">No income or spending in this period.</p>
                 </div>
             </div>
         );
     }
 
+    const shortfall = data.totalExpenses - data.totalIncome;
+    const savedShare = data.totalIncome > 0 ? Math.round((data.savings / data.totalIncome) * 100) : null;
+    const summary = shortfall > 0
+        ? `${formatCurrency(data.totalIncome)} came in and ${formatCurrency(data.totalExpenses)} went out, ${formatCurrency(shortfall)} more than income.`
+        : `${formatCurrency(data.totalIncome)} came in, ${formatCurrency(data.totalExpenses)} was spent and ${formatCurrency(data.savings)} was kept.`;
+
     return (
-        <div className={`bg-surface border border-border rounded-lg p-6 ${expanded ? 'h-full' : ''}`}>
-            <div className="flex items-center justify-between mb-4">
-                <h3 className="text-base font-semibold text-foreground">Income Flow</h3>
+        <div className={`flex flex-col bg-surface border border-border rounded-lg p-6 ${expanded ? 'h-full' : ''}`}>
+            {/* pr-8 keeps the control clear of ExpandableChart's expand button. */}
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-x-6 gap-y-3 pr-8">
+                <div className="min-w-0">
+                    <h3 className="text-base font-semibold text-foreground">Income flow</h3>
+                    <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs">
+                        <div className="flex items-baseline gap-1.5">
+                            <dt className="text-foreground-muted">Income</dt>
+                            <dd className="font-mono text-sm font-semibold text-foreground" style={TNUM}>
+                                {formatCurrency(data.totalIncome)}
+                            </dd>
+                        </div>
+                        <div className="flex items-baseline gap-1.5">
+                            <dt className="text-foreground-muted">Spent</dt>
+                            <dd className="font-mono text-sm font-semibold text-foreground" style={TNUM}>
+                                {formatCurrency(data.totalExpenses)}
+                            </dd>
+                        </div>
+                        {shortfall > 0 ? (
+                            <div className="flex items-baseline gap-1.5">
+                                <dt className="text-foreground-muted">Over income by</dt>
+                                <dd className="font-mono text-sm font-semibold text-negative" style={TNUM}>
+                                    {formatCurrency(shortfall)}
+                                </dd>
+                            </div>
+                        ) : (
+                            <div className="flex items-baseline gap-1.5">
+                                <dt className="text-foreground-muted">Saved</dt>
+                                <dd className="font-mono text-sm font-semibold text-primary" style={TNUM}>
+                                    {formatCurrency(data.savings)}
+                                    {savedShare !== null && (
+                                        <span className="ml-1.5 text-xs font-normal text-foreground-muted">{savedShare}%</span>
+                                    )}
+                                </dd>
+                            </div>
+                        )}
+                    </dl>
+                </div>
                 {maxDepth > 1 && (
-                    <select
-                        value={displayLevel}
-                        onChange={(e) => setDisplayLevel(parseInt(e.target.value))}
-                        className="text-sm bg-background border border-border rounded px-2 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                    >
-                        {Array.from({ length: maxDepth }, (_, i) => (
-                            <option key={i + 1} value={i + 1}>
-                                Level {i + 1}
-                            </option>
-                        ))}
-                    </select>
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs text-foreground-muted" id="sankey-detail-label">Account depth</span>
+                        <Segmented
+                            ariaLabel="Account depth shown in the flow"
+                            value={String(displayLevel)}
+                            onChange={value => setDisplayLevel(parseInt(value, 10))}
+                            options={Array.from({ length: Math.min(maxDepth, 4) }, (_, i) => ({
+                                value: String(i + 1),
+                                label: String(i + 1),
+                                ariaLabel: `${i + 1} level${i === 0 ? '' : 's'} of accounts`,
+                            }))}
+                        />
+                    </div>
                 )}
             </div>
-            <SankeyChart nodes={nodes} links={links} height={expanded ? undefined : 500} />
+            <div className={expanded ? 'min-h-0 flex-1' : ''}>
+                <SankeyChart
+                    nodes={nodes}
+                    links={links}
+                    height={expanded ? undefined : chartHeight(nodes)}
+                    total={data.totalIncome}
+                    ariaLabel={`Income flow. ${summary}`}
+                />
+            </div>
         </div>
     );
 }
