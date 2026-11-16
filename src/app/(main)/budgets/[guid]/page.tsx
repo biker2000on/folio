@@ -16,6 +16,7 @@ import { StatCard, StatGrid } from '@/components/ui/StatCard';
 import { useToast } from '@/contexts/ToastContext';
 import { BudgetProgress } from './BudgetProgress';
 import { BudgetYoY } from './BudgetYoY';
+import { AiBudgetSuggestions } from './AiBudgetSuggestions';
 import type { BudgetActualsResponse } from '@/lib/budget-actuals';
 import { suppressNextDataEvent } from '@/components/DataEventsProvider';
 import { Tip } from '@/components/ui/Tooltip';
@@ -809,6 +810,9 @@ export default function BudgetDetailPage({ params }: BudgetDetailPageProps) {
                         Editor
                     </button>
                 </div>
+
+                {/* AI suggestions: proposals only; nothing saves until Apply */}
+                <AiBudgetSuggestions budgetGuid={budget.guid} currency={budgetCurrency} onApplied={refreshBudget} />
 
                 {/* Summary Cards (editor view) */}
                 {view === 'editor' && (

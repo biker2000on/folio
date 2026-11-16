@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useToast } from '@/contexts/ToastContext';
 import AccountPickerDialog from '@/components/AccountPickerDialog';
 import ApplyHistoryModal from './ApplyHistoryModal';
+import AiRuleSuggestions from './AiRuleSuggestions';
 import { Tip } from '@/components/ui/Tooltip';
 import { PageHeader } from '@/components/ui/PageHeader';
 
@@ -534,6 +535,16 @@ export default function CategorizationRulesPage() {
             </table>
           </div>
         )}
+      </div>
+
+      {/* AI suggestions for what the learned ones miss; nothing saves until Apply */}
+      <div className="mt-8">
+        <AiRuleSuggestions
+          onApplied={() => {
+            void loadRules();
+            void loadSuggestions();
+          }}
+        />
       </div>
 
       <AccountPickerDialog

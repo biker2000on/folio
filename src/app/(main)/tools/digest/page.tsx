@@ -9,6 +9,14 @@ import type {
     DigestBill,
     DigestBudgetRow,
 } from '@/lib/digest';
+import {
+    monthName,
+    nextMonthKey,
+    prevMonthKey,
+    type DigestTip,
+    type DigestTipCheck,
+    type DigestTipOutcome,
+} from '@/lib/digest-tips';
 import { StatCard, StatGrid } from '@/components/ui/StatCard';
 import { RelatedLinks } from '@/components/RelatedLinks';
 
@@ -248,6 +256,114 @@ function BillsSection({ bills, currency }: { bills: DigestBill[]; currency: stri
     );
 }
 
+const OUTCOME_LABEL: Record<DigestTipOutcome, string> = {
+    held: 'Held',
+    missed: 'Missed',
+    neutral: 'Still open',
+};
+
+const OUTCOME_CLASS: Record<DigestTipOutcome, string> = {
+    held: 'bg-success/10 text-success',
+    missed: 'bg-warning/10 text-warning',
+    neutral: 'bg-foreground-muted/10 text-foreground-muted',
+};
+
+function formatActBy(iso: string): string {
+    return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(
+        new Date(`${iso}T00:00:00Z`)
+    );
+}
+
+/** Last month's tips, graded against the digest month. */
+function TipChecksSection({ digest, checks }: { digest: MonthlyDigest; checks: DigestTipCheck[] }) {
+    const inProgress = checks.some(c => !c.final);
+    const prevName = monthName(prevMonthKey(digest.month));
+    const tally = (['held', 'missed', 'neutral'] as const)
+        .map(o => ({ o, n: checks.filter(c => c.outcome === o).length }))
+        .filter(({ n }) => n > 0)
+        .map(({ o, n }) => `${n} ${OUTCOME_LABEL[o].toLowerCase()}`)
+        .join(' · ');
+    return (
+        <section className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg p-6">
+            <div className="flex items-baseline justify-between gap-3 mb-4">
+                <h2 className="text-lg font-semibold text-foreground">
+                    How {prevName}&apos;s tips {inProgress ? 'are going' : 'went'}
+                </h2>
+                <span className="text-sm text-foreground-secondary shrink-0">
+                    {tally}{inProgress ? ' so far' : ''}
+                </span>
+            </div>
+            <ul className="divide-y divide-border/50">
+                {checks.map(c => (
+                    <li key={`${c.tip.kind}-${c.tip.key}`} className="py-3 first:pt-0 last:pb-0 flex items-start gap-3">
+                        <span
+                            className={`mt-0.5 shrink-0 px-2 py-0.5 rounded-md text-xs font-medium ${OUTCOME_CLASS[c.outcome]}`}
+                        >
+                            {OUTCOME_LABEL[c.outcome]}
+                            {!c.final && ' so far'}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                            <p className="text-sm text-foreground">{c.text}</p>
+                            <p className="text-xs text-foreground-muted mt-0.5">Tip: {c.tip.text}</p>
+                        </div>
+                        {c.tip.kind !== 'new_sub' && (
+                            <span className="shrink-0 text-right font-mono text-sm" style={TNUM}>
+                                <span className="text-foreground">{formatCurrency(c.actual, digest.currency)}</span>
+                                <span className="block text-xs text-foreground-muted">
+                                    target {formatCurrency(c.tip.target, digest.currency)}
+                                </span>
+                            </span>
+                        )}
+                    </li>
+                ))}
+            </ul>
+        </section>
+    );
+}
+
+/** Tips issued by the digest month for the next one. */
+function TipsSection({ digest, tips }: { digest: MonthlyDigest; tips: DigestTip[] | undefined }) {
+    const nextName = monthName(nextMonthKey(digest.month));
+    const thisName = monthName(digest.month);
+    return (
+        <section className="bg-surface/30 backdrop-blur-xl border border-border rounded-lg p-6">
+            <h2 className="text-lg font-semibold text-foreground mb-4">Tips for {nextName}</h2>
+            {!tips ? (
+                <p className="text-sm text-foreground-muted">
+                    Tips for {nextName} are issued once {thisName} closes, then checked against {nextName}&apos;s
+                    actual spending.
+                </p>
+            ) : tips.length === 0 ? (
+                <p className="text-sm text-foreground-muted">
+                    Nothing in {thisName} called for a tip. Spending, budgets and subscriptions all stayed in line.
+                </p>
+            ) : (
+                <ol className="divide-y divide-border/50">
+                    {tips.map((t, i) => (
+                        <li key={`${t.kind}-${t.key}`} className="py-3 first:pt-0 last:pb-0 flex items-start gap-3">
+                            <span className="shrink-0 font-mono text-sm text-primary" style={TNUM}>
+                                {i + 1}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                                <p className="text-sm text-foreground">{t.text}</p>
+                                <p className="text-xs text-foreground-muted mt-0.5">{t.why}</p>
+                            </div>
+                            <span className="shrink-0 font-mono text-xs text-foreground-muted" style={TNUM}>
+                                by {formatActBy(t.actBy)}
+                            </span>
+                        </li>
+                    ))}
+                </ol>
+            )}
+            {tips && tips.length > 0 && (
+                <p className="text-xs text-foreground-muted mt-4">
+                    Next month&apos;s digest checks each tip against what actually happened.
+                </p>
+            )}
+        </section>
+    );
+}
+
 function BudgetSection({ digest }: { digest: MonthlyDigest }) {
     const budget = digest.budget;
     if (!budget) {
@@ -396,8 +512,8 @@ export default function DigestPage() {
                 <div>
                     <h1 className="text-3xl font-bold text-foreground">Monthly Digest</h1>
                     <p className="text-foreground-muted mt-1">
-                        A month-at-a-glance summary: net-worth change, cash flow, top categories,
-                        subscription changes, upcoming bills, and budget status.
+                        A month-at-a-glance summary: net-worth change, cash flow, tips for next month,
+                        top categories, subscription changes, upcoming bills, and budget status.
                     </p>
                 </div>
                 <div className="flex items-center gap-3">
@@ -461,6 +577,18 @@ export default function DigestPage() {
                     {digest.narrative && <NarrativeBlock narrative={digest.narrative} />}
                     <NetWorthHero digest={digest} />
                     <StatRow digest={digest} />
+                    {(() => {
+                        const checks = digest.tipChecks ?? [];
+                        // Old months never issued tips; only the open month explains why.
+                        const showTips = digest.tips !== undefined || digest.month === currentMonthKey();
+                        if (checks.length === 0 && !showTips) return null;
+                        return (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                {checks.length > 0 && <TipChecksSection digest={digest} checks={checks} />}
+                                {showTips && <TipsSection digest={digest} tips={digest.tips} />}
+                            </div>
+                        );
+                    })()}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <CategoriesTable categories={digest.topCategories} currency={digest.currency} />
                         <SubscriptionsSection digest={digest} />

@@ -1214,6 +1214,11 @@ async function createExtensionTables() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id)
     );
+    -- AI privacy (src/lib/ai-privacy): summary is the default, including for
+    -- existing rows. full detail needs self_hosted, which the user sets.
+    ALTER TABLE gnucash_web_ai_config
+        ADD COLUMN IF NOT EXISTS privacy_mode VARCHAR(20) NOT NULL DEFAULT 'summary',
+        ADD COLUMN IF NOT EXISTS self_hosted BOOLEAN NOT NULL DEFAULT FALSE;
 `;
 
     const toolConfigTriggerDDL = `
@@ -2758,6 +2763,24 @@ async function createExtensionTables() {
     `;
 
     /**
+     * Monthly digest tips (src/lib/digest-tips-store.ts). The digest for a
+     * completed month issues up to 3 tips for the next month, once per book
+     * and month (`month` = the issuing digest month, YYYY-MM); the next
+     * month's digest grades them. `tips` is a JSON array, empty when nothing
+     * qualified. Read and written through raw SQL only.
+     */
+    const digestTipsTableDDL = `
+        CREATE TABLE IF NOT EXISTS gnucash_web_digest_tips (
+            id SERIAL PRIMARY KEY,
+            book_guid VARCHAR(32) NOT NULL,
+            month VARCHAR(7) NOT NULL,
+            tips JSONB NOT NULL DEFAULT '[]',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_digest_tips_book_month UNIQUE (book_guid, month)
+        );
+    `;
+
+    /**
      * Transaction comments (P2 "Transaction Comments and Change History").
      *
      * App-side discussion about a transaction: authored, timestamped, one
@@ -3027,6 +3050,7 @@ async function createExtensionTables() {
         await query(webhookIdempotencyTableDDL);
         await query(externalLinksTableDDL);
         await query(notificationsTableDDL);
+        await query(digestTipsTableDDL);
         await query(transactionCommentsTableDDL);
         await query(financialActionsTableDDL);
         await query(operatorBusinessWorkflowsDDL);

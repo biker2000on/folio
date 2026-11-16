@@ -835,6 +835,10 @@ model gnucash_web_ai_config {
   api_key_encrypted String?   @db.Text
   model             String?   @db.VarChar(100)
   enabled           Boolean   @default(false)
+  /// AI privacy mode: off | summary | full (see src/lib/ai-privacy)
+  privacy_mode      String    @default("summary") @db.VarChar(20)
+  /// User marked the endpoint as running on their own hardware (needed for full)
+  self_hosted       Boolean   @default(false)
   created_at        DateTime  @default(now())
   updated_at        DateTime  @default(now())
 
@@ -1273,6 +1277,20 @@ model gnucash_web_book_features {
 
   @@id([book_guid, feature_key])
   @@map("gnucash_web_book_features")
+}
+
+// Monthly digest tips: up to 3 tips per (book, issuing month), graded by the
+// next month's digest. DDL in src/lib/db-init.ts; accessed via raw SQL only
+// (src/lib/digest-tips-store.ts).
+model gnucash_web_digest_tips {
+  id         Int      @id @default(autoincrement())
+  book_guid  String   @db.VarChar(32)
+  month      String   @db.VarChar(7)
+  tips       Json     @default("[]") @db.JsonB
+  created_at DateTime @default(now()) @db.Timestamp(6)
+
+  @@unique([book_guid, month], map: "uq_digest_tips_book_month")
+  @@map("gnucash_web_digest_tips")
 }
 
 // Entity-level book links: business book → owner household book(s) with

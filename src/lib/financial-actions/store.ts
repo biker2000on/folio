@@ -9,7 +9,8 @@ import type {
   FinancialActionList,
   FinancialActionState,
 } from './types';
-import { compareFinancialActions } from './order';
+import { orderFinancialActions } from './order';
+import type { ActionOrderMode } from './priority-ladder';
 import {
   actionAccountGuids,
   enrichActionsWithAccountPaths,
@@ -389,6 +390,8 @@ export async function listFinancialActions(input: {
   bookAccountGuids: string[];
   includeCompleted?: boolean;
   refresh?: boolean;
+  /** Action Center ordering; defaults to the weighted score. */
+  order?: ActionOrderMode;
 }): Promise<FinancialActionList> {
   await ensureFinancialActionsTable();
   const freshness = await prisma.$queryRaw<Array<{ last_refresh_at: Date | null }>>`
@@ -476,7 +479,10 @@ export async function listFinancialActions(input: {
   ]));
   const weekly = weeklyRows[0];
   return {
-    actions: enrichActionsWithAccountPaths(actions, accountPaths).sort(compareFinancialActions),
+    actions: orderFinancialActions(
+      enrichActionsWithAccountPaths(actions, accountPaths),
+      input.order ?? 'weighted',
+    ),
     muted: { rules: disabledRules.size, items: mutedItems },
     summary: {
       new: weekly?.new_count ?? 0,
@@ -486,6 +492,7 @@ export async function listFinancialActions(input: {
     },
     verifiedThrough: await verifiedThroughDate(input.bookAccountGuids),
     generatedAt: new Date().toISOString(),
+    order: input.order ?? 'weighted',
   };
 }
 

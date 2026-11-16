@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
 import { extractReceiptData } from '@/lib/receipt-extraction';
+import { getAiConfig } from '@/lib/ai-config';
 
 export async function POST(request: Request) {
   try {
@@ -18,8 +19,13 @@ export async function POST(request: Request) {
 
     const sampleText = 'COSTCO WHOLESALE #482\n123 Main St, Anytown USA\n03/15/2026\nKIRKLAND MILK 2% $4.99\nKS BREAD WHT $3.49\nTAX $0.68\nTOTAL $9.16';
 
+    // A blank key in the form means "use the saved one", but only for the
+    // saved endpoint: a saved key is never sent to a different address.
+    const saved = api_key ? null : await getAiConfig(roleResult.user.id);
+    const savedKey = saved && saved.base_url === base_url ? saved.api_key : null;
+
     const result = await extractReceiptData(sampleText, {
-      provider, base_url, api_key: api_key || null, model, enabled: true,
+      provider, base_url, api_key: api_key || savedKey, model, enabled: true,
     });
 
     return NextResponse.json({

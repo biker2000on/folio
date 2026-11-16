@@ -1,3 +1,5 @@
+import type { ActionOrderMode } from './priority-ladder';
+
 export type FinancialActionLane = 'fix' | 'decide' | 'do';
 export type FinancialActionState =
   | 'open'
@@ -182,4 +184,6 @@ export interface FinancialActionList {
   summary: FinancialActionWeeklySummary;
   verifiedThrough: string | null;
   generatedAt: string;
+  /** The ordering the list was sorted with. */
+  order?: ActionOrderMode;
 }

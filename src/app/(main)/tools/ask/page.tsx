@@ -50,6 +50,8 @@ export default function AskBooksPage() {
     const [question, setQuestion] = useState('');
     const [busy, setBusy] = useState(false);
     const [configured, setConfigured] = useState<boolean | null>(null);
+    const [aiOff, setAiOff] = useState(false);
+    const [privacy, setPrivacy] = useState<'off' | 'summary' | 'full' | null>(null);
     const [familyScope, setFamilyScope] = useState(false);
     const bottomRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -59,7 +61,12 @@ export default function AskBooksPage() {
         let cancelled = false;
         fetch('/api/ai/query')
             .then(res => (res.ok ? res.json() : { configured: false }))
-            .then(data => { if (!cancelled) setConfigured(!!data.configured); })
+            .then(data => {
+                if (cancelled) return;
+                setConfigured(!!data.configured);
+                setAiOff(data.off === true);
+                setPrivacy(data.privacy === 'summary' || data.privacy === 'full' ? data.privacy : null);
+            })
             .catch(() => { if (!cancelled) setConfigured(false); });
         return () => { cancelled = true; };
     }, []);
@@ -171,7 +178,25 @@ export default function AskBooksPage() {
                 </label>
             </header>
 
-            {configured === false && (
+            {configured === false && aiOff && (
+                <div className="mb-4 rounded-lg border border-warning/40 bg-surface/30 p-4 text-sm text-foreground-secondary">
+                    AI analysis is off, so questions can&apos;t be answered.{' '}
+                    Choose another privacy mode under{' '}
+                    <Link href="/settings" className="text-primary hover:text-primary-hover">
+                        Settings → AI
+                    </Link>
+                    .
+                </div>
+            )}
+
+            {configured && privacy === 'summary' && (
+                <p className="mb-4 text-xs text-foreground-muted">
+                    Summary only: the model sees placeholders instead of names and rounded amounts. The table below
+                    always shows your exact rows.
+                </p>
+            )}
+
+            {configured === false && !aiOff && (
                 <div className="mb-4 rounded-lg border border-warning/40 bg-surface/30 p-4 text-sm text-foreground-secondary">
                     No AI provider is configured, so questions can&apos;t be answered yet.{' '}
                     Set up a provider under{' '}

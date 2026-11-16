@@ -5,8 +5,9 @@
  * into a single guard-railed SELECT statement plus a short answer plan.
  */
 
-import type { AiConfig } from '@/lib/receipt-extraction';
-import { chatComplete, extractJsonObject, type AiChatMessage } from './client';
+import type { GatedAi } from '@/lib/ai-privacy/session';
+import { SUMMARY_PROMPT_NOTE } from '@/lib/ai-privacy/privacy';
+import { extractJsonObject, type AiChatMessage } from './client';
 import { SCHEMA_CONTEXT } from './schema-context';
 import { MAX_LIMIT } from './guardrails';
 
@@ -16,7 +17,11 @@ export interface ChatTurn {
 }
 
 export interface GeneratedQuery {
-    /** The generated SELECT statement (still must pass validateGeneratedSql). */
+    /**
+     * The generated SELECT statement as the model wrote it. In summary mode it
+     * may hold name tokens: run it through ai.unmaskSql() before
+     * validateGeneratedSql, and never execute it as-is.
+     */
     sql: string;
     /** Short natural-language plan describing how the query answers the question. */
     plan: string;
@@ -43,37 +48,50 @@ STRICT OUTPUT RULES:
 Respond with ONLY a JSON object (no markdown fences, no commentary):
 {"sql": "<the SELECT statement>", "plan": "<one or two sentences describing what the query computes and how you will phrase the answer>"}`;
 
+/** Extra rules for summary mode: names in the question are tokens. */
+const SUMMARY_SQL_NOTE = `${SUMMARY_PROMPT_NOTE}
+- When the question names a token, match it in SQL as a string literal, for
+  example book_account_hierarchy.fullname ILIKE '%⟨A1⟩%' or
+  book_transactions.description ILIKE '%⟨M1⟩%'. Folio replaces the token with the
+  real name before the query runs. Never put a token outside a string literal.`;
+
 /**
- * Ask the configured provider for a SQL statement + answer plan.
+ * Ask the configured provider for a SQL statement + answer plan, through the
+ * privacy gate's session. In summary mode the question is masked and earlier
+ * answers are scrubbed (names to tokens, amounts rounded) before sending.
  *
  * @param feedback when a previous attempt failed guardrail validation, pass it
- *   back so the model can correct itself.
+ *   back so the model can correct itself. `rejectedSql` is the model's own
+ *   (still tokenised) SQL.
  */
 export async function generateQuery(
     question: string,
     history: ChatTurn[],
-    config: AiConfig,
+    ai: GatedAi,
     feedback?: { rejectedSql: string; reason: string },
 ): Promise<GeneratedQuery> {
-    const messages: AiChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
+    const system = ai.level === 'summary' ? `${SYSTEM_PROMPT}\n\n${SUMMARY_SQL_NOTE}` : SYSTEM_PROMPT;
+    const messages: AiChatMessage[] = [{ role: 'system', content: system }];
 
     // Prior conversation gives the model context for follow-up questions
     // ("what about Q2?"). Keep it short — the answers, not the row dumps.
+    // Earlier answers were unmasked for the user, so they are scrubbed again.
     for (const turn of history.slice(-8)) {
-        messages.push({ role: turn.role, content: turn.content.slice(0, 1000) });
+        const content = turn.content.slice(0, 1000);
+        messages.push({ role: turn.role, content: turn.role === 'assistant' ? ai.scrubText(content) : ai.mask(content) });
     }
 
-    messages.push({ role: 'user', content: question });
+    messages.push({ role: 'user', content: ai.mask(question) });
 
     if (feedback) {
         messages.push({ role: 'assistant', content: JSON.stringify({ sql: feedback.rejectedSql }) });
         messages.push({
             role: 'user',
-            content: `That SQL was rejected by the safety validator: ${feedback.reason}. Produce a corrected statement that follows every rule, as the same JSON format.`,
+            content: `That SQL was rejected by the safety validator: ${ai.mask(feedback.reason)}. Produce a corrected statement that follows every rule, as the same JSON format.`,
         });
     }
 
-    const content = await chatComplete(config, messages, { maxTokens: 1200, timeoutMs: 60000 });
+    const content = await ai.chat(messages, { maxTokens: 1200, timeoutMs: 60000 });
     const parsed = extractJsonObject(content);
 
     const sql = typeof parsed.sql === 'string' ? parsed.sql.trim() : '';

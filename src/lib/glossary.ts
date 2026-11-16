@@ -383,6 +383,12 @@ export const GLOSSARY: Record<string, GlossaryEntry> = {
         expansion: 'Safe Withdrawal Rate',
         gloss: 'The percentage of a portfolio you can withdraw annually with low risk of running out (the classic rule of thumb is 4%).',
     },
+
+    // ---- Integrations ----
+    MCP: {
+        expansion: 'Model Context Protocol',
+        gloss: 'An open standard that lets AI assistants such as Claude call tools in other apps. Folio exposes read-only tools over one book to any MCP client.',
+    },
 };
 
 /** Look up a glossary entry; returns undefined for unknown terms. */

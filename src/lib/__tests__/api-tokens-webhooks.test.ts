@@ -209,6 +209,8 @@ describe('resolveToken', () => {
             userId: 7,
             role: 'edit',
             bookGuid: 'book1234book1234book1234book1234',
+            // A row with no mcp_detail (created before the column) reads as summary.
+            mcpDetail: 'summary',
         });
     });
 
@@ -241,7 +243,20 @@ describe('authenticateBearer', () => {
             user: { id: 7, username: 'justin' },
             role: 'readonly',
             bookGuid: 'book1234book1234book1234book1234',
+            mcpDetail: 'summary',
         });
+    });
+
+    it('carries the token\'s MCP detail through (only exactly "full" is full)', async () => {
+        db.$queryRaw.mockResolvedValueOnce([tokenRow({ mcp_detail: 'full' })]);
+        db.gnucash_web_users.findUnique.mockResolvedValueOnce({ id: 7, username: 'justin' });
+        getUserRoleForBookMock.mockResolvedValueOnce('readonly');
+        expect((await authenticateBearer(KNOWN_SECRET))!.mcpDetail).toBe('full');
+
+        db.$queryRaw.mockResolvedValueOnce([tokenRow({ mcp_detail: 'FULL' })]);
+        db.gnucash_web_users.findUnique.mockResolvedValueOnce({ id: 7, username: 'justin' });
+        getUserRoleForBookMock.mockResolvedValueOnce('readonly');
+        expect((await authenticateBearer(KNOWN_SECRET))!.mcpDetail).toBe('summary');
     });
 
     it('never yields admin even when the user is a book admin', async () => {

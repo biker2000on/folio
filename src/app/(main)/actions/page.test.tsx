@@ -414,6 +414,95 @@ describe('FinancialActionCenterPage mutations', () => {
     );
   });
 
+  it('switches to priority steps, saves the choice, and groups decisions by step', async () => {
+    const opportunity = (
+      id: string,
+      title: string,
+      step: number,
+      stepLabel: string,
+      gateMessage: string | null,
+    ): FinancialAction => ({
+      ...action(id, title, 'decide'),
+      origin: 'opportunity',
+      score: { total: 70 } as FinancialAction['score'],
+      metadata: {
+        priorityLadder: {
+          version: 1,
+          step,
+          stepLabel,
+          stepReason: 'reason',
+          pack: 'x',
+          value: 100,
+          facts: null,
+          gate: {
+            status: gateMessage ? 'blocked' : 'not_applicable',
+            message: gateMessage,
+            reason: 'reason',
+            need: null,
+            fundable: null,
+            months: null,
+            perMonth: null,
+            spare: null,
+          },
+        },
+      },
+    });
+    const card = opportunity('card', 'Pay down the card', 1, 'Stop the bleeding', null);
+    const ira = opportunity('ira', 'Use IRA room', 6, 'Tax-advantaged saving', 'Pay off card interest first.');
+    const review = { ...action('review', 'Review insurance', 'decide'), origin: 'resilience' as const };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') return jsonResponse({ success: true });
+      const ladder = new URL(String(input), 'http://localhost').searchParams.get('order') === 'ladder';
+      return jsonResponse({
+        ...list(ladder ? [card, ira, review] : [ira, card, review]),
+        order: ladder ? 'ladder' : 'weighted',
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<FinancialActionCenterPage />);
+    expect(await screen.findByText('Use IRA room')).toBeVisible();
+    const order = screen.getByRole('group', { name: 'Order' });
+    expect(within(order).getByRole('button', { name: 'Best value' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('Step 1: Stop the bleeding')).not.toBeInTheDocument();
+    expect(screen.queryByText('Pay off card interest first.')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Score 70')).toHaveLength(2);
+
+    fireEvent.click(within(order).getByRole('button', { name: 'Priority steps' }));
+
+    expect(await screen.findByText('Step 1: Stop the bleeding')).toBeVisible();
+    expect(screen.getByText('Step 6: Tax-advantaged saving')).toBeVisible();
+    expect(screen.getByText('Other decisions')).toBeVisible();
+    expect(screen.getByText('Pay off card interest first.')).toBeVisible();
+    expect(screen.queryByText('Score 70')).not.toBeInTheDocument();
+    expect(within(order).getByRole('button', { name: 'Priority steps' })).toHaveAttribute('aria-pressed', 'true');
+    expect(fetchMock).toHaveBeenCalledWith('/api/user/preferences', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ preferences: { 'action_center.order': 'ladder' } }),
+    }));
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      expect.stringContaining('order=ladder'),
+      { cache: 'no-store' },
+    );
+    const titles = screen.getAllByRole('heading', { level: 3 }).map(heading => heading.textContent);
+    expect(titles).toEqual([
+      'Step 1: Stop the bleeding',
+      'Pay down the card',
+      'Step 6: Tax-advantaged saving',
+      'Use IRA room',
+      'Other decisions',
+      'Review insurance',
+    ]);
+  });
+
+  it('opens on the saved order the server reports', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ ...list([action('a', 'Only fix')]), order: 'ladder' })));
+
+    render(<FinancialActionCenterPage />);
+    expect(await screen.findByText('Only fix')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Priority steps' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('switches book context before opening a cross-book family action', async () => {
     searchParamsMock.current = new URLSearchParams('scope=family');
     switchBookMock.mockResolvedValue({ ok: true });

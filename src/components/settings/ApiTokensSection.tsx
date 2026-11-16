@@ -1,10 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { CollapsibleConfigSection } from '@/components/ui/CollapsibleConfigSection';
+import { Abbr } from '@/components/ui/Abbr';
 import { useToast } from '@/contexts/ToastContext';
 import { extractErrorMessage } from '@/lib/api-error';
+import { DEFAULT_MCP_DETAIL, MCP_DETAIL_OPTIONS, type McpDetail } from '@/lib/ai-privacy/privacy';
 
 interface ApiToken {
     id: number;
@@ -12,6 +14,7 @@ interface ApiToken {
     prefix: string;
     role: 'readonly' | 'edit';
     bookGuid: string | null;
+    mcpDetail?: McpDetail;
     expiresAt: string | null;
     lastUsedAt: string | null;
     createdAt: string;
@@ -29,6 +32,65 @@ function formatDate(iso: string | null): string {
     return new Date(iso).toLocaleDateString();
 }
 
+// The origin never changes after load; reading it through useSyncExternalStore
+// keeps the server render (no window) and the first client render consistent.
+const noopSubscribe = () => () => {};
+const getOrigin = () => window.location.origin;
+const getServerOrigin = () => 'https://<your-folio-host>';
+
+/**
+ * "Use with Claude (MCP)": the endpoint and a copyable `claude mcp add`
+ * command. The command carries a gcw_... placeholder, never a real token.
+ */
+function McpHint({ onCopyFailed }: { onCopyFailed: () => void }) {
+    const origin = useSyncExternalStore(noopSubscribe, getOrigin, getServerOrigin);
+    const endpoint = `${origin}/api/mcp`;
+    const command = `claude mcp add --transport http folio ${endpoint} --header "Authorization: Bearer gcw_..."`;
+    const [copied, setCopied] = useState(false);
+
+    const copy = async () => {
+        try {
+            await navigator.clipboard.writeText(command);
+            setCopied(true);
+        } catch {
+            onCopyFailed();
+        }
+    };
+
+    return (
+        <div className="space-y-2 rounded-lg border border-border p-4">
+            <h4 className="text-sm font-medium text-foreground">
+                Use with Claude (<Abbr term="MCP" />)
+            </h4>
+            <p className="text-sm text-foreground-muted">
+                Claude Code, Claude Desktop, and other MCP clients can query this book through the
+                read-only endpoint <code className="px-1 py-0.5 bg-surface-hover rounded-sm text-xs font-mono">{endpoint}</code>.
+                Create a read-only token, then run this with your token in place of <code className="px-1 py-0.5 bg-surface-hover rounded-sm text-xs font-mono">gcw_...</code>:
+            </p>
+            <div className="flex items-start gap-2">
+                <code className="flex-1 bg-background border border-border rounded-md px-3 py-2 text-xs font-mono text-foreground break-all select-all">
+                    {command}
+                </code>
+                <button
+                    type="button"
+                    onClick={() => void copy()}
+                    className="px-3 py-2 text-sm rounded-lg border border-border text-foreground hover:bg-surface-hover shrink-0"
+                >
+                    {copied ? 'Copied' : 'Copy'}
+                </button>
+            </div>
+            <p className="text-xs text-foreground-muted">
+                Tool results go to the model your client uses. By default it sees placeholders instead of
+                names, rounded amounts and months instead of dates. Full detail is a per-token choice, and
+                only works when your AI privacy mode is full detail too.{' '}
+                <Link href="/docs/admin/api-automation-and-webhooks" className="text-primary hover:underline">
+                    Claude Desktop setup and security notes
+                </Link>
+            </p>
+        </div>
+    );
+}
+
 export function ApiTokensSection() {
     const { success, error } = useToast();
     const [tokens, setTokens] = useState<ApiToken[]>([]);
@@ -40,6 +102,7 @@ export function ApiTokensSection() {
     const [name, setName] = useState('');
     const [role, setRole] = useState<'readonly' | 'edit'>('readonly');
     const [expiry, setExpiry] = useState('90d');
+    const [mcpDetail, setMcpDetail] = useState<McpDetail>(DEFAULT_MCP_DETAIL);
     const [newSecret, setNewSecret] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
 
@@ -72,13 +135,14 @@ export function ApiTokensSection() {
             const res = await fetch('/api/settings/api-tokens', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name.trim(), role, expiresAt }),
+                body: JSON.stringify({ name: name.trim(), role, expiresAt, mcpDetail }),
             });
             const data = await res.json().catch(() => null);
             if (!res.ok) throw new Error(extractErrorMessage(data, 'Failed to create token'));
             setNewSecret(data.secret);
             setCopied(false);
             setName('');
+            setMcpDetail(DEFAULT_MCP_DETAIL);
             success('API token created');
             void load();
         } catch (e) {
@@ -146,6 +210,7 @@ export function ApiTokensSection() {
                                     <th className="py-2 pr-3 font-medium">Name</th>
                                     <th className="py-2 pr-3 font-medium">Token</th>
                                     <th className="py-2 pr-3 font-medium">Role</th>
+                                    <th className="py-2 pr-3 font-medium"><Abbr term="MCP" /> detail</th>
                                     <th className="py-2 pr-3 font-medium">Expires</th>
                                     <th className="py-2 pr-3 font-medium">Last used</th>
                                     <th className="py-2 font-medium" />
@@ -164,6 +229,9 @@ export function ApiTokensSection() {
                                             }`}>
                                                 {t.role}
                                             </span>
+                                        </td>
+                                        <td className="py-2 pr-3 text-foreground-secondary">
+                                            {MCP_DETAIL_OPTIONS.find(o => o.value === (t.mcpDetail ?? DEFAULT_MCP_DETAIL))?.label}
                                         </td>
                                         <td className="py-2 pr-3 text-foreground-secondary">{t.expiresAt ? formatDate(t.expiresAt) : 'Never'}</td>
                                         <td className="py-2 pr-3 text-foreground-secondary">{formatDate(t.lastUsedAt)}</td>
@@ -197,6 +265,8 @@ export function ApiTokensSection() {
                     Create token
                 </button>
 
+                <McpHint onCopyFailed={() => error('Copy failed — select and copy manually')} />
+
                 {showCreate && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-black/50 p-4" role="dialog" aria-modal="true">
                         <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md space-y-4 overflow-auto rounded-lg border border-border bg-surface-elevated p-5">
@@ -224,6 +294,22 @@ export function ApiTokensSection() {
                                             <option value="readonly">Read-only</option>
                                             <option value="edit">Read and write</option>
                                         </select>
+                                    </label>
+                                    <label className="block space-y-1">
+                                        <span className="text-sm text-foreground">Detail for AI clients</span>
+                                        <select
+                                            value={mcpDetail}
+                                            onChange={e => setMcpDetail(e.target.value as McpDetail)}
+                                            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground"
+                                        >
+                                            {MCP_DETAIL_OPTIONS.map(o => (
+                                                <option key={o.value} value={o.value}>{o.label}</option>
+                                            ))}
+                                        </select>
+                                        <span className="block text-xs text-foreground-muted">
+                                            {MCP_DETAIL_OPTIONS.find(o => o.value === mcpDetail)?.what} Your AI privacy
+                                            mode in Settings → AI can lower this, never raise it.
+                                        </span>
                                     </label>
                                     <label className="block space-y-1">
                                         <span className="text-sm text-foreground">Expires</span>

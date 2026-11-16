@@ -14,6 +14,9 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import prisma from '@/lib/prisma';
 import { getUserRoleForBook, type Role } from '@/lib/services/permission.service';
+import { parseMcpDetail, type McpDetail } from '@/lib/ai-privacy/privacy';
+
+export type { McpDetail } from '@/lib/ai-privacy/privacy';
 
 export const TOKEN_PREFIX = 'gcw_';
 
@@ -33,6 +36,8 @@ export interface ApiTokenRecord {
     prefix: string;
     role: TokenRole;
     bookGuid: string | null;
+    /** How much the MCP endpoint shows this token's client (capped by the owner's AI privacy mode). */
+    mcpDetail: McpDetail;
     expiresAt: Date | null;
     lastUsedAt: Date | null;
     createdAt: Date;
@@ -44,6 +49,7 @@ export interface ResolvedToken {
     userId: number;
     role: TokenRole;
     bookGuid: string | null;
+    mcpDetail: McpDetail;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +135,12 @@ export function ensureApiTokensTable(): Promise<void> {
 
                   CREATE INDEX IF NOT EXISTS idx_api_tokens_user
                     ON gnucash_web_api_tokens(user_id, created_at DESC);
+
+                  -- MCP detail per token: 'summary' (default) or 'full'. The
+                  -- MCP endpoint uses the stricter of this and the owner's AI
+                  -- privacy mode (src/lib/mcp/shape.ts).
+                  ALTER TABLE gnucash_web_api_tokens
+                    ADD COLUMN IF NOT EXISTS mcp_detail VARCHAR(10) NOT NULL DEFAULT 'summary';
                 END $$;
             `);
         })();
@@ -150,6 +162,7 @@ interface TokenRow {
     prefix: string;
     role: string;
     book_guid: string | null;
+    mcp_detail?: string | null;
     expires_at: Date | null;
     last_used_at: Date | null;
     created_at: Date;
@@ -164,6 +177,7 @@ function rowToRecord(row: TokenRow): ApiTokenRecord {
         prefix: row.prefix,
         role: (row.role === 'edit' ? 'edit' : 'readonly'),
         bookGuid: row.book_guid,
+        mcpDetail: parseMcpDetail(row.mcp_detail),
         expiresAt: row.expires_at,
         lastUsedAt: row.last_used_at,
         createdAt: row.created_at,
@@ -177,6 +191,8 @@ export interface CreateTokenInput {
     /** null ⇒ the token follows the user's default (first accessible) book. */
     bookGuid?: string | null;
     expiresAt?: Date | null;
+    /** MCP detail; summary unless exactly 'full'. */
+    mcpDetail?: McpDetail;
 }
 
 /**
@@ -196,14 +212,15 @@ export async function createToken(
     const secret = generateTokenSecret();
     const tokenHash = hashToken(secret);
     const prefix = secret.slice(0, 8); // e.g. "gcw_ab12"
+    const mcpDetail = parseMcpDetail(input.mcpDetail);
 
     const rows = await prisma.$queryRaw<TokenRow[]>`
         INSERT INTO gnucash_web_api_tokens
-            (user_id, name, token_hash, prefix, role, book_guid, expires_at)
+            (user_id, name, token_hash, prefix, role, book_guid, expires_at, mcp_detail)
         VALUES
             (${userId}, ${name}, ${tokenHash}, ${prefix}, ${role},
-             ${input.bookGuid || null}, ${input.expiresAt || null})
-        RETURNING id, user_id, name, token_hash, prefix, role, book_guid,
+             ${input.bookGuid || null}, ${input.expiresAt || null}, ${mcpDetail})
+        RETURNING id, user_id, name, token_hash, prefix, role, book_guid, mcp_detail,
                   expires_at, last_used_at, created_at, revoked_at
     `;
 
@@ -214,7 +231,7 @@ export async function createToken(
 export async function listTokens(userId: number): Promise<ApiTokenRecord[]> {
     await ensureApiTokensTable();
     const rows = await prisma.$queryRaw<TokenRow[]>`
-        SELECT id, user_id, name, token_hash, prefix, role, book_guid,
+        SELECT id, user_id, name, token_hash, prefix, role, book_guid, mcp_detail,
                expires_at, last_used_at, created_at, revoked_at
         FROM gnucash_web_api_tokens
         WHERE user_id = ${userId} AND revoked_at IS NULL
@@ -249,7 +266,7 @@ export async function resolveToken(bearer: string): Promise<ResolvedToken | null
 
     const tokenHash = hashToken(bearer);
     const rows = await prisma.$queryRaw<TokenRow[]>`
-        SELECT id, user_id, name, token_hash, prefix, role, book_guid,
+        SELECT id, user_id, name, token_hash, prefix, role, book_guid, mcp_detail,
                expires_at, last_used_at, created_at, revoked_at
         FROM gnucash_web_api_tokens
         WHERE token_hash = ${tokenHash}
@@ -277,6 +294,7 @@ export async function resolveToken(bearer: string): Promise<ResolvedToken | null
         userId: row.user_id,
         role: row.role === 'edit' ? 'edit' : 'readonly',
         bookGuid: row.book_guid,
+        mcpDetail: parseMcpDetail(row.mcp_detail),
     };
 }
 
@@ -286,7 +304,7 @@ export async function resolveToken(bearer: string): Promise<ResolvedToken | null
  * Returns null when the token is invalid or grants no access.
  */
 export async function authenticateBearer(bearer: string): Promise<
-    { user: { id: number; username: string }; role: Role; bookGuid: string } | null
+    { user: { id: number; username: string }; role: Role; bookGuid: string; mcpDetail: McpDetail } | null
 > {
     const resolved = await resolveToken(bearer);
     if (!resolved) return null;
@@ -313,5 +331,5 @@ export async function authenticateBearer(bearer: string): Promise<
     const effectiveRole = capRole(resolved.role, userRole);
     if (!effectiveRole) return null;
 
-    return { user, role: effectiveRole, bookGuid };
+    return { user, role: effectiveRole, bookGuid, mcpDetail: resolved.mcpDetail };
 }
