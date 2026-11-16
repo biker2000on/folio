@@ -304,7 +304,35 @@ export function layoutLane<T extends Classifiable & { lane: FinancialActionLane 
   return entries;
 }
 
-/** The actions a lane shows as individual cards (keyboard focus walks these). */
+/** One thing keyboard focus can land on: an individual card, or a collapsed group. */
+export interface LaneNavItem<T> {
+  /** The action id for a card; `group:<lane>:<ruleId>` for a group. */
+  id: string;
+  lane: FinancialActionLane;
+  entry: LaneEntry<T>;
+}
+
+export function groupNavId(lane: FinancialActionLane, ruleId: string): string {
+  return `group:${lane}:${ruleId}`;
+}
+
+/**
+ * Everything the lanes show, in lane order then display order. This is what
+ * arrow keys walk and what the focus highlight follows, so a collapsed group
+ * is a stop like any card rather than a gap the keyboard skips.
+ */
+export function laneNavItems<T extends Classifiable & { lane: FinancialActionLane; id: string }>(
+  actions: T[],
+  lanes: FinancialActionLane[],
+): LaneNavItem<T>[] {
+  return lanes.flatMap(lane => layoutLane(actions, lane).map(entry => ({
+    id: entry.kind === 'card' ? entry.action.id : groupNavId(lane, entry.group.rule.id),
+    lane,
+    entry,
+  })));
+}
+
+/** The actions a lane shows as individual cards. */
 export function individualCards<T extends Classifiable & { lane: FinancialActionLane }>(
   actions: T[],
   lanes: FinancialActionLane[],

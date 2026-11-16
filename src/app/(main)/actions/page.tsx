@@ -18,7 +18,9 @@ import { usePopoutHost } from '@/lib/popout/usePopout';
 import { Tip } from '@/components/ui/Tooltip';
 import {
   getActionRule,
-  individualCards,
+  groupNavId,
+  laneNavItems,
+  type LaneNavItem,
   layoutLane,
   ruleIdForAction,
 } from '@/lib/financial-actions/rules';
@@ -154,7 +156,11 @@ function snoozeDate(days: number): string {
   return new Date(Date.now() + days * 86_400_000).toISOString();
 }
 
-function firstVisualActionIndex(actions: FinancialAction[]): number {
+/** A focus stop: a card or a collapsed group. Focus logic needs only these two fields. */
+type FocusStop = { id: string; lane: FinancialActionLane };
+type NavItem = LaneNavItem<FinancialAction>;
+
+function firstVisualActionIndex(actions: FocusStop[]): number {
   for (const lane of LANES) {
     const index = actions.findIndex(action => action.lane === lane.id);
     if (index >= 0) return index;
@@ -163,8 +169,8 @@ function firstVisualActionIndex(actions: FinancialAction[]): number {
 }
 
 function focusIndexAfterActionChange(
-  previousActions: FinancialAction[],
-  nextActions: FinancialAction[],
+  previousActions: FocusStop[],
+  nextActions: FocusStop[],
   currentIndex: number,
   departingIds: ReadonlySet<string> = new Set(),
 ): number {
@@ -450,7 +456,7 @@ export default function FinancialActionCenterPage() {
   const hasInitializedCardFocus = useRef(false);
   const pendingCardFocusIndex = useRef<number | null>(null);
   const shouldRevealFocusedCard = useRef(false);
-  const displayedActions = useRef<FinancialAction[]>([]);
+  const displayedActions = useRef<NavItem[]>([]);
   const focusedIndexRef = useRef(0);
   const dataRef = useRef<FinancialActionList | null>(null);
 
@@ -460,9 +466,8 @@ export default function FinancialActionCenterPage() {
   ) => {
     const previousActions = displayedActions.current;
     const previousFocusedIndex = focusedIndexRef.current;
-    // Keyboard focus walks the individual cards; grouped items are reached
-    // through their group card.
-    const nextCards = individualCards(nextData.actions, LANE_IDS);
+    // Keyboard focus walks every card the lanes show, collapsed groups included.
+    const nextCards = laneNavItems(nextData.actions, LANE_IDS);
     let nextFocusedIndex: number;
 
     if (!hasInitializedCardFocus.current && nextCards.length > 0) {
@@ -479,7 +484,12 @@ export default function FinancialActionCenterPage() {
       const previouslyFocusedAction = previousActions[
         Math.min(previousFocusedIndex, previousActions.length - 1)
       ];
-      if (previouslyFocusedAction && departingIds.has(previouslyFocusedAction.id)) {
+      // The focused stop left: its action was cleared, or it was a group
+      // whose items were all cleared or which fell back to single cards.
+      if (previouslyFocusedAction && (
+        departingIds.has(previouslyFocusedAction.id)
+        || !nextCards.some(item => item.id === previouslyFocusedAction.id)
+      )) {
         pendingCardFocusIndex.current = nextFocusedIndex;
       }
     }
@@ -560,7 +570,7 @@ export default function FinancialActionCenterPage() {
     };
   }, [load]);
 
-  const visibleActions = useMemo(() => individualCards(data?.actions ?? [], LANE_IDS), [data]);
+  const visibleActions = useMemo(() => laneNavItems(data?.actions ?? [], LANE_IDS), [data]);
 
   const updateState = useCallback(async (
     ids: string[],
@@ -723,6 +733,15 @@ export default function FinancialActionCenterPage() {
       ) {
         event.preventDefault();
         moveBetweenLanes(event.key === 'ArrowLeft' ? -1 : 1);
+      } else if (visibleActions[focusedIndex]?.entry.kind === 'group') {
+        // A group is a stop, not an item: Enter opens its list, where the
+        // single-key actions apply to one row at a time. They never act on a
+        // whole group from here.
+        const stop = visibleActions[focusedIndex];
+        if (event.key === 'Enter' && stop.entry.kind === 'group') {
+          event.preventDefault();
+          setOpenGroup({ ruleId: stop.entry.group.rule.id, lane: stop.lane });
+        }
       } else if (event.key === 'x' && visibleActions[focusedIndex]) {
         event.preventDefault();
         const id = visibleActions[focusedIndex].id;
@@ -921,7 +940,7 @@ export default function FinancialActionCenterPage() {
       )}
 
       <div className="hidden text-right text-[11px] text-foreground-muted md:block">
-        Keyboard: <span className="font-mono">↑/↓</span> row · <span className="font-mono">←/→</span> lane (desktop) · <span className="font-mono">x</span> select · <span className="font-mono">a</span> accept · <span className="font-mono">s</span> snooze · <span className="font-mono">d</span> dismiss
+        Keyboard: <span className="font-mono">↑/↓</span> row · <span className="font-mono">←/→</span> lane (desktop) · <span className="font-mono">enter</span> open group · <span className="font-mono">x</span> select · <span className="font-mono">a</span> accept · <span className="font-mono">s</span> snooze · <span className="font-mono">d</span> dismiss
       </div>
 
       {loading && (
@@ -1014,9 +1033,12 @@ export default function FinancialActionCenterPage() {
                         const entry = entryByLeadId.get(lead.id)!;
                         if (entry.kind === 'group') {
                           const { group } = entry;
+                          const navId = groupNavId(lane.id, group.rule.id);
                           return (
                             <GroupCard
-                              key={`group:${group.rule.id}`}
+                              key={navId}
+                              navId={navId}
+                              focused={visibleActions.findIndex(item => item.id === navId) === focusedIndex}
                               group={group}
                               canEdit
                               busy={mutating || pendingRuleId !== null}

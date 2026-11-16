@@ -529,4 +529,99 @@ describe('FinancialActionCenterPage mutations', () => {
     ));
     expect(routerPushMock).not.toHaveBeenCalled();
   });
+
+  describe('collapsed groups and rules', () => {
+    const review = (id: string, title: string): FinancialAction => ({
+      ...action(id, title),
+      origin: 'transaction_review',
+      stableKey: `transaction-review:${id}`,
+    });
+    const group = () => document.querySelector<HTMLElement>('[data-rule-group="review.imported"]')!;
+
+    it('gives a collapsed group the focus highlight and a place in arrow navigation', async () => {
+      const lone = action('lone', 'Lone check');
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(list([
+        review('r1', 'Review one'),
+        review('r2', 'Review two'),
+        review('r3', 'Review three'),
+        lone,
+      ]))));
+
+      render(<FinancialActionCenterPage />);
+      const loneCard = (await screen.findByText('Lone check')).closest('article')!;
+      // The group leads the Fix lane, so it takes the initial focus.
+      await waitFor(() => expect(group()).toHaveFocus());
+      expect(group()).toHaveClass('ring-1');
+      expect(loneCard).not.toHaveClass('ring-1');
+
+      fireEvent.keyDown(window, { key: 'ArrowDown' });
+      expect(group()).not.toHaveClass('ring-1');
+      expect(loneCard).toHaveClass('ring-1');
+
+      fireEvent.keyDown(window, { key: 'ArrowUp' });
+      expect(group()).toHaveClass('ring-1');
+    });
+
+    it('opens the group list on Enter and never dismisses a whole group from a single key', async () => {
+      const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'PATCH') return jsonResponse({ ok: true, updated: 3 });
+        return jsonResponse(list([
+          review('r1', 'Review one'),
+          review('r2', 'Review two'),
+          review('r3', 'Review three'),
+        ]));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(<FinancialActionCenterPage />);
+      await waitFor(() => expect(group()).toHaveFocus());
+
+      fireEvent.keyDown(window, { key: 'd' });
+      fireEvent.keyDown(window, { key: 'a' });
+      fireEvent.keyDown(window, { key: 's' });
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+
+      fireEvent.keyDown(window, { key: 'Enter' });
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByText('Review two')).toBeVisible();
+
+      // Inside the list the single keys act on the highlighted row only.
+      fireEvent.keyDown(document, { key: 'ArrowDown' });
+      fireEvent.keyDown(document, { key: 'd' });
+      await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true));
+      const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')!;
+      expect(JSON.parse(String(patch[1]!.body))).toMatchObject({ ids: ['r2'], state: 'dismissed' });
+    });
+
+    it('filters the rules list by search', async () => {
+      const rules = [
+        { id: 'spending.category-spike', label: 'Category spending spikes', description: 'A category above its average.', section: 'spending', lane: 'decide', enabled: true, openCount: 4 },
+        { id: 'spending.new-merchant', label: 'New merchants', description: 'First imported charge from a merchant.', section: 'spending', lane: 'decide', enabled: true, openCount: 0 },
+        { id: 'reconcile.stale', label: 'Accounts to reconcile', description: 'Never reconciled, or not recently.', section: 'books', lane: 'fix', enabled: true, openCount: 2 },
+      ];
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => (
+        String(input).startsWith('/api/actions/rules')
+          ? jsonResponse({ rules })
+          : jsonResponse(list([action('one', 'One action')]))
+      )));
+
+      render(<FinancialActionCenterPage />);
+      await screen.findByText('One action');
+      fireEvent.click(screen.getByRole('button', { name: /^Rules/ }));
+
+      const dialog = await screen.findByRole('dialog');
+      await within(dialog).findByRole('switch', { name: 'New merchants' });
+      expect(within(dialog).getAllByRole('switch')).toHaveLength(3);
+
+      fireEvent.change(within(dialog).getByRole('searchbox', { name: 'Search rules' }), { target: { value: 'merchant' } });
+      expect(within(dialog).getAllByRole('switch')).toHaveLength(1);
+      expect(within(dialog).getByRole('switch', { name: 'New merchants' })).toBeVisible();
+      // A section with no matching rule drops its heading too.
+      expect(within(dialog).queryByText('Books and imports')).not.toBeInTheDocument();
+
+      fireEvent.change(within(dialog).getByRole('searchbox', { name: 'Search rules' }), { target: { value: 'zzz' } });
+      expect(within(dialog).queryAllByRole('switch')).toHaveLength(0);
+      expect(within(dialog).getByText(/No rule matches/)).toBeVisible();
+    });
+  });
 });

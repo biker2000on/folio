@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from '@/components/ui/Modal';
 import { ActionMenu } from '@/components/ui/ActionMenu';
 import { INPUT, TNUM } from '@/components/ui/form';
@@ -88,6 +88,8 @@ function severityCounts(actions: FinancialAction[]) {
 
 export function GroupCard({
   group,
+  navId,
+  focused,
   canEdit,
   busy,
   onReview,
@@ -95,6 +97,10 @@ export function GroupCard({
   onDisableRule,
 }: {
   group: ActionGroup<FinancialAction>;
+  /** Focus-stop id shared with the page's keyboard navigation. */
+  navId: string;
+  /** Whether keyboard focus is on this card. */
+  focused: boolean;
   canEdit: boolean;
   busy: boolean;
   onReview: () => void;
@@ -121,7 +127,11 @@ export function GroupCard({
     <section
       aria-label={`${rule.label}, ${countLabel(actions.length)}`}
       data-rule-group={rule.id}
-      className="rounded-lg border border-border bg-surface"
+      data-action-id={navId}
+      tabIndex={focused ? 0 : -1}
+      className={`rounded-lg border bg-surface transition-colors ${
+        focused ? 'border-primary ring-1 ring-primary/30' : 'border-border hover:border-primary/40'
+      }`}
     >
       <div className="flex items-start justify-between gap-3 px-4 pt-4">
         <div className="min-w-0">
@@ -206,6 +216,8 @@ export function GroupDrillDown({
   onDisableRule: (ruleId: string) => void;
 }) {
   const [filter, setFilter] = useState('');
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const listRef = useRef<HTMLUListElement>(null);
   const rows = useMemo(() => foldIdenticalActions(group?.actions ?? []), [group]);
   const needle = filter.trim().toLowerCase();
   const visible = needle
@@ -214,6 +226,48 @@ export function GroupDrillDown({
   const visibleIds = visible.flatMap(row => row.members.map(member => member.id));
   const lane = group?.actions[0]?.lane;
   const clearWord = lane === 'do' ? 'Resolve' : 'Dismiss';
+  // The highlighted row; falls back to the first when the previous one is gone.
+  const activeRow = visible.find(row => row.key === activeKey) ?? visible[0] ?? null;
+
+  // Same grammar as the lanes, one row at a time: arrows move, Enter opens,
+  // d clears, s snoozes. Typing in the filter is left alone.
+  useEffect(() => {
+    if (!group) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      const typing = target instanceof Element && target.matches('input, textarea, select');
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        if (visible.length === 0) return;
+        event.preventDefault();
+        const at = Math.max(0, visible.findIndex(row => row.key === activeRow?.key));
+        const next = visible[Math.max(0, Math.min(visible.length - 1, at + (event.key === 'ArrowDown' ? 1 : -1)))];
+        setActiveKey(next.key);
+        const element = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-row-key]') ?? [])]
+          .find(item => item.dataset.rowKey === next.key);
+        if (typeof element?.scrollIntoView === 'function') element.scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      if (typing || !activeRow || busy) return;
+      if (target instanceof Element && target.matches('button, a')) return;
+      const ids = activeRow.members.map(member => member.id);
+      if (event.key === 'Enter') {
+        const primary = activeRow.lead.operations.find(operation => operation.primary && operation.href)
+          ?? activeRow.lead.operations.find(operation => operation.href);
+        if (primary?.href) {
+          event.preventDefault();
+          onOpen(activeRow.lead, primary.href);
+        }
+      } else if (event.key === 'd' && canEdit) {
+        event.preventDefault();
+        onState(ids, clearingState(activeRow.lead));
+      } else if (event.key === 's' && canEdit) {
+        event.preventDefault();
+        onState(ids, 'snoozed', new Date(Date.now() + 7 * 86_400_000).toISOString());
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [group, visible, activeRow, busy, canEdit, onOpen, onState]);
 
   return (
     <Modal
@@ -270,7 +324,11 @@ export function GroupDrillDown({
             </div>
           )}
 
-          <ul>
+          <p className="border-b border-border px-5 py-2 text-xs text-foreground-muted">
+            <span className="font-mono">↑/↓</span> row · <span className="font-mono">enter</span> open ·{' '}
+            <span className="font-mono">d</span> {clearWord.toLowerCase()} · <span className="font-mono">s</span> snooze
+          </p>
+          <ul ref={listRef}>
             {visible.length === 0 && (
               <li className="px-5 py-10 text-center text-sm text-foreground-muted">
                 Nothing matches “{filter}”.
@@ -283,7 +341,15 @@ export function GroupDrillDown({
               const detail = itemDetail(action);
               const ids = row.members.map(member => member.id);
               return (
-                <li key={row.key} className="flex flex-col gap-3 border-b border-border px-5 py-3 last:border-b-0 sm:flex-row sm:items-start">
+                <li
+                  key={row.key}
+                  data-row-key={row.key}
+                  aria-current={activeRow?.key === row.key ? 'true' : undefined}
+                  onMouseEnter={() => setActiveKey(row.key)}
+                  className={`flex flex-col gap-3 border-b border-border px-5 py-3 last:border-b-0 sm:flex-row sm:items-start ${
+                    activeRow?.key === row.key ? 'bg-surface-hover' : ''
+                  }`}
+                >
                   <span
                     aria-hidden="true"
                     className={`mt-1.5 hidden h-2 w-2 shrink-0 rounded-full sm:block ${SEVERITY_DOT[action.severity]}`}
@@ -394,8 +460,12 @@ export function RulesPanel({
   onToggle: (ruleId: string, enabled: boolean) => void;
   onRetry: () => void;
 }) {
+  const [query, setQuery] = useState('');
   const off = (rules ?? []).filter(rule => !rule.enabled);
   const hidden = off.reduce((sum, rule) => sum + rule.openCount, 0);
+  const needle = query.trim().toLowerCase();
+  const matching = (rules ?? []).filter(rule =>
+    !needle || `${rule.label} ${rule.description}`.toLowerCase().includes(needle));
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Action Center rules" size="lg">
@@ -414,6 +484,24 @@ export function RulesPanel({
           )}
         </div>
 
+        {rules && (
+          <div className="border-b border-border px-5 py-3">
+            <input
+              type="search"
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+              placeholder="Search rules"
+              aria-label="Search rules"
+              className={INPUT}
+            />
+          </div>
+        )}
+        {rules && matching.length === 0 && (
+          <p className="px-5 py-10 text-center text-sm text-foreground-muted">
+            No rule matches “{query}”.
+          </p>
+        )}
+
         {loading && !rules && (
           <div className="space-y-px px-5 py-4" aria-busy="true">
             {Array.from({ length: 6 }).map((_, index) => (
@@ -431,7 +519,7 @@ export function RulesPanel({
         )}
 
         {rules && ACTION_RULE_SECTIONS.map(section => {
-          const sectionRules = rules.filter(rule => rule.section === section.id);
+          const sectionRules = matching.filter(rule => rule.section === section.id);
           if (sectionRules.length === 0) return null;
           return (
             <section key={section.id} aria-label={section.label}>
