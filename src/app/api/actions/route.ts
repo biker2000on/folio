@@ -47,6 +47,10 @@ export async function GET(request: NextRequest) {
     const verifiedDates = results.map(result => result.verifiedThrough).filter((date): date is string => !!date);
     return NextResponse.json({
       actions: results.flatMap(result => result.actions).sort(compareFinancialActions),
+      muted: {
+        rules: Math.max(0, ...results.map(result => result.muted?.rules ?? 0)),
+        items: results.reduce((sum, result) => sum + (result.muted?.items ?? 0), 0),
+      },
       summary: results.reduce((summary, result) => ({
         new: summary.new + result.summary.new,
         resolved: summary.resolved + result.summary.resolved,

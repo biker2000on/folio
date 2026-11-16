@@ -2,7 +2,9 @@
 
 import { useState } from 'react';
 import { ProvenanceModal } from '@/components/provenance/ProvenanceModal';
+import Link from 'next/link';
 import { ErrorLiveRegion } from '@/components/a11y/LiveRegion';
+import { TNUM } from '@/components/ui/form';
 
 interface TraceReference {
     traceId: string;
@@ -60,6 +62,10 @@ interface KPIData {
 interface KPIGridProps {
     data: KPIData | null;
     loading: boolean;
+    /** Name of the selected period, shown beside the flow figures ("This Year"). */
+    periodLabel?: string;
+    /** Date the balances are valued at, shown beside them ("16 Nov"). */
+    asOfLabel?: string;
 }
 
 function formatCurrency(value: number): string {
@@ -79,7 +85,7 @@ function ChangeIndicator({ value, suffix = '' }: { value: number; suffix?: strin
     if (value === 0) return null;
     const isPositive = value > 0;
     return (
-        <span className={`flex items-center gap-1 text-xs font-medium ${isPositive ? 'text-positive' : 'text-negative'}`}>
+        <span className={`flex items-center gap-1 font-mono text-xs font-medium ${isPositive ? 'text-positive' : 'text-negative'}`} style={TNUM}>
             <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                 {isPositive ? (
                     <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
@@ -92,39 +98,33 @@ function ChangeIndicator({ value, suffix = '' }: { value: number; suffix?: strin
     );
 }
 
-function KPICardSkeleton() {
-    return (
-        <div className="bg-surface border border-border rounded-lg p-4 sm:p-6 animate-pulse">
-            <div className="flex items-center gap-3 sm:mb-4">
-                <div className="w-10 h-10 bg-background-secondary rounded-lg flex-shrink-0" />
-                <div className="sm:hidden flex-1">
-                    <div className="h-3 w-16 bg-background-secondary rounded mb-1" />
-                    <div className="h-5 w-24 bg-background-secondary rounded" />
-                </div>
-                <div className="hidden sm:block h-4 w-24 bg-background-secondary rounded" />
-            </div>
-            <div className="hidden sm:block h-7 w-32 bg-background-secondary rounded mb-2" />
-            <div className="hidden sm:block h-4 w-20 bg-background-secondary rounded" />
-        </div>
-    );
-}
-
 interface KPICardProps {
-    icon: React.ReactNode;
     label: string;
+    /** What the figure covers: a period for flows, a date for balances. */
+    period?: string;
     value: string;
-    change?: React.ReactNode;
-    sublabel?: string;
+    /** Tone of the headline figure; a rate below zero reads as a loss. */
+    negative?: boolean;
+    detail?: React.ReactNode;
     /** Short note that the number is partial; rendered in the warning color. */
     caveat?: string;
+    /** The view that explains this number, and the words that say so. */
+    href: string;
+    cta: string;
     traceId?: string;
     onExplain?: (traceId: string) => void;
 }
 
+const STRIP = 'grid grid-cols-1 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2 xl:grid-cols-5';
+// Five cells in two columns leave a hole; the lead figure takes the full row.
+const CELL = 'relative flex min-w-0 flex-col bg-surface px-4 py-3 first:sm:col-span-2 first:xl:col-span-1 sm:px-5 sm:py-4';
+
 function ExplainButton({
+    label,
     traceId,
     onExplain,
 }: {
+    label: string;
     traceId?: string;
     onExplain?: (traceId: string) => void;
 }) {
@@ -133,130 +133,74 @@ function ExplainButton({
         <button
             type="button"
             onClick={() => onExplain(traceId)}
-            className="text-[11px] font-medium text-primary hover:text-primary-hover"
-            aria-label="Explain this number"
+            className="relative z-10 -my-1 rounded-md px-1.5 py-1 text-xs font-medium text-foreground-secondary transition-colors duration-150 hover:bg-surface-hover hover:text-primary"
+            aria-label={`Explain ${label}`}
         >
             Explain
         </button>
     );
 }
 
-function KPICard({ icon, label, value, change, sublabel, caveat, traceId, onExplain }: KPICardProps) {
+/**
+ * One headline figure. The whole cell is the hit target: the visible "what
+ * opens" text is the real link and its ::after covers the cell, so Explain
+ * sits above that layer and keeps working (DESIGN.md "Every KPI card is a way in").
+ */
+function KPICard({ label, period, value, negative, detail, caveat, href, cta, traceId, onExplain }: KPICardProps) {
     return (
-        <div className="bg-surface border border-border rounded-lg p-4 sm:p-6 transition-all hover:border-primary/30">
-            <div className="flex items-center gap-3 sm:mb-4">
-                <div className="w-10 h-10 rounded-lg bg-background-secondary flex items-center justify-center text-foreground-secondary flex-shrink-0">
-                    {icon}
+        <div className={`group ${CELL} transition-colors duration-150 hover:bg-surface-hover focus-within:bg-surface-hover`}>
+            <div className="flex items-baseline justify-between gap-2">
+                <div className="min-w-0 truncate text-xs font-medium text-foreground-secondary">
+                    {label}
+                    {period && <span className="font-normal text-foreground-muted"> · {period}</span>}
                 </div>
-                <div className="sm:hidden flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
-                        <div className="text-xs text-foreground-secondary font-medium">{label}</div>
-                        <div className="text-sm font-bold text-foreground">{value}</div>
-                    </div>
-                    {(change || sublabel) && (
-                        <div className="flex items-center gap-2 justify-end">
-                            {change && <div>{change}</div>}
-                            {sublabel && <div className="text-xs text-foreground-muted">{sublabel}</div>}
-                        </div>
-                    )}
-                </div>
-                <span className="hidden sm:inline text-sm text-foreground-secondary font-medium flex-1">{label}</span>
-                <span className="hidden sm:inline">
-                    <ExplainButton traceId={traceId} onExplain={onExplain} />
-                </span>
+                <ExplainButton label={label} traceId={traceId} onExplain={onExplain} />
             </div>
-            <div className="hidden sm:block text-2xl font-bold text-foreground mb-1">{value}</div>
-            {change && <div className="hidden sm:block">{change}</div>}
-            {sublabel && <div className="hidden sm:block text-xs text-foreground-muted mt-1">{sublabel}</div>}
-            {caveat && <div className="hidden sm:block text-xs text-warning mt-1">{caveat}</div>}
+            <div
+                className={`mt-2 whitespace-nowrap font-mono text-2xl font-semibold ${negative ? 'text-negative' : 'text-foreground'}`}
+                style={TNUM}
+            >
+                {value}
+            </div>
+            {detail && <div className="mt-1 min-w-0 text-xs text-foreground-muted">{detail}</div>}
+            {caveat && <div className="mt-1 text-xs text-warning">{caveat}</div>}
+            <div className="mt-auto pt-3">
+                <Link
+                    href={href}
+                    className="inline-flex items-center gap-0.5 text-xs font-medium text-foreground-secondary transition-colors duration-150 after:absolute after:inset-0 after:content-[''] group-hover:text-primary focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-primary"
+                >
+                    {cta}
+                    <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={1.75}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 3.5 10.5 8 6 12.5" />
+                    </svg>
+                </Link>
+            </div>
         </div>
     );
 }
 
-// Icon components
-function IconNetWorth() {
-    return (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M2 20h20M5 20V10l7-7 7 7v10" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 20v-4a3 3 0 016 0v4" />
-        </svg>
-    );
-}
-
-function IconIncome() {
-    return (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M22 7l-7 7-4-4-8 8" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M16 7h6v6" />
-        </svg>
-    );
-}
-
-function IconExpense() {
-    return (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M22 17l-7-7-4 4-8-8" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M16 17h6v-6" />
-        </svg>
-    );
-}
-
-function IconSavings() {
-    return (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19 10c0-1.5-.5-3-2-4M10 4.5C7 4.5 4 7 4 10.5c0 2 .5 3 1.5 4L5 18h3l.5-1h7l.5 1h3l-.5-3.5c1-.5 2-2 2-4.5 0-1-.5-3-2-4" />
-            <circle cx="14" cy="10" r="1" fill="currentColor" stroke="none" />
-            <path strokeLinecap="round" d="M10 4.5C10 3.12 11.12 2 12.5 2S15 3.12 15 4.5" />
-        </svg>
-    );
-}
-
-function IconInvestment() {
-    return (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-            <path strokeLinecap="round" d="M3 3v18h18" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M7 16v-3M11 16V9M15 16v-5M19 16V7" />
-        </svg>
-    );
-}
-
-export default function KPIGrid({ data, loading }: KPIGridProps) {
+export default function KPIGrid({ data, loading, periodLabel, asOfLabel }: KPIGridProps) {
     const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
     if (loading) {
         return (
-            <>
-                <div className="sm:hidden bg-surface border border-border rounded-lg divide-y divide-border/40 animate-pulse">
-                    {Array.from({ length: 5 }).map((_, i) => (
-                        <div key={i} className="flex items-center gap-3 px-4 py-2.5">
-                            <div className="w-8 h-8 bg-background-secondary rounded-lg shrink-0" />
-                            <div className="h-3 w-24 bg-background-secondary rounded" />
-                            <div className="h-4 w-20 bg-background-secondary rounded ml-auto" />
-                        </div>
-                    ))}
-                </div>
-                <div className="hidden sm:grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-                    {Array.from({ length: 5 }).map((_, i) => (
-                        <KPICardSkeleton key={i} />
-                    ))}
-                </div>
-            </>
+            <div className={`${STRIP} animate-pulse`} aria-busy="true">
+                {Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} className={CELL}>
+                        <div className="h-3 w-24 rounded bg-background-secondary" />
+                        <div className="mt-3 h-7 w-32 rounded bg-background-secondary" />
+                        <div className="mt-2 h-3 w-28 rounded bg-background-secondary" />
+                        <div className="mt-5 h-3 w-20 rounded bg-background-secondary" />
+                    </div>
+                ))}
+            </div>
         );
     }
 
     if (!data) {
         return (
-            <>
-                <div className="sm:hidden bg-surface border border-border rounded-lg p-6">
-                    <p className="text-foreground-muted text-sm text-center">No data</p>
-                </div>
-                <div className="hidden sm:grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-                    {Array.from({ length: 5 }).map((_, i) => (
-                        <div key={i} className="bg-surface border border-border rounded-lg p-6">
-                            <p className="text-foreground-muted text-sm text-center">No data</p>
-                        </div>
-                    ))}
-                </div>
-            </>
+            <div className="rounded-lg border border-border bg-surface px-6 py-8 text-center">
+                <p className="text-sm text-foreground-muted">No figures are available for this period.</p>
+            </div>
         );
     }
 
@@ -301,59 +245,94 @@ export default function KPIGrid({ data, loading }: KPIGridProps) {
             ? 'Net worth change is not available'
             : 'These totals use out-of-date prices';
 
+    const net = data.totalIncome - data.totalExpenses;
+    const mono = 'font-mono';
     const cards: KPICardProps[] = [
         {
-            icon: <IconNetWorth />,
-            label: 'Net Worth',
+            label: 'Net worth',
+            period: asOfLabel,
             value: formatCurrency(data.netWorth),
             caveat: valuationCaveat,
-            change: changeComparable ? (
-                <div className="flex items-center gap-2">
+            detail: changeComparable ? (
+                <span className="flex flex-wrap items-center gap-x-2">
                     <ChangeIndicator value={data.netWorthChange} />
-                    <span className="text-xs text-foreground-muted">
-                        ({formatPercent(data.netWorthChangePercent)})
-                    </span>
-                </div>
-            ) : (
-                <span className="text-xs font-medium text-warning">
-                    Change not available
+                    <span className={mono} style={TNUM}>{formatPercent(data.netWorthChangePercent)}</span>
+                    {periodLabel && <span>over {periodLabel.toLowerCase()}</span>}
                 </span>
+            ) : (
+                <span className="font-medium text-warning">Change not available</span>
             ),
+            href: '/reports/balance_sheet',
+            cta: 'Balance sheet',
             traceId: data.traces?.netWorth?.traceId,
             onExplain: setSelectedTraceId,
         },
         {
-            icon: <IconIncome />,
-            label: 'Total Income',
+            label: 'Income',
+            period: periodLabel,
             value: formatCurrency(data.totalIncome),
+            detail: (
+                <span>
+                    <span className={`${mono} ${net > 0 ? 'text-positive' : net < 0 ? 'text-negative' : ''}`} style={TNUM}>
+                        {formatCurrency(net)}
+                    </span>{' '}
+                    left after expenses
+                </span>
+            ),
+            href: '/reports/income_statement',
+            cta: 'Income statement',
             traceId: data.traces?.totalIncome?.traceId,
             onExplain: setSelectedTraceId,
         },
         {
-            icon: <IconExpense />,
-            label: 'Total Expenses',
+            label: 'Expenses',
+            period: periodLabel,
             value: formatCurrency(data.totalExpenses),
-            sublabel: data.topExpenseCategory ? `Top: ${data.topExpenseCategory}` : undefined,
+            detail: data.topExpenseCategory ? (
+                <span className="flex min-w-0 gap-1.5">
+                    <span className="truncate">Top: {data.topExpenseCategory}</span>
+                    <span className={`shrink-0 ${mono}`} style={TNUM}>{formatCurrency(data.topExpenseAmount)}</span>
+                </span>
+            ) : undefined,
+            href: '/reports/income_statement',
+            cta: 'Income statement',
             traceId: data.traces?.totalExpenses?.traceId,
             onExplain: setSelectedTraceId,
         },
         {
-            icon: <IconSavings />,
-            label: 'Savings Rate',
+            label: 'Savings rate',
+            period: periodLabel,
             value: `${data.savingsRate.toFixed(1)}%`,
-            change: (
-                <span className={`text-xs font-medium ${data.savingsRate >= 0 ? 'text-positive' : 'text-negative'}`}>
-                    {data.savingsRate >= 20 ? 'Healthy' : data.savingsRate >= 0 ? 'Low' : 'Negative'}
+            negative: data.savingsRate < 0,
+            // The arithmetic, not a verdict: what was kept, out of what came in.
+            detail: data.totalIncome > 0 ? (
+                <span>
+                    <span className={mono} style={TNUM}>{formatCurrency(net)}</span> kept of{' '}
+                    <span className={mono} style={TNUM}>{formatCurrency(data.totalIncome)}</span>
                 </span>
+            ) : (
+                <span>No income in this period</span>
             ),
+            href: '/reports/cash_flow',
+            cta: 'Cash flow',
             traceId: data.traces?.savingsRate?.traceId,
             onExplain: setSelectedTraceId,
         },
         {
-            icon: <IconInvestment />,
-            label: 'Investment Value',
+            label: 'Investments',
+            period: asOfLabel,
             value: formatCurrency(data.investmentValue),
             caveat: valuationCaveat,
+            detail: data.netWorth > 0 && data.investmentValue > 0 ? (
+                <span>
+                    <span className={mono} style={TNUM}>
+                        {Math.round((data.investmentValue / data.netWorth) * 100)}%
+                    </span>{' '}
+                    of net worth
+                </span>
+            ) : undefined,
+            href: '/investments',
+            cta: 'Holdings',
             traceId: data.traces?.investmentValue?.traceId,
             onExplain: setSelectedTraceId,
         },
@@ -423,39 +402,7 @@ export default function KPIGrid({ data, loading }: KPIGridProps) {
                 </div>
             )}
 
-            {/* Phone: one condensed card with a row per KPI */}
-            <div className="sm:hidden bg-surface border border-border rounded-lg divide-y divide-border/40">
-                {cards.map(card => (
-                    <div key={card.label} className="flex items-center gap-3 px-4 py-2.5">
-                        <div className="w-8 h-8 rounded-lg bg-background-secondary flex items-center justify-center text-foreground-secondary shrink-0">
-                            {card.icon}
-                        </div>
-                        <div className="text-xs text-foreground-secondary font-medium flex-1 min-w-0 truncate">
-                            {card.label}
-                        </div>
-                        <div className="text-right min-w-0">
-                            <div className="text-sm font-bold text-foreground font-mono" style={{ fontFeatureSettings: "'tnum'" }}>
-                                {card.value}
-                            </div>
-                            {(card.change || card.sublabel) && (
-                                <div className="flex items-center gap-2 justify-end">
-                                    {card.change}
-                                    {card.sublabel && (
-                                        <span className="text-[11px] text-foreground-muted truncate max-w-36">{card.sublabel}</span>
-                                    )}
-                                </div>
-                            )}
-                            {card.caveat && (
-                                <div className="text-[11px] text-warning">{card.caveat}</div>
-                            )}
-                            <ExplainButton traceId={card.traceId} onExplain={card.onExplain} />
-                        </div>
-                    </div>
-                ))}
-            </div>
-
-            {/* Tablet/desktop: card grid */}
-            <div className="hidden sm:grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+            <div className={STRIP}>
                 {cards.map(card => (
                     <KPICard key={card.label} {...card} />
                 ))}

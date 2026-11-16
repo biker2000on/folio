@@ -41,7 +41,11 @@ const HIDDEN_STORAGE_KEY = 'dashboard.netWorthChart.hiddenSeries.v2';
 // range runs from the liability floor to the asset ceiling, which flattens
 // every line's movement over a short period.
 const SHARED_SCALE_STORAGE_KEY = 'dashboard.netWorthChart.sharedScale';
-const LIABILITY_COLOR = '#f87171';
+// Series colours come from tokens so the chart follows the theme: the headline
+// line is the accent, assets the secondary accent, liabilities the money-negative role.
+const NET_WORTH_COLOR = 'var(--primary)';
+const ASSET_COLOR = 'var(--secondary)';
+const LIABILITY_COLOR = 'var(--negative)';
 
 function loadHidden(): Set<SeriesKey> {
     if (typeof window === 'undefined') return new Set(DEFAULT_HIDDEN);
@@ -215,7 +219,7 @@ export default function NetWorthChart({ data, loading }: NetWorthChartProps) {
     if (points.length === 0) {
         return (
             <div className={`bg-surface border border-border rounded-lg p-6 ${expanded ? 'h-full' : ''}`}>
-                <h3 className="text-lg font-semibold text-foreground mb-4">Net Worth Over Time</h3>
+                <h3 className="text-base font-semibold text-foreground mb-4">Net Worth Over Time</h3>
                 <div className="h-[350px] flex items-center justify-center">
                     <p className="text-foreground-muted text-sm">No net worth data available for this period.</p>
                 </div>
@@ -228,7 +232,7 @@ export default function NetWorthChart({ data, loading }: NetWorthChartProps) {
             {/* pr-6 keeps the chip clear of ExpandableChart's hover-only
                 expand button in the card's top-right corner. */}
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4 pr-6">
-                <h3 className="text-lg font-semibold text-foreground">Net Worth Over Time</h3>
+                <h3 className="text-base font-semibold text-foreground">Net Worth Over Time</h3>
                 {canSplit && (
                     <button
                         type="button"
@@ -306,21 +310,21 @@ export default function NetWorthChart({ data, loading }: NetWorthChartProps) {
                         dataKey="netWorth"
                         yAxisId="left"
                         hide={hidden.has('netWorth')}
-                        stroke="#34d399"
+                        stroke={NET_WORTH_COLOR}
                         strokeWidth={2.5}
                         dot={false}
-                        activeDot={{ r: 5, fill: '#34d399', stroke: 'var(--background)', strokeWidth: 2 }}
+                        activeDot={{ r: 5, fill: NET_WORTH_COLOR, stroke: 'var(--background)', strokeWidth: 2 }}
                     />
                     <Line
                         type="monotone"
                         dataKey="assets"
                         yAxisId="left"
                         hide={hidden.has('assets')}
-                        stroke="#22d3ee"
+                        stroke={ASSET_COLOR}
                         strokeWidth={1.5}
                         dot={false}
                         strokeDasharray="4 4"
-                        activeDot={{ r: 4, fill: '#22d3ee', stroke: 'var(--background)', strokeWidth: 2 }}
+                        activeDot={{ r: 4, fill: ASSET_COLOR, stroke: 'var(--background)', strokeWidth: 2 }}
                     />
                     <Line
                         type="monotone"

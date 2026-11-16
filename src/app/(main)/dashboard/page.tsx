@@ -634,6 +634,19 @@ function DashboardContent() {
     // Widget rendering
     // ------------------------------------------------------------------
 
+    // What the figures cover, said once in the header and beside each KPI.
+    const shortDate = (iso: string | null) => (iso
+        ? new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+        : null);
+    const periodLabel = PERIOD_OPTIONS.find(option => option.key === period)?.label;
+    // Balances are valued now; a period that ends in the future is still "today".
+    const asOfLabel = endDate && endDate <= new Date().toISOString().slice(0, 10)
+        ? new Date(`${endDate}T00:00:00Z`).toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+        : 'today';
+    const rangeLabel = startDate && endDate
+        ? `${periodLabel ? `${periodLabel}: ` : ''}${shortDate(startDate)} to ${shortDate(endDate)}`
+        : periodLabel ?? 'All time';
+
     const renderWidget = (id: WidgetId) => {
         if (isCustomWidgetId(id)) {
             const def = customDefs.find(d => d.id === id);
@@ -641,7 +654,7 @@ function DashboardContent() {
         }
         switch (id) {
             case 'kpis':
-                return <KPIGrid data={kpiData} loading={kpiLoading} />;
+                return <KPIGrid data={kpiData} loading={kpiLoading} periodLabel={periodLabel} asOfLabel={asOfLabel} />;
             case 'goals':
                 return <GoalsWidget />;
             case 'budget-pacing':
@@ -726,13 +739,13 @@ function DashboardContent() {
     };
 
     return (
-        <div className="space-y-6">
+        <div className="mx-auto max-w-[1400px] space-y-6">
             {/* Header */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div>
                     <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
                     <p className="text-sm text-foreground-secondary mt-1">
-                        Your financial overview at a glance
+                        {rangeLabel}
                     </p>
                 </div>
                 <div className="flex items-center gap-2">

@@ -234,7 +234,7 @@ export default function SankeyDiagram({ data, loading }: SankeyDiagramProps) {
     if (!data || (nodes.length === 0 && links.length === 0)) {
         return (
             <div className={`bg-surface border border-border rounded-lg p-6 ${expanded ? 'h-full' : ''}`}>
-                <h3 className="text-lg font-semibold text-foreground mb-4">Income Flow</h3>
+                <h3 className="text-base font-semibold text-foreground mb-4">Income Flow</h3>
                 <div className="h-[500px] flex items-center justify-center">
                     <p className="text-foreground-muted text-sm">No flow data available for this period.</p>
                 </div>
@@ -245,7 +245,7 @@ export default function SankeyDiagram({ data, loading }: SankeyDiagramProps) {
     return (
         <div className={`bg-surface border border-border rounded-lg p-6 ${expanded ? 'h-full' : ''}`}>
             <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-foreground">Income Flow</h3>
+                <h3 className="text-base font-semibold text-foreground">Income Flow</h3>
                 {maxDepth > 1 && (
                     <select
                         value={displayLevel}

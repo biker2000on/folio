@@ -97,13 +97,13 @@ function CustomTooltip({ active, payload, label }: CustomTooltipProps) {
 
                     if (entry.dataKey === 'income') {
                         label = 'Income';
-                        color = '#10b981';
+                        color = 'var(--positive)';
                     } else if (entry.dataKey === 'expenses') {
                         label = 'Expenses';
-                        color = '#ef4444';
+                        color = 'var(--negative)';
                     } else if (entry.dataKey === 'netCashFlow') {
                         label = 'Net Cash Flow';
-                        color = '#3b82f6';
+                        color = 'var(--secondary)';
                     }
 
                     return (
@@ -150,6 +150,7 @@ export default function CashFlowChart({ data, loading }: CashFlowChartProps) {
 
     return (
         <div className={`bg-surface border border-border rounded-lg p-6 ${expanded ? 'h-full' : ''}`}>
+            {!expanded && <h3 className="mb-4 text-base font-semibold text-foreground">Cash flow by month</h3>}
             <ResponsiveContainer width="100%" height={height}>
                 <ComposedChart data={data} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -180,8 +181,8 @@ export default function CashFlowChart({ data, loading }: CashFlowChartProps) {
                     <Area
                         type="monotone"
                         dataKey="income"
-                        stroke="#10b981"
-                        fill="#10b981"
+                        stroke="var(--positive)"
+                        fill="var(--positive)"
                         fillOpacity={0.3}
                         baseValue={0}
                         name="Income"
@@ -189,8 +190,8 @@ export default function CashFlowChart({ data, loading }: CashFlowChartProps) {
                     <Area
                         type="monotone"
                         dataKey="expenses"
-                        stroke="#ef4444"
-                        fill="#ef4444"
+                        stroke="var(--negative)"
+                        fill="var(--negative)"
                         fillOpacity={0.3}
                         baseValue={0}
                         name="Expenses"
@@ -198,10 +199,10 @@ export default function CashFlowChart({ data, loading }: CashFlowChartProps) {
                     <Line
                         type="monotone"
                         dataKey="netCashFlow"
-                        stroke="#3b82f6"
+                        stroke="var(--secondary)"
                         strokeWidth={2}
                         strokeDasharray="5 5"
-                        dot={{ fill: '#3b82f6', r: 3 }}
+                        dot={{ fill: 'var(--secondary)', r: 3 }}
                         name="Net Cash Flow"
                     />
                 </ComposedChart>

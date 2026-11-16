@@ -15,6 +15,58 @@ import {
   enrichActionsWithAccountPaths,
 } from './account-context';
 import { actionMatchesCurrentActiveBudget } from './budget-context';
+import { filterDisabledRules, ruleIdForAction } from './rules';
+import { getDisabledRuleIds } from './rule-settings';
+
+/**
+ * Rules the owner switched off. A preference read that fails must not take
+ * the Action Center down with it, so it degrades to "nothing muted".
+ */
+async function disabledRulesFor(userId: number, bookGuid: string): Promise<Set<string>> {
+  try {
+    return await getDisabledRuleIds(userId, bookGuid);
+  } catch (error) {
+    console.warn('Action Center rule settings unavailable; showing every rule:', error);
+    return new Set();
+  }
+}
+
+/** Open (not completed) action count per rule, including rules that are switched off. */
+export async function countOpenActionsByRule(input: {
+  userId: number;
+  bookGuid: string;
+}): Promise<Map<string, number>> {
+  await ensureFinancialActionsTable();
+  const rows = await prisma.$queryRaw<Array<{
+    origin: FinancialAction['origin'];
+    stable_key: string;
+    title: string;
+    metadata: Record<string, unknown> | null;
+    evidence_label: string | null;
+    due_date: Date | null;
+    trace: FinancialAction['trace'];
+  }>>`
+    SELECT origin, stable_key, title, metadata, due_date,
+           trace->'evidence'->0->>'label' AS evidence_label,
+           jsonb_build_object('metadata', trace->'metadata') AS trace
+    FROM gnucash_web_financial_actions
+    WHERE user_id = ${input.userId}
+      AND book_guid = ${input.bookGuid}
+      AND state IN ('open', 'snoozed', 'accepted')
+  `;
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const id = ruleIdForAction({
+      origin: row.origin,
+      stableKey: row.stable_key,
+      title: row.title,
+      metadata: row.metadata ?? {},
+      trace: { evidence: [{ label: row.evidence_label ?? undefined }] },
+    });
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
 
 type ActionRow = {
   id: string;
@@ -398,9 +450,16 @@ export async function listFinancialActions(input: {
       AND book_guid = ${input.bookGuid}
   `;
   const asOf = new Date().toISOString().slice(0, 10);
-  const actions = rows
+  const disabledRules = await disabledRulesFor(input.userId, input.bookGuid);
+  const unfiltered = rows
     .map(rowToAction)
     .filter(action => actionMatchesCurrentActiveBudget(action, asOf));
+  const actions = filterDisabledRules(unfiltered, disabledRules);
+  const mutedItems = unfiltered
+    .filter(action => action.state === 'open' || action.state === 'snoozed' || action.state === 'accepted')
+    .length - actions
+    .filter(action => action.state === 'open' || action.state === 'snoozed' || action.state === 'accepted')
+    .length;
   const allowedAccountGuids = new Set(input.bookAccountGuids);
   const referencedAccountGuids = [...new Set(actions.flatMap(actionAccountGuids))]
     .filter(guid => allowedAccountGuids.has(guid));
@@ -418,6 +477,7 @@ export async function listFinancialActions(input: {
   const weekly = weeklyRows[0];
   return {
     actions: enrichActionsWithAccountPaths(actions, accountPaths).sort(compareFinancialActions),
+    muted: { rules: disabledRules.size, items: mutedItems },
     summary: {
       new: weekly?.new_count ?? 0,
       resolved: weekly?.resolved_count ?? 0,

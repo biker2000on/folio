@@ -2,6 +2,7 @@ import prisma from '@/lib/prisma';
 import { loadDebtInvestmentActions } from './debt-investment';
 import { runDataHealth } from '@/lib/data-health';
 import { listInsights } from '@/lib/insights';
+import { autoMatchReceipts } from '@/lib/receipt-auto-match';
 import { listNotifications, type AppNotification } from '@/lib/notifications';
 import {
   computePeriodRanges,
@@ -203,7 +204,17 @@ export async function transactionReviewActions(
   }));
 }
 
-async function receiptActions(bookGuid: string): Promise<FinancialActionCandidate[]> {
+async function receiptActions(
+  bookGuid: string,
+  bookAccountGuids: string[],
+): Promise<FinancialActionCandidate[]> {
+  // Link every receipt that has exactly one certain transaction before asking
+  // anyone to match it by hand. Only what is left is worth a card.
+  try {
+    await autoMatchReceipts(bookGuid, bookAccountGuids);
+  } catch (error) {
+    console.warn('Receipt auto-match was skipped:', error);
+  }
   const rows = await prisma.$queryRaw<Array<{
     id: number;
     filename: string;
@@ -233,7 +244,7 @@ async function receiptActions(bookGuid: string): Promise<FinancialActionCandidat
       title: failed ? `Receipt OCR failed: ${row.filename}` : `Match receipt: ${row.filename}`,
       summary: failed
         ? 'The receipt could not be read automatically and needs a manual check.'
-        : 'This receipt is not attached to a ledger transaction.',
+        : 'No single ledger transaction matches this receipt\u2019s amount, date and vendor, so it needs a manual match.',
       dueDate: null,
       impact: null,
       confidence: 1,
@@ -431,8 +442,25 @@ async function dataHealthActions(
     }));
 }
 
+/**
+ * How long an insight stays actionable. A month-to-date comparison says
+ * nothing once the month has closed, and an insight nobody dismissed must not
+ * sit in the inbox forever. Older insights stay on the dashboard widget.
+ */
+const INSIGHT_ACTION_MAX_AGE_DAYS: Record<string, number> = {
+  'category-spike': 35,
+  'savings-rate-drop': 35,
+  'balance-drop': 14,
+  'net-worth-milestone': 30,
+  'new-merchant': 45,
+};
+
 async function insightActions(bookGuid: string): Promise<FinancialActionCandidate[]> {
-  const insights = await listInsights(bookGuid, { limit: 50 });
+  const now = Date.now();
+  const insights = (await listInsights(bookGuid, { limit: 50 })).filter(insight => {
+    const maxAge = INSIGHT_ACTION_MAX_AGE_DAYS[insight.kind] ?? 45;
+    return now - new Date(insight.createdAt).getTime() <= maxAge * DAY_MS;
+  });
   return insights.map(insight => sourceAction({
     stableKey: `insight:${insight.id}`,
     lane: 'decide',
@@ -456,6 +484,7 @@ async function insightActions(bookGuid: string): Promise<FinancialActionCandidat
       href: insight.href,
       observedAt: insight.createdAt,
     }],
+    metadata: { insightKind: insight.kind },
   }));
 }
 
@@ -702,7 +731,10 @@ async function continuousCloseActions(bookGuid: string): Promise<FinancialAction
       lane: 'fix',
       origin: 'statement_reconciliation',
       sourceId: account.accountGuid,
-      severity: account.status === 'never' || (account.staleDays ?? 0) > 90 ? 'critical' : 'warning',
+      // Critical is for money at risk or a legal deadline. An unreconciled
+      // account is a warning when there is something outstanding to check,
+      // and informational when there is not.
+      severity: account.status === 'never' || account.outstandingSplits > 0 ? 'warning' : 'info',
       title: account.status === 'never'
         ? `Establish a baseline for ${account.name}`
         : `Reconcile ${account.name}`,
@@ -1117,6 +1149,9 @@ async function notificationActions(
   return notifications
     .filter(notification =>
       notification.readAt === null
+      // The compliance source already raises each deadline once, with its
+      // document evidence; the reminder notification would be a second card.
+      && notification.type !== 'compliance_deadline'
       && (!isBudgetNotification(notification) || budgetContexts.has(notification.id)))
     .map(notification => {
       const budgetContext = budgetContexts.get(notification.id);
@@ -1131,16 +1166,23 @@ async function notificationActions(
             title: notification.title,
             message: notification.message || 'Unread notification needs attention.',
           };
-      const failed = notification.severity === 'error'
+      // Spending-watch findings and budget alerts are things to look at, not
+      // broken jobs: an "error"-severity spike is still a spike. Only a sync,
+      // import or background job that actually failed belongs in Fix.
+      const observation = notification.type === 'spending_anomaly' || Boolean(budgetContext);
+      const failed = !observation && (
+        notification.severity === 'error'
+        || notification.type === 'simplefin_sync'
         || notification.type.includes('failed')
-        || notification.type === 'background_job';
+        || notification.type === 'background_job'
+      );
       return sourceAction({
         stableKey: `notification:${notification.id}`,
-        lane: failed ? 'fix' : 'do',
+        lane: failed ? 'fix' : observation ? 'decide' : 'do',
         origin: failed ? 'failed_job' : 'notification',
         sourceId: String(notification.id),
         severity: notification.severity === 'error'
-          ? 'critical'
+          ? (observation ? 'warning' : 'critical')
           : notification.severity === 'success'
             ? 'info'
             : notification.severity,
@@ -1380,7 +1422,7 @@ export async function loadSourceActions(input: {
   const results = await Promise.all([
     safeActionSource('Transaction review', () => transactionReviewActions(bookAccountGuids)),
     safeActionSource('Debt investment scenarios', () => loadDebtInvestmentActions(userId, bookGuid)),
-    safeActionSource('Receipt inbox', () => receiptActions(bookGuid)),
+    safeActionSource('Receipt inbox', () => receiptActions(bookGuid, bookAccountGuids)),
     safeActionSource('Payslips', () => payslipActions(bookGuid)),
     safeActionSource('Statement reconciliation', () => statementActions(bookGuid)),
     safeActionSource('Continuous Close', () => continuousCloseActions(bookGuid)),

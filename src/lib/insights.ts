@@ -21,6 +21,8 @@ import prisma from '@/lib/prisma';
 import { formatCurrency } from '@/lib/format';
 import { getBaseCurrency } from '@/lib/currency';
 import { FinancialSummaryService } from '@/lib/services/financial-summary.service';
+import { MerchantHistory, merchantKey } from '@/lib/merchant-identity';
+import { isImportedSource, loadMerchantHistory } from '@/lib/anomaly-detection';
 import { getAiConfig } from '@/lib/ai-config';
 import {
     chatComplete,
@@ -173,6 +175,31 @@ export interface NewMerchant {
     firstAmount: number;
 }
 
+/**
+ * Reduce a month of expense charges to genuinely new merchants: the earliest
+ * imported charge per merchant, kept only when no same-merchant description
+ * (see merchant-identity) appears anywhere in the book before it. A merchant
+ * whose first charge this month was typed in by hand is known, so later
+ * imported charges from it are not new either. Pure.
+ */
+export function pickNewMerchants(
+    monthCharges: Array<{ description: string; date: string; amount: number; imported: boolean }>,
+    history: MerchantHistory,
+): NewMerchant[] {
+    const seenThisMonth = new MerchantHistory();
+    const out: NewMerchant[] = [];
+    for (const charge of [...monthCharges].sort((a, b) => a.date.localeCompare(b.date))) {
+        const key = merchantKey(charge.description);
+        if (!key) continue;
+        const earlier = history.firstSeen(key);
+        const known = (earlier !== null && earlier < charge.date) || seenThisMonth.firstSeen(key) !== null;
+        seenThisMonth.addKey(key, charge.date);
+        if (known || !charge.imported) continue;
+        out.push({ description: charge.description, firstDate: charge.date, firstAmount: charge.amount });
+    }
+    return out;
+}
+
 /** New merchant whose FIRST charge lands in the month and exceeds $100. */
 export function detectNewMerchants(
     month: string,
@@ -189,7 +216,9 @@ export function detectNewMerchants(
                 `First charge of ${formatCurrency(round2(m.firstAmount), currency)} from ` +
                 `"${m.description}" on ${m.firstDate}. You have not paid this merchant before.`,
             href: '/ledger',
-            dedupeKey: `new-merchant:${slug(m.description)}`,
+            // Keyed on the merchant, not the raw text, so a later charge with a
+            // different reference ID cannot raise the same merchant again.
+            dedupeKey: `new-merchant:${slug(merchantKey(m.description) || m.description)}`,
         }));
 }
 
@@ -582,44 +611,43 @@ export async function loadInsightSource(bookGuid: string, now = new Date()): Pro
     // (gnucash_web_transaction_meta.original_description) with the display
     // description as fallback: the user renames imports to "what was
     // purchased", and keying on the rename would flag every renamed item as a
-    // brand-new merchant.
-    const merchantRows = await prisma.$queryRaw<Array<{
+    // brand-new merchant. The payee is then reduced by merchant-identity, so a
+    // bill that differs only by its reference ID is the same merchant, and
+    // "first-ever" is judged against the book's whole history.
+    //
+    // Only IMPORTED charges are candidates: a hand-entered transaction was
+    // seen by the person who typed it.
+    const monthRows = await prisma.$queryRaw<Array<{
         description: string;
-        first_date: Date;
-        first_amount: number;
+        post_date: Date;
+        amount: number;
+        source: string | null;
     }>>`
-        WITH tx_amounts AS (
-            SELECT t.guid,
-                   COALESCE(NULLIF(btrim(m.original_description), ''), t.description) AS description,
-                   t.post_date,
-                   SUM(s.value_num::numeric / NULLIF(s.value_denom, 0)::numeric)::float8 AS amount
-            FROM transactions t
-            JOIN splits s ON s.tx_guid = t.guid
-            JOIN accounts a ON a.guid = s.account_guid
-            LEFT JOIN gnucash_web_transaction_meta m ON m.transaction_guid = t.guid
-            WHERE a.account_type = 'EXPENSE'
-              AND s.account_guid = ANY(${guids})
-              AND COALESCE(NULLIF(btrim(m.original_description), ''), t.description) IS NOT NULL
-              AND btrim(COALESCE(NULLIF(btrim(m.original_description), ''), t.description)) <> ''
-            GROUP BY t.guid, COALESCE(NULLIF(btrim(m.original_description), ''), t.description), t.post_date
-        ),
-        ranked AS (
-            SELECT *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY lower(btrim(description))
-                       ORDER BY post_date, guid
-                   ) AS rn
-            FROM tx_amounts
-        )
-        SELECT description, post_date AS first_date, amount AS first_amount
-        FROM ranked
-        WHERE rn = 1 AND post_date >= ${monthStart}
+        SELECT COALESCE(NULLIF(btrim(m.original_description), ''), t.description) AS description,
+               t.post_date,
+               SUM(s.value_num::numeric / NULLIF(s.value_denom, 0)::numeric)::float8 AS amount,
+               m.source
+        FROM transactions t
+        JOIN splits s ON s.tx_guid = t.guid
+        JOIN accounts a ON a.guid = s.account_guid
+        LEFT JOIN gnucash_web_transaction_meta m
+          ON m.transaction_guid = t.guid AND m.deleted_at IS NULL
+        WHERE a.account_type = 'EXPENSE'
+          AND s.account_guid = ANY(${guids})
+          AND t.post_date >= ${monthStart}
+          AND btrim(COALESCE(NULLIF(btrim(m.original_description), ''), t.description, '')) <> ''
+        GROUP BY t.guid, m.original_description, t.description, t.post_date, m.source
+        ORDER BY t.post_date, t.guid
     `;
-    const newMerchants: NewMerchant[] = merchantRows.map(r => ({
-        description: r.description.trim(),
-        firstDate: r.first_date.toISOString().slice(0, 10),
-        firstAmount: Number(r.first_amount),
-    }));
+    const newMerchants = pickNewMerchants(
+        monthRows.map(r => ({
+            description: r.description.trim(),
+            date: r.post_date.toISOString().slice(0, 10),
+            amount: Number(r.amount),
+            imported: isImportedSource(r.source),
+        })),
+        await loadMerchantHistory(guids),
+    );
 
     // --- 3. Savings rate: month-to-date vs prior 6 months truncated to the
     // --- same day of month (pay-cycle-aware, like-for-like windows) --------

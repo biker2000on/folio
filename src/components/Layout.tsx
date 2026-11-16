@@ -552,6 +552,10 @@ function LayoutShell({ children }: { children: ReactNode }) {
         pathname === '/accounts' ||
         pathname?.startsWith('/accounts/') ||
         pathname === '/reports/income_statement_by_period' ||
+        // The Action Center owns its 1400px width (three lanes need the room).
+        pathname === '/actions' ||
+        // The dashboard owns its 1400px width (DESIGN.md "Max content width").
+        pathname === '/dashboard' ||
         // The Investments section sets its own (wider) content width.
         pathname === '/investments' ||
         pathname?.startsWith('/investments/');

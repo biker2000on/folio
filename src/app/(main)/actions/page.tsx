@@ -16,6 +16,18 @@ import type {
 import { subscribeToActionCenterUpdates } from '@/lib/financial-actions/client-events';
 import { usePopoutHost } from '@/lib/popout/usePopout';
 import { Tip } from '@/components/ui/Tooltip';
+import {
+  getActionRule,
+  individualCards,
+  layoutLane,
+  ruleIdForAction,
+} from '@/lib/financial-actions/rules';
+import {
+  GroupCard,
+  GroupDrillDown,
+  RulesPanel,
+  type RuleStatus,
+} from './ActionGroups';
 
 const RESOLUTION_POPOUT_PREF = 'gnucash-web:action-center:popout-resolution';
 
@@ -29,6 +41,11 @@ const LANES: Array<{
   { id: 'decide', label: 'Decide', description: 'Choose the highest-value next move', accent: 'border-warning/50' },
   { id: 'do', label: 'Do', description: 'Finish approved operations', accent: 'border-primary/50' },
 ];
+
+const LANE_IDS = LANES.map(lane => lane.id);
+
+/** The server accepts at most this many ids per state change. */
+const STATE_UPDATE_BATCH = 200;
 
 type ActionView = 'pending' | 'all' | 'completed';
 
@@ -215,7 +232,9 @@ function ActionCard({
             }`}>
               {action.severity}
             </span>
-            <span className="text-[11px] text-foreground-muted">{ORIGIN_LABELS[action.origin]}</span>
+            <span className="text-xs text-foreground-muted">
+              {getActionRule(ruleIdForAction(action)).label || ORIGIN_LABELS[action.origin]}
+            </span>
             {action.state !== 'open' && (
               <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-foreground-secondary">
                 {action.state}
@@ -255,11 +274,14 @@ function ActionCard({
               <span className="font-mono text-foreground-secondary">Score {Math.round(action.score.total)}</span>
             )}
             {action.dueDate && (
-              <span className={overdue ? 'font-medium text-negative' : 'text-foreground-muted'}>
-                {overdue ? 'Overdue ' : 'Due '}{action.dueDate}
+              <span className={overdue ? 'font-medium text-error' : 'text-foreground-muted'}>
+                {overdue ? 'Overdue ' : 'Due '}<span className="font-mono">{action.dueDate}</span>
               </span>
             )}
-            <span className="text-foreground-muted">{Math.round(action.confidence * 100)}% confidence</span>
+            {/* A deterministic item is certain; only an estimate states its confidence. */}
+            {action.confidence < 0.9 && (
+              <span className="text-foreground-muted">{Math.round(action.confidence * 100)}% confidence</span>
+            )}
           </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -267,7 +289,7 @@ function ActionCard({
               <button
                 type="button"
                 onClick={() => onOpenOperation(primary.href!)}
-                className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-background hover:bg-primary-hover"
+                className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
               >
                 {primary.label}
               </button>
@@ -326,6 +348,13 @@ export default function FinancialActionCenterPage() {
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [actionView, setActionView] = useState<ActionView>('pending');
   const [trace, setTrace] = useState<CalculationTrace | null>(null);
+  // Rules: which kinds of item are switched on, and the group whose list is open.
+  const [openGroup, setOpenGroup] = useState<{ ruleId: string; lane: FinancialActionLane } | null>(null);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [rules, setRules] = useState<RuleStatus[] | null>(null);
+  const [rulesLoading, setRulesLoading] = useState(false);
+  const [rulesError, setRulesError] = useState<string | null>(null);
+  const [pendingRuleId, setPendingRuleId] = useState<string | null>(null);
   // Two-window triage: route action resolution surfaces into a separate
   // pop-out window so the lanes keep driving on this monitor.
   const [popOutResolution, setPopOutResolution] = useState(false);
@@ -360,16 +389,19 @@ export default function FinancialActionCenterPage() {
   ) => {
     const previousActions = displayedActions.current;
     const previousFocusedIndex = focusedIndexRef.current;
+    // Keyboard focus walks the individual cards; grouped items are reached
+    // through their group card.
+    const nextCards = individualCards(nextData.actions, LANE_IDS);
     let nextFocusedIndex: number;
 
-    if (!hasInitializedCardFocus.current && nextData.actions.length > 0) {
-      nextFocusedIndex = firstVisualActionIndex(nextData.actions);
+    if (!hasInitializedCardFocus.current && nextCards.length > 0) {
+      nextFocusedIndex = firstVisualActionIndex(nextCards);
       hasInitializedCardFocus.current = true;
       pendingCardFocusIndex.current = nextFocusedIndex;
     } else {
       nextFocusedIndex = focusIndexAfterActionChange(
         previousActions,
-        nextData.actions,
+        nextCards,
         previousFocusedIndex,
         departingIds,
       );
@@ -381,7 +413,7 @@ export default function FinancialActionCenterPage() {
       }
     }
 
-    displayedActions.current = nextData.actions;
+    displayedActions.current = nextCards;
     focusedIndexRef.current = nextFocusedIndex;
     dataRef.current = nextData;
     setData(nextData);
@@ -442,7 +474,7 @@ export default function FinancialActionCenterPage() {
     };
   }, [load]);
 
-  const visibleActions = useMemo(() => data?.actions ?? [], [data]);
+  const visibleActions = useMemo(() => individualCards(data?.actions ?? [], LANE_IDS), [data]);
 
   const updateState = useCallback(async (
     ids: string[],
@@ -452,13 +484,15 @@ export default function FinancialActionCenterPage() {
     if (ids.length === 0 || mutating) return;
     setMutating(true);
     try {
-      const response = await fetch(`/api/actions?scope=${familyScope ? 'family' : 'book'}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids, state, snoozedUntil }),
-      });
-      const body = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(body.error || 'The action update failed.');
+      for (let offset = 0; offset < ids.length; offset += STATE_UPDATE_BATCH) {
+        const response = await fetch(`/api/actions?scope=${familyScope ? 'family' : 'book'}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: ids.slice(offset, offset + STATE_UPDATE_BATCH), state, snoozedUntil }),
+        });
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        if (!response.ok) throw new Error(body.error || 'The action update failed.');
+      }
       const currentData = dataRef.current;
       if (currentData) {
         const updatedIds = new Set(ids);
@@ -490,8 +524,63 @@ export default function FinancialActionCenterPage() {
     }
   }, [actionView, applyActionData, familyScope, load, mutating, toast]);
 
+  const loadRules = useCallback(async () => {
+    setRulesLoading(true);
+    setRulesError(null);
+    try {
+      const response = await fetch('/api/actions/rules', { cache: 'no-store' });
+      if (!response.ok) throw new Error('The rules could not be loaded.');
+      setRules(((await response.json()) as { rules: RuleStatus[] }).rules);
+    } catch (rulesLoadError) {
+      setRulesError(rulesLoadError instanceof Error ? rulesLoadError.message : 'The rules could not be loaded.');
+    } finally {
+      setRulesLoading(false);
+    }
+  }, []);
+
+  const openRules = useCallback(() => {
+    setRulesOpen(true);
+    void loadRules();
+  }, [loadRules]);
+
+  const setRuleEnabled = useCallback(async (ruleId: string, enabled: boolean) => {
+    setPendingRuleId(ruleId);
+    try {
+      const response = await fetch('/api/actions/rules', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: { [ruleId]: enabled } }),
+      });
+      const body = await response.json().catch(() => ({})) as { rules?: RuleStatus[]; error?: string };
+      if (!response.ok || !body.rules) throw new Error(body.error || 'The rule could not be changed.');
+      setRules(body.rules);
+      const label = getActionRule(ruleId).label;
+      toast.success(enabled
+        ? `${label} turned on.`
+        : `${label} turned off. Turn it back on under Rules.`);
+      if (!enabled) setOpenGroup(current => (current?.ruleId === ruleId ? null : current));
+      await load(false, true);
+    } catch (ruleError) {
+      toast.error(ruleError instanceof Error ? ruleError.message : 'The rule could not be changed.');
+    } finally {
+      setPendingRuleId(null);
+    }
+  }, [load, toast]);
+
+  // The open group's list is every item of that rule in that lane, even after
+  // enough are cleared that the lane would show them as individual cards again.
+  const openGroupData = useMemo(() => {
+    if (!openGroup || !data) return null;
+    const actions = data.actions.filter(action =>
+      action.lane === openGroup.lane && ruleIdForAction(action) === openGroup.ruleId);
+    if (actions.length === 0) return null;
+    return { rule: getActionRule(openGroup.ruleId), lane: openGroup.lane, actions };
+  }, [data, openGroup]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // A dialog owns the keyboard while it is open.
+      if (document.querySelector('[role="dialog"]')) return;
       const target = event.target;
       if (target instanceof Element && target.matches('input, textarea, select, button, a')) return;
 
@@ -624,7 +713,7 @@ export default function FinancialActionCenterPage() {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-[1400px] space-y-6">
       <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -641,7 +730,7 @@ export default function FinancialActionCenterPage() {
             )}
           </div>
           <p className="mt-1 max-w-2xl text-sm text-foreground-secondary">
-            A five-minute close for the issues, decisions, and operations that matter now.
+            What needs fixing, deciding or doing in this book. Repeated findings are folded into one card; turn off any kind you do not want under Rules.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -664,6 +753,16 @@ export default function FinancialActionCenterPage() {
               <option value="completed">Completed</option>
             </select>
           </label>
+          <button
+            type="button"
+            onClick={openRules}
+            className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-foreground-secondary hover:border-primary/50 hover:text-primary"
+          >
+            Rules
+            {data?.muted && data.muted.rules > 0 && (
+              <span className="ml-1.5 font-mono text-foreground-muted">{data.muted.rules} off</span>
+            )}
+          </button>
           <button
             type="button"
             onClick={() => void load(true, true)}
@@ -692,13 +791,13 @@ export default function FinancialActionCenterPage() {
       {data && (
         <section className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border lg:grid-cols-4">
           {[
-            ['New this week', data.summary.new],
-            ['Resolved', data.summary.resolved],
-            ['Automated', data.summary.automated],
+            ['Open', data.actions.filter(action => !COMPLETED_STATES.has(action.state)).length],
             ['Overdue', data.summary.overdue],
+            ['New this week', data.summary.new],
+            ['Resolved this week', data.summary.resolved],
           ].map(([label, value]) => (
             <div key={label} className="bg-surface px-4 py-3">
-              <div className="text-[11px] uppercase tracking-wider text-foreground-muted">{label}</div>
+              <div className="text-xs text-foreground-muted">{label}</div>
               <div className="mt-1 font-mono text-xl font-semibold text-foreground">{value}</div>
             </div>
           ))}
@@ -761,6 +860,14 @@ export default function FinancialActionCenterPage() {
                 ? `Books reviewed through ${new Date(`${data.verifiedThrough}T00:00:00Z`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}.`
                 : 'No complete reconciliation coverage is available yet.'}
           </p>
+          {actionView !== 'completed' && data.muted && data.muted.items > 0 && (
+            <p className="mt-3 text-xs text-foreground-muted">
+              {data.muted.items} item{data.muted.items === 1 ? ' is' : 's are'} hidden by rules you turned off.{' '}
+              <button type="button" onClick={openRules} className="font-medium text-primary underline">
+                Review rules
+              </button>
+            </p>
+          )}
         </div>
       )}
 
@@ -768,14 +875,22 @@ export default function FinancialActionCenterPage() {
         <div className="grid gap-5 xl:grid-cols-3">
           {LANES.map(lane => {
             const actions = data.actions.filter(action => action.lane === lane.id);
+            const entries = layoutLane(data.actions, lane.id);
             return (
-              <section key={lane.id} className={`rounded-lg border-t-2 ${lane.accent}`}>
+              <section key={lane.id} className={`border-t-2 ${lane.accent}`}>
                 <div className="flex items-end justify-between px-1 py-3">
                   <div>
                     <h2 className="text-base font-semibold text-foreground">{lane.label}</h2>
                     <p className="text-xs text-foreground-muted">{lane.description}</p>
                   </div>
-                  <span className="font-mono text-sm text-foreground-secondary">{actions.length}</span>
+                  <span className="text-right font-mono text-sm text-foreground-secondary">
+                    {entries.length}
+                    {entries.length !== actions.length && (
+                      <span className="ml-1.5 font-sans text-xs text-foreground-muted">
+                        cards · {actions.length.toLocaleString('en-US')} items
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <div className="space-y-3">
                   {actions.length === 0 && (
@@ -783,7 +898,23 @@ export default function FinancialActionCenterPage() {
                       Nothing in this lane.
                     </div>
                   )}
-                  {actions.map(action => {
+                  {entries.map(entry => {
+                    if (entry.kind === 'group') {
+                      const { group } = entry;
+                      return (
+                        <GroupCard
+                          key={`group:${group.rule.id}`}
+                          group={group}
+                          canEdit
+                          busy={mutating || pendingRuleId !== null}
+                          onReview={() => setOpenGroup({ ruleId: group.rule.id, lane: lane.id })}
+                          onStateAll={(state, until) =>
+                            void updateState(group.actions.map(action => action.id), state, until)}
+                          onDisableRule={() => void setRuleEnabled(group.rule.id, false)}
+                        />
+                      );
+                    }
+                    const { action } = entry;
                     const index = visibleActions.findIndex(item => item.id === action.id);
                     return (
                       <ActionCard
@@ -805,6 +936,29 @@ export default function FinancialActionCenterPage() {
           })}
         </div>
       )}
+
+      <GroupDrillDown
+        group={trace === null ? openGroupData : null}
+        canEdit
+        busy={mutating || pendingRuleId !== null}
+        onClose={() => setOpenGroup(null)}
+        onState={(ids, state, until) => void updateState(ids, state, until)}
+        onOpen={(action, href) => void openOperation(action, href)}
+        onExplain={action => setTrace(action.trace)}
+        onDisableRule={ruleId => void setRuleEnabled(ruleId, false)}
+      />
+
+      <RulesPanel
+        isOpen={rulesOpen}
+        rules={rules}
+        loading={rulesLoading}
+        error={rulesError}
+        canEdit
+        pendingRuleId={pendingRuleId}
+        onClose={() => setRulesOpen(false)}
+        onToggle={(ruleId, enabled) => void setRuleEnabled(ruleId, enabled)}
+        onRetry={() => void loadRules()}
+      />
 
       <ProvenanceModal
         trace={trace}

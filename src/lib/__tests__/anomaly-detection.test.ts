@@ -8,6 +8,7 @@ vi.mock('@/lib/prisma', () => ({
 }));
 
 import { normalizeMerchant } from '../recurring-detection';
+import { MerchantHistory, merchantKey } from '../merchant-identity';
 import {
     detectAnomalies,
     anomalyDedupeKey,
@@ -100,6 +101,51 @@ describe('first-time merchant detection', () => {
         const firsts = detectAnomalies(txs, { now: NOW, firstTimeWindowDays: 30 })
             .filter(a => a.type === 'first_time_merchant');
         expect(firsts).toHaveLength(0);
+    });
+});
+
+describe('first-time merchant noise control', () => {
+    const imported = (date: string, description: string, amount: number, isImported = true): AnomalyTransaction => ({
+        ...tx(date, description, amount),
+        normalizedMerchant: merchantKey(description),
+        imported: isImported,
+    });
+    const firsts = (txs: AnomalyTransaction[], merchantHistory?: MerchantHistory) =>
+        detectAnomalies(txs, { now: NOW, firstTimeWindowDays: 30, merchantHistory })
+            .filter(a => a.type === 'first_time_merchant');
+
+    it('never flags a hand-entered charge', () => {
+        expect(firsts([imported('2026-06-20', 'Miller Bee Supply', 584.06, false)])).toHaveLength(0);
+    });
+
+    it('does not flag a merchant the book recorded before the scan window', () => {
+        const history = new MerchantHistory();
+        history.add('Rural King', '2023-04-11');
+        expect(firsts([imported('2026-06-20', 'RURAL KING #88 LENOIR NC', 266.59)], history)).toHaveLength(0);
+    });
+
+    it('does not flag a bill that differs only by its reference ID', () => {
+        const history = new MerchantHistory();
+        history.add('CALDWELL COUNTY UTILITY~ Future Amount: 46.55 ~ Tran: ACHDW', '2025-01-08');
+        const txs = [imported('2026-06-20', 'CALDWELL COUNTY UTILITY~ Future Amount: 36.15 ~ Tran: XYZPQ', 36.15)];
+        expect(firsts(txs, history)).toHaveLength(0);
+    });
+
+    it('flags one alert, not two, for a new merchant seen under two spellings', () => {
+        const txs = [
+            imported('2026-06-18', 'SKETCHY GADGET OUTLET', 88),
+            imported('2026-06-22', 'Sketchy Gadget Outlet online order', 40),
+        ];
+        const found = firsts(txs);
+        expect(found).toHaveLength(1);
+        expect(found[0].date).toBe('2026-06-18');
+    });
+
+    it('still flags a genuinely new imported merchant', () => {
+        const history = new MerchantHistory();
+        history.add('Rural King', '2023-04-11');
+        history.add('SKETCHY GADGET OUTLET', '2026-06-18');
+        expect(firsts([imported('2026-06-18', 'SKETCHY GADGET OUTLET', 88)], history)).toHaveLength(1);
     });
 });
 

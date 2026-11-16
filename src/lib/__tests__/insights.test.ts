@@ -27,6 +27,7 @@ vi.mock('@/lib/services/financial-summary.service', () => ({
 }));
 
 import prisma from '@/lib/prisma';
+import { MerchantHistory } from '../merchant-identity';
 import {
     detectCategorySpike,
     detectNewMerchants,
@@ -37,6 +38,7 @@ import {
     filterInsights,
     polishInsights,
     loadInsightSource,
+    pickNewMerchants,
     isoWeekKey,
     CATEGORY_SPIKE_MIN_AMOUNT,
     NEW_MERCHANT_MIN_AMOUNT,
@@ -301,7 +303,7 @@ describe('dedupe keys', () => {
         expect(a).toEqual(b);
         expect(a).toEqual([
             'category-spike:2026-07:dining-out',
-            'new-merchant:rei-co-op',
+            'new-merchant:rei-op',
             'savings-rate:2026-07',
             'net-worth-milestone:up:25000',
             'balance-drop:chk:2026-W28',
@@ -352,7 +354,7 @@ describe('loadInsightSource', () => {
         expect(source!.month).toBe('2026-08');
         expect(source!.dayOfMonth).toBe(21);
 
-        const [, categorySql, merchantSql, savingsSql] = sqlCalls;
+        const [, categorySql, merchantSql, historySql, savingsSql] = sqlCalls;
         // Like-for-like month-to-date windows: prior months truncated to the
         // current day of month for both partial-period detectors.
         expect(categorySql).toContain('EXTRACT(DAY FROM t.post_date) <=');
@@ -363,6 +365,63 @@ describe('loadInsightSource', () => {
         expect(merchantSql).toContain(
             "COALESCE(NULLIF(btrim(m.original_description), ''), t.description)",
         );
+        // "First-ever" is judged against the whole book, not the month.
+        expect(historySql).toContain('MIN(t.post_date)');
+    });
+});
+
+/* ------------------------------------------------------------------ */
+/* pickNewMerchants: same-merchant matching + hand-entered exclusion    */
+/* ------------------------------------------------------------------ */
+
+describe('pickNewMerchants', () => {
+    const charge = (description: string, date: string, imported = true, amount = 150) =>
+        ({ description, date, amount, imported });
+
+    it('does not treat a bill with a new reference ID as a new merchant', () => {
+        const history = new MerchantHistory();
+        history.add('CALDWELL COUNTY UTILITY~ Future Amount: 46.55 ~ Tran: ACHDW', '2025-03-04');
+        const picked = pickNewMerchants(
+            [charge('CALDWELL COUNTY UTILITY~ Future Amount: 35.5 ~ Tran: QQRTZ', '2026-07-09')],
+            history,
+        );
+        expect(picked).toEqual([]);
+    });
+
+    it('never raises a hand-entered charge', () => {
+        const picked = pickNewMerchants(
+            [charge('Miller Bee Supply', '2026-07-09', false)],
+            new MerchantHistory(),
+        );
+        expect(picked).toEqual([]);
+    });
+
+    it('treats a merchant first typed in by hand as known for later imports', () => {
+        const picked = pickNewMerchants(
+            [
+                charge('Miller Bee Supply', '2026-07-02', false),
+                charge('MILLER BEE SUPPLY 8005551212 NC', '2026-07-09', true),
+            ],
+            new MerchantHistory(),
+        );
+        expect(picked).toEqual([]);
+    });
+
+    it('raises a genuinely new imported merchant once', () => {
+        const history = new MerchantHistory();
+        history.add('Rural King', '2024-01-01');
+        // The loader folds this month's rows into history too; a sighting on
+        // the charge's own date must not hide it.
+        history.add('Sketchy Gadget Outlet*A1B2C3', '2026-07-05');
+        const picked = pickNewMerchants(
+            [
+                charge('Sketchy Gadget Outlet*A1B2C3', '2026-07-05'),
+                charge('Sketchy Gadget Outlet*Z9Y8X7', '2026-07-12'),
+                charge('Rural King 1ton lime', '2026-07-06'),
+            ],
+            history,
+        );
+        expect(picked.map(m => m.firstDate)).toEqual(['2026-07-05']);
     });
 });
 

@@ -177,6 +177,8 @@ export interface FinancialActionWeeklySummary {
 
 export interface FinancialActionList {
   actions: FinancialAction[];
+  /** Rules the owner switched off, and how many open items they are hiding. */
+  muted?: { rules: number; items: number };
   summary: FinancialActionWeeklySummary;
   verifiedThrough: string | null;
   generatedAt: string;

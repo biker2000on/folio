@@ -10,15 +10,19 @@
  *   (c) amount_outlier      — a charge far outside a merchant's history
  *   (d) category_spike      — a category's spend spikes above its trailing average
  *
- * Merchant grouping reuses `normalizeMerchant` from recurring-detection so store
- * numbers, reference codes, and digits don't split a merchant into many keys.
+ * Merchant grouping uses `merchantKey` (src/lib/merchant-identity.ts) over the
+ * preserved import-time payee, so order codes, memo tails and reference IDs
+ * don't split one merchant into many. "First-time" is judged against the
+ * book's whole history, not just the scan window, and never fires for a
+ * hand-entered transaction: the person who typed it has already seen it.
  */
 
 import prisma from '@/lib/prisma';
 import { toDecimalNumber } from '@/lib/gnucash';
-import { normalizeMerchant } from '@/lib/recurring-detection';
+import { MerchantHistory, merchantKey } from '@/lib/merchant-identity';
 import { formatCurrency } from '@/lib/format';
 import { createNotification, type NotificationSeverity } from '@/lib/notifications';
+import { ANOMALY_NOTIFICATION_TITLES } from '@/lib/financial-actions/rules';
 
 /* ------------------------------------------------------------------ */
 /* Types                                                                */
@@ -49,6 +53,12 @@ export interface AnomalyTransaction {
     accountName: string;
     /** GnuCash transaction GUID, when known (used for related refs) */
     txGuid?: string;
+    /**
+     * False when the transaction was typed in by hand rather than imported
+     * from a feed or file. Hand-entered charges never raise a first-time
+     * merchant alert. Undefined is treated as imported.
+     */
+    imported?: boolean;
 }
 
 export interface Anomaly {
@@ -80,6 +90,11 @@ export interface AnomalyOptions {
     duplicateWindowDays?: number;
     /** A merchant is "first-time" if it first appears within this many days (default 30) */
     firstTimeWindowDays?: number;
+    /**
+     * Every merchant the book has ever recorded (see `loadMerchantHistory`).
+     * Without it, "first-time" can only be judged against the loaded window.
+     */
+    merchantHistory?: MerchantHistory;
     /** Minimum prior charges before outlier detection runs (default 4) */
     outlierMinSamples?: number;
     /** Charge must exceed mean + this·stddev (default 3) */
@@ -209,18 +224,38 @@ function detectDuplicates(
     return out;
 }
 
-/** (b) A merchant whose first-ever appearance is within the recent window. */
+/**
+ * (b) A merchant whose first-ever appearance is within the recent window.
+ *
+ * Three things keep this quiet:
+ *  - the earliest charge must be imported; a hand-entered one was already seen;
+ *  - "seen before" uses the same-merchant relation, so a bill that differs
+ *    only by its reference ID, or a bank payee the user also typed by hand,
+ *    is not new;
+ *  - the comparison covers `history` (the whole book) when supplied, not just
+ *    the loaded window, so an annual charge is not "new" every year.
+ */
 function detectFirstTimeMerchants(
     groups: Map<string, AnomalyTransaction[]>,
     now: Date,
     windowDays: number,
+    history?: MerchantHistory,
 ): Anomaly[] {
     const out: Anomaly[] = [];
     const cutoff = now.getTime() - windowDays * DAY_MS;
+    // Sightings inside the loaded window, so related keys within it count too.
+    const windowHistory = new MerchantHistory();
+    for (const [key, txs] of groups) windowHistory.addKey(key, isoDate(txs[0].date));
+
     for (const [merchantKey, txs] of groups) {
         const first = txs[0];
         // "New" only if the earliest charge we have is inside the recent window.
         if (first.date.getTime() < cutoff) continue;
+        if (first.imported === false) continue;
+        const firstDate = isoDate(first.date);
+        const seenBefore = [history?.firstSeen(merchantKey), windowHistory.firstSeen(merchantKey)]
+            .some(date => typeof date === 'string' && date < firstDate);
+        if (seenBefore) continue;
         const label = first.originalDescription || merchantKey;
         out.push({
             type: 'first_time_merchant',
@@ -369,7 +404,12 @@ export function detectAnomalies(
 
     const anomalies: Anomaly[] = [
         ...detectDuplicates(groups, options.duplicateWindowDays ?? 3),
-        ...detectFirstTimeMerchants(groups, now, options.firstTimeWindowDays ?? 30),
+        ...detectFirstTimeMerchants(
+            groups,
+            now,
+            options.firstTimeWindowDays ?? 30,
+            options.merchantHistory,
+        ),
         ...detectAmountOutliers(
             groups,
             options.outlierMinSamples ?? 4,
@@ -411,6 +451,8 @@ interface ExpenseRow {
     account_guid: string;
     account_name: string;
     account_fullname: string | null;
+    original_description: string | null;
+    source: string | null;
 }
 
 /**
@@ -438,11 +480,15 @@ export async function loadExpenseTransactions(
             s.value_num, s.value_denom,
             s.account_guid,
             a.name AS account_name,
-            ah.fullname AS account_fullname
+            ah.fullname AS account_fullname,
+            m.original_description,
+            m.source
         FROM splits s
         JOIN accounts a ON a.guid = s.account_guid AND a.account_type = 'EXPENSE'
         JOIN transactions t ON t.guid = s.tx_guid
         LEFT JOIN account_hierarchy ah ON ah.guid = s.account_guid
+        LEFT JOIN gnucash_web_transaction_meta m
+          ON m.transaction_guid = t.guid AND m.deleted_at IS NULL
         WHERE s.account_guid = ANY(${bookAccountGuids})
           AND t.post_date >= ${startDate}
           AND s.value_num > 0
@@ -459,16 +505,59 @@ export async function loadExpenseTransactions(
 
     return rows.map(row => {
         const description = row.description ?? '';
+        // The import-time payee identifies the merchant; the description is
+        // often the user's rename to "what was bought".
+        const payee = row.original_description?.trim() || description;
         return {
             date: row.post_date,
-            normalizedMerchant: normalizeMerchant(description),
+            normalizedMerchant: merchantKey(payee) || merchantKey(description),
             originalDescription: description,
+            imported: isImportedSource(row.source),
             amount: toDecimalNumber(row.value_num, row.value_denom),
             accountGuid: row.account_guid,
             accountName: row.account_fullname ?? row.account_name,
             txGuid: row.tx_guid,
         };
     });
+}
+
+/**
+ * A transaction counts as imported only when its meta row says a feed or file
+ * created it. No meta row, or `source = 'manual'`, means it was typed in.
+ */
+export function isImportedSource(source: string | null | undefined): boolean {
+    return typeof source === 'string' && source !== '' && source !== 'manual';
+}
+
+/**
+ * Every merchant the book has ever recorded, with its earliest date: the
+ * import-time payee and the current description both count as sightings, on
+ * any account type, so a merchant the user entered by hand years ago is known.
+ */
+export async function loadMerchantHistory(bookAccountGuids: string[]): Promise<MerchantHistory> {
+    const history = new MerchantHistory();
+    if (bookAccountGuids.length === 0) return history;
+    const rows = await prisma.$queryRaw<Array<{
+        description: string | null;
+        original_description: string | null;
+        first_date: Date;
+    }>>`
+        SELECT t.description, m.original_description, MIN(t.post_date) AS first_date
+        FROM transactions t
+        LEFT JOIN gnucash_web_transaction_meta m
+          ON m.transaction_guid = t.guid AND m.deleted_at IS NULL
+        WHERE EXISTS (
+            SELECT 1 FROM splits s
+            WHERE s.tx_guid = t.guid AND s.account_guid = ANY(${bookAccountGuids})
+        )
+        GROUP BY t.description, m.original_description
+    `;
+    for (const row of rows) {
+        const date = isoDate(row.first_date);
+        history.add(row.description, date);
+        history.add(row.original_description, date);
+    }
+    return history;
 }
 
 /* ------------------------------------------------------------------ */
@@ -496,12 +585,9 @@ function toNotificationSeverity(sev: AnomalySeverity): NotificationSeverity {
     return 'info';
 }
 
-const TYPE_TITLES: Record<AnomalyType, string> = {
-    duplicate_charge: 'Possible duplicate charge',
-    first_time_merchant: 'New merchant charge',
-    amount_outlier: 'Unusually large charge',
-    category_spike: 'Category spending spike',
-};
+// Shared with the Action Center rule classifier, which tells the anomaly
+// types apart by these titles.
+const TYPE_TITLES: Record<AnomalyType, string> = ANOMALY_NOTIFICATION_TITLES;
 
 /**
  * Resolve every account GUID under a book's root, without touching the session.
@@ -536,8 +622,11 @@ export async function detectAnomaliesForBook(
     options: AnomalyOptions & { months?: number } = {},
 ): Promise<Anomaly[]> {
     const months = options.months ?? 12;
-    const transactions = await loadExpenseTransactions(bookAccountGuids, months);
-    return detectAnomalies(transactions, options);
+    const [transactions, merchantHistory] = await Promise.all([
+        loadExpenseTransactions(bookAccountGuids, months),
+        loadMerchantHistory(bookAccountGuids),
+    ]);
+    return detectAnomalies(transactions, { ...options, merchantHistory });
 }
 
 /**
@@ -561,8 +650,29 @@ export async function scanForAnomalies(
         const maxNotifications = opts.maxNotifications ?? 20;
 
         const bookAccountGuids = opts.bookAccountGuids ?? (await loadBookAccountGuids(bookGuid));
-        const transactions = await loadExpenseTransactions(bookAccountGuids, months);
-        const anomalies = detectAnomalies(transactions, { ...opts, now });
+        const [transactions, merchantHistory] = await Promise.all([
+            loadExpenseTransactions(bookAccountGuids, months),
+            loadMerchantHistory(bookAccountGuids),
+        ]);
+        const anomalies = detectAnomalies(transactions, { ...opts, now, merchantHistory });
+
+        // Retire first-time-merchant alerts the detector no longer stands
+        // behind (raised by the old full-description matching, or since
+        // explained by an earlier sighting). Marking them read drops them from
+        // the bell and the Action Center; the notification row is kept.
+        const standing = anomalies
+            .filter(a => a.type === 'first_time_merchant')
+            .map(a => a.dedupeKey);
+        await prisma.$executeRaw`
+            UPDATE gnucash_web_notifications
+            SET read_at = NOW()
+            WHERE user_id = ${opts.userId}
+              AND source = ${ANOMALY_SOURCE}
+              AND title = ${TYPE_TITLES.first_time_merchant}
+              AND read_at IS NULL
+              AND (book_guid IS NULL OR book_guid = ${bookGuid})
+              AND NOT (source_id = ANY(${standing}::text[]))
+        `;
 
         // Only recent anomalies are worth alerting on.
         const cutoffIso = isoDate(new Date(now.getTime() - notifyWithinDays * DAY_MS));
