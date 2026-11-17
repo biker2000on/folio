@@ -4,6 +4,7 @@ import { useState, createContext, ReactNode } from 'react';
 import { Modal } from '@/components/ui/Modal';
 import { DateRangePicker } from '@/components/ui/DateRangePicker';
 import { Tip } from '@/components/ui/Tooltip';
+import { Segmented } from '@/components/investments/ui';
 
 export const ExpandedContext = createContext(false);
 
@@ -54,7 +55,8 @@ export default function ExpandableChart({
     controls,
     initialStartDate = null,
     initialEndDate = null,
-    expandButtonClassName = 'top-2 right-2 opacity-0 group-hover:opacity-100',
+    // Revealed on hover, and on keyboard focus so it is never focused while invisible.
+    expandButtonClassName = 'top-2 right-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100',
 }: ExpandableChartProps) {
     const [expanded, setExpanded] = useState(false);
     const [view, setView] = useState<ChartViewState>({
@@ -84,8 +86,8 @@ export default function ExpandableChart({
             <Tip content="Expand chart" describedBy={false}>
             <button
                 onClick={openExpanded}
-                className={`absolute ${expandButtonClassName} p-1.5 rounded-lg bg-surface/80 backdrop-blur-sm border border-border transition-opacity hover:bg-surface-hover z-10`}
-                aria-label="Expand chart"
+                className={`absolute ${expandButtonClassName} p-1.5 rounded-md bg-surface border border-border transition-opacity hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary z-10`}
+                aria-label={`Expand ${title}`}
             >
                 {/* Expand SVG icon */}
                 <svg className="w-4 h-4 text-foreground-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -111,21 +113,12 @@ export default function ExpandableChart({
                                             }
                                         />
                                         {controls === 'period-group' && (
-                                            <div className="flex items-center rounded-lg border border-border bg-surface/50 p-0.5">
-                                                {GROUP_OPTIONS.map(opt => (
-                                                    <button
-                                                        key={opt.key}
-                                                        onClick={() => setView(v => ({ ...v, groupBy: opt.key }))}
-                                                        className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
-                                                            view.groupBy === opt.key
-                                                                ? 'bg-primary/20 text-primary font-medium'
-                                                                : 'text-foreground-secondary hover:bg-surface-hover'
-                                                        }`}
-                                                    >
-                                                        {opt.label}
-                                                    </button>
-                                                ))}
-                                            </div>
+                                            <Segmented
+                                                ariaLabel="Group by"
+                                                value={view.groupBy}
+                                                onChange={groupBy => setView(v => ({ ...v, groupBy }))}
+                                                options={GROUP_OPTIONS.map(opt => ({ value: opt.key, label: opt.label }))}
+                                            />
                                         )}
                                     </div>
                                 )}

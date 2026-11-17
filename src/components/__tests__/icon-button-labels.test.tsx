@@ -119,9 +119,11 @@ describe('ExpandableChart expand button', () => {
                 <p>chart</p>
             </ExpandableChart>
         );
-        expect(screen.getByRole('button', { name: 'Expand chart' })).toHaveAttribute(
+        // Named for its chart, so a page with several expandable charts does
+        // not offer a row of identical "Expand chart" buttons.
+        expect(screen.getByRole('button', { name: 'Expand Net worth' })).toHaveAttribute(
             'aria-label',
-            'Expand chart'
+            'Expand Net worth'
         );
     });
 });

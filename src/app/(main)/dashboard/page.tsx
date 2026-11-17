@@ -9,6 +9,7 @@ import ExpensePieChart from '@/components/dashboard/ExpensePieChart';
 import IncomePieChart from '@/components/dashboard/IncomePieChart';
 import TaxPieChart from '@/components/dashboard/TaxPieChart';
 import CashFlowChart from '@/components/charts/CashFlowChart';
+import { CHART_EXPAND_BUTTON } from '@/components/investments/ui';
 import ExpandableChart, { ChartViewContext } from '@/components/charts/ExpandableChart';
 import { DashboardPeriodProvider, useDashboardPeriod, PERIOD_OPTIONS } from '@/contexts/DashboardPeriodContext';
 import { useUserPreferences } from '@/contexts/UserPreferencesContext';
@@ -726,14 +727,15 @@ function DashboardContent() {
                 return <InsightsWidget />;
             case 'netWorth':
                 if (failed.netWorth && !netWorthLoading) {
-                    return <LoadFailed title="Net Worth Over Time" onRetry={() => fetchNetWorth(queryString)} />;
+                    return <LoadFailed title="Net worth" onRetry={() => fetchNetWorth(queryString)} />;
                 }
                 return (
                     <ExpandableChart
-                        title="Net Worth Over Time"
+                        title="Net worth"
                         controls="period-group"
                         initialStartDate={startDate}
                         initialEndDate={endDate}
+                        expandButtonClassName={CHART_EXPAND_BUTTON}
                     >
                         <NetWorthWidget baseData={netWorthData} baseLoading={netWorthLoading} />
                     </ExpandableChart>
@@ -787,14 +789,15 @@ function DashboardContent() {
                 );
             case 'cashFlow':
                 if (failed.cashFlow && !cashFlowLoading) {
-                    return <LoadFailed title="Cash flow by month" onRetry={() => fetchCashFlow(queryString)} />;
+                    return <LoadFailed title="Cash flow" onRetry={() => fetchCashFlow(queryString)} />;
                 }
                 return (
                     <ExpandableChart
-                        title="Cash Flow"
+                        title="Cash flow"
                         controls="period-group"
                         initialStartDate={startDate}
                         initialEndDate={endDate}
+                        expandButtonClassName={CHART_EXPAND_BUTTON}
                     >
                         <CashFlowWidget baseData={cashFlowData} baseLoading={cashFlowLoading} />
                     </ExpandableChart>

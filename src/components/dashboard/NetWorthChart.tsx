@@ -2,17 +2,36 @@
 
 import { useContext, useMemo, useState } from 'react';
 import {
-    LineChart,
-    Line,
+    Area,
+    CartesianGrid,
+    ComposedChart,
+    ResponsiveContainer,
+    Tooltip,
     XAxis,
     YAxis,
-    CartesianGrid,
-    Tooltip,
-    Legend,
-    ResponsiveContainer,
 } from 'recharts';
 import { ExpandedContext } from '@/components/charts/ExpandableChart';
+import { ChartPanel } from '@/components/investments/ui';
+import {
+    AXIS,
+    ChartDataTable,
+    ChartTooltipCard,
+    CURSOR_LINE,
+    GRID,
+    type TooltipRow,
+} from '@/components/charts/ChartParts';
+import { TNUM } from '@/components/ui/form';
 import { clipFuturePoints, fitDomain } from '@/lib/charts/fit-domain';
+import {
+    axisMoney,
+    axisPeriod,
+    fullMoney,
+    localToday,
+    longPeriod,
+    signedMoney,
+    signedPercent,
+    wholeMoney,
+} from '@/lib/charts/chart-format';
 
 interface NetWorthDataPoint {
     date: string;
@@ -26,319 +45,338 @@ interface NetWorthChartProps {
     loading: boolean;
 }
 
-type SeriesKey = 'netWorth' | 'assets' | 'liabilities';
+/** A point as the chart draws it: debt as the positive amount owed. */
+interface ChartPoint {
+    date: string;
+    /** YYYY-MM, for axis labels and tooltip headings. */
+    month: string;
+    netWorth: number;
+    assets: number;
+    debt: number;
+}
 
-const SERIES_LABELS: Record<SeriesKey, string> = {
-    netWorth: 'Net Worth',
-    assets: 'Assets',
-    liabilities: 'Liabilities',
-};
-
-// All series start visible; the legend hides and restores them.
-const DEFAULT_HIDDEN: SeriesKey[] = [];
-const HIDDEN_STORAGE_KEY = 'dashboard.netWorthChart.hiddenSeries.v2';
-// Liabilities get their own right-hand axis by default. On one shared axis the
-// range runs from the liability floor to the asset ceiling, which flattens
-// every line's movement over a short period.
-const SHARED_SCALE_STORAGE_KEY = 'dashboard.netWorthChart.sharedScale';
-// Series colours come from tokens so the chart follows the theme: the headline
-// line is the accent, assets the secondary accent, liabilities the money-negative role.
+// Net worth is the headline, so it takes the accent. Debt is a balance
+// category, not a loss, so it takes a neutral rather than the money-negative
+// red; drawn as the amount owed, rising debt rises.
 const NET_WORTH_COLOR = 'var(--primary)';
 const ASSET_COLOR = 'var(--secondary)';
-const LIABILITY_COLOR = 'var(--negative)';
+const DEBT_COLOR = 'var(--foreground-secondary)';
 
-function loadHidden(): Set<SeriesKey> {
-    if (typeof window === 'undefined') return new Set(DEFAULT_HIDDEN);
-    try {
-        const raw = localStorage.getItem(HIDDEN_STORAGE_KEY);
-        if (raw) {
-            const parsed: unknown = JSON.parse(raw);
-            if (Array.isArray(parsed)) {
-                return new Set(parsed.filter((k): k is SeriesKey => k in SERIES_LABELS));
-            }
-        }
-    } catch {
-        // Storage unavailable or corrupt: fall back to the default.
-    }
-    return new Set(DEFAULT_HIDDEN);
-}
+const BREAKDOWN_STORAGE_KEY = 'dashboard.netWorthChart.breakdown';
+const HERO_HEIGHT = 260;
+const MULTIPLE_HEIGHT = 112;
+const Y_AXIS_WIDTH = 60;
 
-function saveHidden(hidden: Set<SeriesKey>) {
-    try {
-        localStorage.setItem(HIDDEN_STORAGE_KEY, JSON.stringify([...hidden]));
-    } catch {
-        // Non-essential preference; ignore storage failures.
-    }
-}
-
-function loadSharedScale(): boolean {
+function loadBreakdown(): boolean {
     if (typeof window === 'undefined') return false;
     try {
-        return localStorage.getItem(SHARED_SCALE_STORAGE_KEY) === 'true';
+        return localStorage.getItem(BREAKDOWN_STORAGE_KEY) === 'true';
     } catch {
         return false;
     }
 }
 
-function saveSharedScale(shared: boolean) {
+function saveBreakdown(value: boolean) {
     try {
-        localStorage.setItem(SHARED_SCALE_STORAGE_KEY, String(shared));
+        localStorage.setItem(BREAKDOWN_STORAGE_KEY, String(value));
     } catch {
-        // Non-essential preference; ignore storage failures.
+        // A view preference; losing it is harmless.
     }
 }
 
-const compactCurrency = new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    notation: 'compact',
-    maximumSignificantDigits: 3,
-});
-
-function formatCurrency(value: number): string {
-    return compactCurrency.format(value);
+function changeOf(points: ChartPoint[], key: keyof Pick<ChartPoint, 'netWorth' | 'assets' | 'debt'>) {
+    if (points.length < 2) return null;
+    const first = points[0][key];
+    const last = points[points.length - 1][key];
+    return { amount: last - first, percent: first !== 0 ? ((last - first) / Math.abs(first)) * 100 : Number.NaN };
 }
 
-function formatFullCurrency(value: number): string {
-    return new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: 'USD',
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-    }).format(value);
-}
-
-function formatDate(dateStr: string): string {
-    const date = new Date(dateStr + 'T00:00:00');
-    return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-}
-
-function localToday(): string {
-    const now = new Date();
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const dd = String(now.getDate()).padStart(2, '0');
-    return `${now.getFullYear()}-${mm}-${dd}`;
+function signClass(amount: number, upIsGood = true): string {
+    if (Math.abs(amount) < 0.5) return 'text-foreground-muted';
+    return (amount > 0) === upIsGood ? 'text-positive' : 'text-negative';
 }
 
 function ChartSkeleton() {
     return (
-        <div className="bg-surface border border-border rounded-lg p-6 animate-pulse">
-            <div className="h-5 w-40 bg-background-secondary rounded mb-6" />
-            <div className="h-[350px] bg-background-secondary rounded" />
+        <div className="rounded-lg border border-border bg-surface p-5 animate-pulse" aria-busy="true">
+            <div className="h-4 w-32 rounded bg-background-secondary" />
+            <div className="mt-2 h-5 w-48 rounded bg-background-secondary" />
+            <div className="mt-5 rounded bg-background-secondary" style={{ height: HERO_HEIGHT }} />
         </div>
     );
 }
 
-interface CustomTooltipProps {
+/** One line of the hero tooltip: the month's figures and its change from the month before. */
+function HeroTooltip({
+    active,
+    label,
+    points,
+}: {
     active?: boolean;
-    payload?: Array<{
-        value: number;
-        dataKey: string;
-        color: string;
-    }>;
     label?: string;
+    points: ChartPoint[];
+}) {
+    if (!active || !label) return null;
+    const index = points.findIndex(point => point.date === label);
+    const point = points[index];
+    if (!point) return null;
+    const previous = index > 0 ? points[index - 1] : null;
+    const rows: TooltipRow[] = [
+        { key: 'netWorth', label: 'Net worth', value: fullMoney(point.netWorth), swatch: NET_WORTH_COLOR },
+        { key: 'assets', label: 'Assets', value: fullMoney(point.assets), swatch: ASSET_COLOR },
+        { key: 'debt', label: 'Debt owed', value: fullMoney(point.debt), swatch: DEBT_COLOR },
+    ];
+    if (previous) {
+        const change = point.netWorth - previous.netWorth;
+        rows.push({
+            key: 'change',
+            label: 'Change in month',
+            value: signedMoney(change),
+            valueClassName: signClass(change),
+            separated: true,
+        });
+    }
+    return <ChartTooltipCard heading={longPeriod(point.month)} rows={rows} />;
 }
 
-function CustomTooltip({ active, payload, label }: CustomTooltipProps) {
-    if (!active || !payload || !label) return null;
+function SingleTooltip({
+    active,
+    label,
+    points,
+    field,
+    name,
+    color,
+}: {
+    active?: boolean;
+    label?: string;
+    points: ChartPoint[];
+    field: 'assets' | 'debt';
+    name: string;
+    color: string;
+}) {
+    if (!active || !label) return null;
+    const point = points.find(item => item.date === label);
+    if (!point) return null;
+    return (
+        <ChartTooltipCard
+            heading={longPeriod(point.month)}
+            rows={[{ key: field, label: name, value: fullMoney(point[field]), swatch: color }]}
+        />
+    );
+}
 
-    const date = new Date(label + 'T00:00:00');
-    const formattedDate = date.toLocaleDateString('en-US', {
-        month: 'long',
-        year: 'numeric',
-    });
+/** One of the two small charts under the hero: its own scale, its own figure. */
+function SmallMultiple({
+    points,
+    field,
+    name,
+    color,
+    upIsGood,
+}: {
+    points: ChartPoint[];
+    field: 'assets' | 'debt';
+    name: string;
+    color: string;
+    upIsGood: boolean;
+}) {
+    const axis = useMemo(() => fitDomain(points.map(point => point[field]), 2), [points, field]);
+    const change = changeOf(points, field);
+    const last = points[points.length - 1]?.[field] ?? 0;
 
     return (
-        <div className="bg-background border border-border rounded-lg p-3 shadow-xl">
-            <p className="text-xs text-foreground-muted mb-2">{formattedDate}</p>
-            {payload.map((entry) => (
-                <div key={entry.dataKey} className="flex items-center justify-between gap-4 text-sm">
-                    <span className="flex items-center gap-2">
-                        <span
-                            className="w-2.5 h-2.5 rounded-full"
-                            style={{ backgroundColor: entry.color }}
-                        />
-                        <span className="text-foreground-secondary">
-                            {SERIES_LABELS[entry.dataKey as SeriesKey] ?? entry.dataKey}
+        <div className="min-w-0">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+                <h3 className="text-xs font-medium text-foreground-secondary">{name}</h3>
+                <p className="flex items-baseline gap-2 text-xs">
+                    <span className="font-mono text-sm font-semibold text-foreground" style={TNUM}>{wholeMoney(last)}</span>
+                    {change && (
+                        <span className={`font-mono ${signClass(change.amount, upIsGood)}`} style={TNUM}>
+                            {signedMoney(change.amount)}
                         </span>
-                    </span>
-                    <span className="font-medium text-foreground font-mono tabular-nums">
-                        {formatFullCurrency(entry.value)}
-                    </span>
-                </div>
-            ))}
+                    )}
+                </p>
+            </div>
+            <div className="mt-1" style={{ height: MULTIPLE_HEIGHT }}>
+                <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={points} margin={{ top: 6, right: 4, left: 0, bottom: 0 }} title={`${name} by month`}>
+                        <CartesianGrid {...GRID} />
+                        <XAxis dataKey="date" hide />
+                        <YAxis
+                            width={Y_AXIS_WIDTH}
+                            domain={axis?.domain ?? ['auto', 'auto']}
+                            ticks={axis?.ticks}
+                            allowDataOverflow
+                            tickFormatter={axisMoney}
+                            tick={AXIS.tick}
+                            axisLine={AXIS.axisLine}
+                            tickLine={AXIS.tickLine}
+                        />
+                        <Tooltip
+                            cursor={CURSOR_LINE}
+                            isAnimationActive={false}
+                            content={<SingleTooltip points={points} field={field} name={name} color={color} />}
+                        />
+                        <Area
+                            type="monotoneX"
+                            dataKey={field}
+                            stroke={color}
+                            strokeWidth={1.5}
+                            fill={color}
+                            fillOpacity={0.08}
+                            baseValue={axis?.domain[0] ?? 'dataMin'}
+                            dot={false}
+                            activeDot={{ r: 3, fill: color, stroke: 'var(--surface)', strokeWidth: 2 }}
+                            isAnimationActive={false}
+                        />
+                    </ComposedChart>
+                </ResponsiveContainer>
+            </div>
         </div>
     );
 }
 
 export default function NetWorthChart({ data, loading }: NetWorthChartProps) {
     const expanded = useContext(ExpandedContext);
-    // The chart only renders after its data loads on the client (the server
-    // pass shows the skeleton), so reading storage here cannot cause a
-    // hydration mismatch.
-    const [hidden, setHidden] = useState<Set<SeriesKey>>(loadHidden);
-    const [sharedScale, setSharedScale] = useState<boolean>(loadSharedScale);
+    // Renders only after data loads on the client, so reading storage here
+    // cannot cause a hydration mismatch.
+    const [breakdown, setBreakdown] = useState<boolean>(loadBreakdown);
 
-    const points = useMemo(() => clipFuturePoints(data ?? [], localToday()), [data]);
-
-    // A second axis only makes sense when liabilities share the chart with at
-    // least one other visible series.
-    const canSplit = !hidden.has('liabilities') && (!hidden.has('netWorth') || !hidden.has('assets'));
-    const split = canSplit && !sharedScale;
-
-    const { leftAxis, rightAxis } = useMemo(() => {
-        const visible = (Object.keys(SERIES_LABELS) as SeriesKey[]).filter((k) => !hidden.has(k));
-        const leftKeys = split ? visible.filter((k) => k !== 'liabilities') : visible;
-        return {
-            leftAxis: fitDomain(points.flatMap((p) => leftKeys.map((k) => p[k]))),
-            rightAxis: split ? fitDomain(points.map((p) => p.liabilities)) : null,
-        };
-    }, [points, hidden, split]);
-
-    const toggleSharedScale = () => {
-        setSharedScale((prev) => {
-            saveSharedScale(!prev);
-            return !prev;
-        });
-    };
-
-    const toggleSeries = (key: SeriesKey) => {
-        setHidden((prev) => {
-            const next = new Set(prev);
-            if (next.has(key)) next.delete(key);
-            else next.add(key);
-            // Never hide everything; an empty chart reads as "no data".
-            if (next.size === Object.keys(SERIES_LABELS).length) return prev;
-            saveHidden(next);
-            return next;
-        });
-    };
+    const points = useMemo<ChartPoint[]>(() => clipFuturePoints(data ?? [], localToday()).map(point => ({
+        date: point.date,
+        month: point.date.slice(0, 7),
+        netWorth: point.netWorth,
+        assets: point.assets,
+        // Liabilities arrive as GnuCash stores them (negative when owed).
+        debt: -point.liabilities,
+    })), [data]);
+    const axis = useMemo(() => fitDomain(points.map(point => point.netWorth)), [points]);
 
     if (loading) return <ChartSkeleton />;
 
+    const toggleBreakdown = () => {
+        setBreakdown(current => {
+            saveBreakdown(!current);
+            return !current;
+        });
+    };
+
     if (points.length === 0) {
         return (
-            <div className={`bg-surface border border-border rounded-lg p-6 ${expanded ? 'h-full' : ''}`}>
-                <h3 className="text-base font-semibold text-foreground mb-4">Net Worth Over Time</h3>
-                <div className="h-[350px] flex items-center justify-center">
-                    <p className="text-foreground-muted text-sm">No net worth data available for this period.</p>
+            <ChartPanel expanded={expanded} title="Net worth">
+                <div className="flex items-center justify-center" style={{ height: HERO_HEIGHT }}>
+                    <p className="text-sm text-foreground-muted">No net worth data for this period.</p>
                 </div>
-            </div>
+            </ChartPanel>
         );
     }
 
+    const last = points[points.length - 1];
+    const change = changeOf(points, 'netWorth');
+    const figure = (
+        <span className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
+            <span className="font-mono text-lg font-semibold text-foreground" style={TNUM}>{wholeMoney(last.netWorth)}</span>
+            {change && (
+                <span className="text-xs text-foreground-muted">
+                    <span className={`font-mono ${signClass(change.amount)}`} style={TNUM}>
+                        {signedMoney(change.amount)}
+                    </span>{' '}
+                    <span className="font-mono" style={TNUM}>{signedPercent(change.percent)}</span>{' '}
+                    since {axisPeriod(points[0].month, 0)}
+                </span>
+            )}
+        </span>
+    );
+    const breakdownToggle = (
+        <button
+            type="button"
+            aria-pressed={breakdown}
+            onClick={toggleBreakdown}
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                breakdown
+                    ? 'border-primary/50 bg-primary-light text-primary'
+                    : 'border-border text-foreground-secondary hover:border-border-hover hover:text-foreground'
+            }`}
+        >
+            Assets &amp; debt
+        </button>
+    );
+
+    const summary = change
+        ? `Net worth ${wholeMoney(last.netWorth)}, ${signedMoney(change.amount)} since ${longPeriod(points[0].month)}.`
+        : `Net worth ${wholeMoney(last.netWorth)}.`;
+
     return (
-        <div className={`bg-surface border border-border rounded-lg p-6 ${expanded ? 'h-full' : ''}`}>
-            {/* pr-6 keeps the chip clear of ExpandableChart's hover-only
-                expand button in the card's top-right corner. */}
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-4 pr-6">
-                <h3 className="text-base font-semibold text-foreground">Net Worth Over Time</h3>
-                {canSplit && (
-                    <button
-                        type="button"
-                        onClick={toggleSharedScale}
-                        aria-pressed={sharedScale}
-                        className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
-                            sharedScale
-                                ? 'border-primary/60 bg-primary-light text-primary'
-                                : 'border-border text-foreground-secondary hover:text-foreground hover:border-border-hover'
-                        }`}
-                    >
-                        Same scale
-                    </button>
+        <ChartPanel
+            expanded={expanded}
+            title="Net worth"
+            subtitle={figure}
+            actions={expanded ? <>{figure}{breakdownToggle}</> : breakdownToggle}
+        >
+            <div className={`flex min-w-0 flex-col ${expanded ? 'h-full' : ''}`}>
+                <div className={expanded ? 'min-h-[240px] flex-1' : ''} style={expanded ? undefined : { height: HERO_HEIGHT }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart
+                            data={points}
+                            margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                            title="Net worth by month"
+                            desc={summary}
+                        >
+                            <CartesianGrid {...GRID} />
+                            <XAxis
+                                dataKey="date"
+                                tickFormatter={(value: string, index: number) => axisPeriod(value.slice(0, 7), index)}
+                                tick={AXIS.categoryTick}
+                                axisLine={{ stroke: 'var(--border)' }}
+                                tickLine={AXIS.tickLine}
+                                interval="preserveStartEnd"
+                                minTickGap={24}
+                                tickMargin={8}
+                            />
+                            <YAxis
+                                width={Y_AXIS_WIDTH}
+                                domain={axis?.domain ?? ['auto', 'auto']}
+                                ticks={axis?.ticks}
+                                allowDataOverflow
+                                tickFormatter={axisMoney}
+                                tick={AXIS.tick}
+                                axisLine={AXIS.axisLine}
+                                tickLine={AXIS.tickLine}
+                            />
+                            <Tooltip
+                                cursor={CURSOR_LINE}
+                                isAnimationActive={false}
+                                content={<HeroTooltip points={points} />}
+                            />
+                            <Area
+                                type="monotoneX"
+                                dataKey="netWorth"
+                                stroke={NET_WORTH_COLOR}
+                                strokeWidth={2}
+                                fill={NET_WORTH_COLOR}
+                                fillOpacity={0.08}
+                                baseValue={axis?.domain[0] ?? 'dataMin'}
+                                dot={false}
+                                activeDot={{ r: 4, fill: NET_WORTH_COLOR, stroke: 'var(--surface)', strokeWidth: 2 }}
+                                isAnimationActive={false}
+                            />
+                        </ComposedChart>
+                    </ResponsiveContainer>
+                </div>
+                {breakdown && (
+                    <div className="mt-4 grid gap-x-6 gap-y-4 border-t border-border pt-4 md:grid-cols-2">
+                        <SmallMultiple points={points} field="assets" name="Assets" color={ASSET_COLOR} upIsGood />
+                        <SmallMultiple points={points} field="debt" name="Debt owed" color={DEBT_COLOR} upIsGood={false} />
+                    </div>
                 )}
+                <ChartDataTable
+                    caption="Net worth, assets and debt owed by month"
+                    columns={['Month', 'Net worth', 'Assets', 'Debt owed']}
+                    rows={points.map(point => ({
+                        key: point.date,
+                        cells: [longPeriod(point.month), fullMoney(point.netWorth), fullMoney(point.assets), fullMoney(point.debt)],
+                    }))}
+                />
             </div>
-            <ResponsiveContainer width="100%" height={expanded ? '100%' : 350}>
-                <LineChart data={points} margin={{ top: 5, right: split ? 10 : 20, left: 10, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis
-                        dataKey="date"
-                        tickFormatter={formatDate}
-                        stroke="var(--foreground-secondary)"
-                        tick={{ fill: 'var(--foreground-secondary)', fontSize: 12 }}
-                        axisLine={{ stroke: 'var(--border)' }}
-                        tickLine={{ stroke: 'var(--border)' }}
-                    />
-                    <YAxis
-                        yAxisId="left"
-                        tickFormatter={formatCurrency}
-                        domain={leftAxis?.domain ?? ['auto', 'auto']}
-                        ticks={leftAxis?.ticks}
-                        allowDataOverflow
-                        stroke="var(--foreground-secondary)"
-                        tick={{ fill: 'var(--foreground-secondary)', fontSize: 12 }}
-                        axisLine={{ stroke: 'var(--border)' }}
-                        tickLine={{ stroke: 'var(--border)' }}
-                        width={70}
-                    />
-                    {/* Liabilities' own scale, colored to match its line so the
-                        pairing is unambiguous. */}
-                    <YAxis
-                        yAxisId="right"
-                        orientation="right"
-                        hide={!split}
-                        tickFormatter={formatCurrency}
-                        domain={rightAxis?.domain ?? ['auto', 'auto']}
-                        ticks={rightAxis?.ticks}
-                        allowDataOverflow
-                        stroke={LIABILITY_COLOR}
-                        tick={{ fill: LIABILITY_COLOR, fontSize: 12 }}
-                        axisLine={{ stroke: 'var(--border)' }}
-                        tickLine={{ stroke: 'var(--border)' }}
-                        width={70}
-                    />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend
-                        wrapperStyle={{ paddingTop: '16px', cursor: 'pointer' }}
-                        onClick={(entry) => {
-                            const key = entry?.dataKey;
-                            if (typeof key === 'string' && key in SERIES_LABELS) toggleSeries(key as SeriesKey);
-                        }}
-                        formatter={(value: string) => {
-                            const key = value as SeriesKey;
-                            return (
-                                <span
-                                    className={`text-sm ${hidden.has(key) ? 'text-foreground-muted line-through' : 'text-foreground-secondary'}`}
-                                >
-                                    {SERIES_LABELS[key] ?? value}
-                                </span>
-                            );
-                        }}
-                    />
-                    <Line
-                        type="monotone"
-                        dataKey="netWorth"
-                        yAxisId="left"
-                        hide={hidden.has('netWorth')}
-                        stroke={NET_WORTH_COLOR}
-                        strokeWidth={2.5}
-                        dot={false}
-                        activeDot={{ r: 5, fill: NET_WORTH_COLOR, stroke: 'var(--background)', strokeWidth: 2 }}
-                    />
-                    <Line
-                        type="monotone"
-                        dataKey="assets"
-                        yAxisId="left"
-                        hide={hidden.has('assets')}
-                        stroke={ASSET_COLOR}
-                        strokeWidth={1.5}
-                        dot={false}
-                        strokeDasharray="4 4"
-                        activeDot={{ r: 4, fill: ASSET_COLOR, stroke: 'var(--background)', strokeWidth: 2 }}
-                    />
-                    <Line
-                        type="monotone"
-                        dataKey="liabilities"
-                        yAxisId={split ? 'right' : 'left'}
-                        hide={hidden.has('liabilities')}
-                        stroke={LIABILITY_COLOR}
-                        strokeWidth={1.5}
-                        dot={false}
-                        strokeDasharray="4 4"
-                        activeDot={{ r: 4, fill: LIABILITY_COLOR, stroke: 'var(--background)', strokeWidth: 2 }}
-                    />
-                </LineChart>
-            </ResponsiveContainer>
-        </div>
+        </ChartPanel>
     );
 }
