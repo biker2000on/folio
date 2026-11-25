@@ -6,6 +6,7 @@
  */
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
+import { isSimpleFinDisabled } from '@/lib/simplefin-quota';
 
 const ALGORITHM = 'aes-256-gcm';
 const DEFAULT_FETCH_TIMEOUT_MS = 60000;
@@ -165,11 +166,24 @@ export interface SimpleFinAccountSet {
 
 // --- API Client ---
 
+/** Thrown instead of contacting the bridge when SIMPLEFIN_DISABLED is set. */
+export class SimpleFinDisabledError extends SimpleFinError {
+  constructor() {
+    super('SimpleFin is disabled on this server (SIMPLEFIN_DISABLED)', 503);
+    this.name = 'SimpleFinDisabledError';
+  }
+}
+
+function assertSimpleFinEnabled(): void {
+  if (isSimpleFinDisabled()) throw new SimpleFinDisabledError();
+}
+
 /**
  * Claim a SimpleFin setup token.
  * Decodes the base64 token to get a claim URL, then POSTs to exchange for an access URL.
  */
 export async function claimSetupToken(token: string): Promise<string> {
+  assertSimpleFinEnabled();
   // Decode base64 setup token to get the claim URL
   const claimUrl = Buffer.from(token.trim(), 'base64').toString('utf8');
 
@@ -208,6 +222,10 @@ export async function fetchAccounts(
   startDate?: number,
   endDate?: number
 ): Promise<SimpleFinAccountSet> {
+  // Every call here is one of the bridge's 24 requests per day — the single
+  // choke point the kill-switch guards.
+  assertSimpleFinEnabled();
+
   // Parse the access URL to extract auth and build the request URL
   const url = new URL(accessUrl);
   const auth = Buffer.from(`${url.username}:${url.password}`).toString('base64');

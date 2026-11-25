@@ -1,185 +1,192 @@
 import { NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
 import prisma from '@/lib/prisma';
-import { decryptAccessUrl, fetchAccounts, SimpleFinAccessRevokedError } from '@/lib/services/simplefin.service';
-import { isNonFatalSimpleFinWarning, updateSimpleFinConnectionSyncStatus } from '@/lib/services/simplefin-sync.service';
+import {
+  decryptAccessUrl,
+  fetchAccounts,
+  SimpleFinAccessRevokedError,
+  SimpleFinDisabledError,
+  type SimpleFinAccount,
+} from '@/lib/services/simplefin.service';
+import {
+  isNonFatalSimpleFinWarning,
+  recordSimpleFinFeedAccounts,
+  updateSimpleFinConnectionSyncStatus,
+} from '@/lib/services/simplefin-sync.service';
 import { findRelinkPairs } from '@/lib/simplefin-relink';
 
-// GET /api/simplefin/accounts -- list SimpleFin accounts with mapping status
+/**
+ * Rows written by the same bridge fetch share (within a sync's runtime) one
+ * balance timestamp, so a row is "in the latest feed" when its balance date is
+ * this close to the newest one on the connection.
+ */
+const FEED_SNAPSHOT_TOLERANCE_MS = 10 * 60 * 1000;
+
+async function findConnection(userId: number, bookGuid: string) {
+  return prisma.gnucash_web_simplefin_connections.findFirst({
+    where: { user_id: userId, book_guid: bookGuid },
+    select: { id: true, access_url_encrypted: true },
+  });
+}
+
+/**
+ * The connection's accounts as last recorded from the bridge — by a sync or an
+ * explicit refresh. No request to SimpleFin: the bridge allows 24 per access
+ * token per day, and this runs on every Connections page view.
+ *
+ * Liveness comes from the stored snapshot: a row is `isLive` when the latest
+ * recorded fetch returned it. Mapped rows the feed has stopped returning are
+ * what re-key pairing (and the page's "not returned since" note) work from.
+ */
+async function storedAccounts(
+  connectionId: number,
+  live?: Map<string, SimpleFinAccount>,
+) {
+  const mappings = await prisma.gnucash_web_simplefin_account_map.findMany({
+    where: { connection_id: connectionId },
+    select: {
+      simplefin_account_id: true,
+      simplefin_account_name: true,
+      simplefin_institution: true,
+      simplefin_last4: true,
+      gnucash_account_guid: true,
+      last_sync_at: true,
+      is_investment: true,
+      last_balance: true,
+      last_balance_date: true,
+      is_ignored: true,
+    },
+    orderBy: [
+      { simplefin_institution: 'asc' },
+      { simplefin_account_name: 'asc' },
+      { simplefin_account_id: 'asc' },
+    ],
+  });
+
+  const feedAt = mappings.reduce<Date | null>(
+    (latest, m) => (m.last_balance_date && (!latest || m.last_balance_date > latest) ? m.last_balance_date : latest),
+    null,
+  );
+  const inFeed = (date: Date | null) =>
+    !!date && !!feedAt && feedAt.getTime() - date.getTime() <= FEED_SNAPSHOT_TOLERANCE_MS;
+
+  const accounts = mappings.map(mapping => {
+    const liveAccount = live?.get(mapping.simplefin_account_id);
+    const isLive = live ? !!liveAccount : inFeed(mapping.last_balance_date);
+    return {
+      id: mapping.simplefin_account_id,
+      name: mapping.simplefin_account_name || mapping.simplefin_account_id,
+      institution: mapping.simplefin_institution,
+      last4: mapping.simplefin_last4,
+      currency: liveAccount?.currency ?? null,
+      balance: liveAccount?.balance ?? (mapping.last_balance === null ? null : String(mapping.last_balance)),
+      availableBalance: liveAccount?.['available-balance'] ?? null,
+      lastBalanceDate: mapping.last_balance_date,
+      gnucashAccountGuid: mapping.gnucash_account_guid,
+      lastSyncAt: mapping.last_sync_at,
+      isMapped: !!mapping.gnucash_account_guid,
+      hasHoldings: Array.isArray(liveAccount?.holdings) && liveAccount.holdings.length > 0,
+      isInvestment: mapping.is_investment,
+      isIgnored: mapping.is_ignored,
+      isLive,
+      isStored: true,
+      liveMissing: !isLive,
+    };
+  });
+
+  return {
+    accounts,
+    feedAt,
+    // Safe even when one institution is erroring: an outage hides accounts,
+    // it never adds the unmapped same-named twin a pair needs.
+    relinkPairs: feedAt || live ? findRelinkPairs(accounts) : [],
+  };
+}
+
+// GET /api/simplefin/accounts -- stored SimpleFin accounts with mapping status
 export async function GET() {
   try {
     const roleResult = await requireRole('readonly');
     if (roleResult instanceof NextResponse) return roleResult;
 
     const { user, bookGuid } = roleResult;
-
-    // Get connection for this book
-    const connection = await prisma.gnucash_web_simplefin_connections.findFirst({
-      where: { user_id: user.id, book_guid: bookGuid },
-      select: { id: true, access_url_encrypted: true },
-    });
-
+    const connection = await findConnection(user.id, bookGuid);
     if (!connection) {
       return NextResponse.json({ error: 'No SimpleFin connection found' }, { status: 404 });
     }
-    const mappings = await prisma.gnucash_web_simplefin_account_map.findMany({
-      where: { connection_id: connection.id },
-      select: {
-        simplefin_account_id: true,
-        simplefin_account_name: true,
-        simplefin_institution: true,
-        simplefin_last4: true,
-        gnucash_account_guid: true,
-        last_sync_at: true,
-        is_investment: true,
-        last_balance: true,
-        last_balance_date: true,
-        is_ignored: true,
-      },
-      orderBy: [
-        { simplefin_institution: 'asc' },
-        { simplefin_account_name: 'asc' },
-        { simplefin_account_id: 'asc' },
-      ],
-    });
 
-    const accountMap = new Map(mappings.map(mapping => [
-      mapping.simplefin_account_id,
-      {
-        id: mapping.simplefin_account_id,
-        name: mapping.simplefin_account_name || mapping.simplefin_account_id,
-        institution: mapping.simplefin_institution,
-        last4: mapping.simplefin_last4,
-        currency: null as string | null,
-        balance: mapping.last_balance === null ? null : String(mapping.last_balance),
-        availableBalance: null as string | null,
-        lastBalanceDate: mapping.last_balance_date,
-        gnucashAccountGuid: mapping.gnucash_account_guid,
-        lastSyncAt: mapping.last_sync_at,
-        isMapped: !!mapping.gnucash_account_guid,
-        hasHoldings: false,
-        isInvestment: mapping.is_investment,
-        isIgnored: mapping.is_ignored,
-        isLive: false,
-        isStored: true,
-        liveMissing: true,
-      },
-    ]));
+    const { accounts, feedAt, relinkPairs } = await storedAccounts(connection.id);
+    return NextResponse.json({
+      accounts,
+      relinkPairs,
+      // `live` means "liveness is known": a fetch has been recorded, so rows
+      // it did not return can be marked as no longer returned.
+      live: !!feedAt,
+      feedAt,
+      liveError: null,
+    });
+  } catch (error) {
+    console.error('Error fetching SimpleFin accounts:', error);
+    return NextResponse.json({ error: 'Failed to fetch accounts' }, { status: 500 });
+  }
+}
+
+// POST /api/simplefin/accounts -- "Refresh from bank": one request to the
+// bridge, recorded on the stored rows, then answered like GET.
+export async function POST() {
+  try {
+    const roleResult = await requireRole('edit');
+    if (roleResult instanceof NextResponse) return roleResult;
+
+    const { user, bookGuid } = roleResult;
+    const connection = await findConnection(user.id, bookGuid);
+    if (!connection) {
+      return NextResponse.json({ error: 'No SimpleFin connection found' }, { status: 404 });
+    }
 
     try {
       const accessUrl = decryptAccessUrl(connection.access_url_encrypted);
-      // Fetch accounts from SimpleFin (no date range = just accounts, no transactions)
+      // No date range: accounts and balances only — one bridge request.
       const accountSet = await fetchAccounts(accessUrl);
       const simplefinWarnings = accountSet.errors.filter(isNonFatalSimpleFinWarning);
       // The bridge repeats a connection's notice once per affected account.
       const simplefinErrors = [...new Set(accountSet.errors.filter(error => !isNonFatalSimpleFinWarning(error)))];
-      const liveError = simplefinErrors.length > 0 ? simplefinErrors.join('\n') : null;
-      const now = new Date();
 
-      for (const acc of accountSet.accounts) {
-        const stored = accountMap.get(acc.id);
-        const parsedBalance = acc.balance === undefined ? null : Number.parseFloat(acc.balance);
-        const liveBalance = parsedBalance === null || Number.isNaN(parsedBalance) ? null : parsedBalance;
-        const liveBalanceDate = liveBalance === null ? null : now;
+      await recordSimpleFinFeedAccounts(connection.id, accountSet.accounts);
 
-        await prisma.$executeRaw`
-          INSERT INTO gnucash_web_simplefin_account_map
-            (
-              connection_id,
-              simplefin_account_id,
-              simplefin_account_name,
-              simplefin_institution,
-              simplefin_last4,
-              gnucash_account_guid,
-              is_investment,
-              last_balance,
-              last_balance_date,
-              last_sync_at
-            )
-          VALUES
-            (
-              ${connection.id},
-              ${acc.id},
-              ${acc.name || null},
-              ${acc.org?.name || null},
-              ${stored?.last4 || null},
-              ${stored?.gnucashAccountGuid || null},
-              ${stored?.isInvestment ?? false},
-              ${liveBalance},
-              ${liveBalanceDate},
-              ${now}
-            )
-          ON CONFLICT (connection_id, simplefin_account_id)
-          DO UPDATE SET
-            simplefin_account_name = COALESCE(${acc.name || null}, gnucash_web_simplefin_account_map.simplefin_account_name),
-            simplefin_institution = COALESCE(${acc.org?.name || null}, gnucash_web_simplefin_account_map.simplefin_institution),
-            last_balance = COALESCE(${liveBalance}, gnucash_web_simplefin_account_map.last_balance),
-            last_balance_date = COALESCE(${liveBalanceDate}, gnucash_web_simplefin_account_map.last_balance_date),
-            -- On a MAPPED row last_sync_at is the import cursor: advancing it
-            -- here, without importing anything, made every page load skip
-            -- whatever the last sync failed to bring in. Unmapped rows have no
-            -- cursor yet, so for them it stays "last seen".
-            last_sync_at = CASE
-              WHEN gnucash_web_simplefin_account_map.gnucash_account_guid IS NULL THEN ${now}
-              ELSE gnucash_web_simplefin_account_map.last_sync_at
-            END
-        `;
-
-        accountMap.set(acc.id, {
-          id: acc.id,
-          name: acc.name,
-          institution: acc.org?.name || stored?.institution || null,
-          last4: stored?.last4 || null,
-          currency: acc.currency,
-          balance: acc.balance,
-          availableBalance: acc['available-balance'] || null,
-          lastBalanceDate: stored?.lastBalanceDate || null,
-          gnucashAccountGuid: stored?.gnucashAccountGuid || null,
-          lastSyncAt: stored?.lastSyncAt || null,
-          isMapped: !!stored?.gnucashAccountGuid,
-          hasHoldings: Array.isArray(acc.holdings) && acc.holdings.length > 0,
-          isInvestment: stored?.isInvestment ?? false,
-          isIgnored: stored?.isIgnored ?? false,
-          isLive: true,
-          isStored: !!stored,
-          liveMissing: false,
-        });
-      }
-
-      const accounts = Array.from(accountMap.values());
+      const live = new Map(accountSet.accounts.map(account => [account.id, account]));
+      const { accounts, feedAt, relinkPairs } = await storedAccounts(connection.id, live);
       return NextResponse.json({
         accounts,
-        // Safe even when one institution is erroring: an outage hides
-        // accounts, it never adds the unmapped same-named twin a pair needs.
-        relinkPairs: findRelinkPairs(accounts),
+        relinkPairs,
         live: true,
-        liveError,
+        feedAt,
+        liveError: simplefinErrors.length > 0 ? simplefinErrors.join('\n') : null,
         simplefinErrors,
         simplefinWarnings,
       });
     } catch (error) {
       const isRevoked = error instanceof SimpleFinAccessRevokedError;
-      const message = isRevoked
-        ? error.message
-        : error instanceof Error
-          ? error.message
-          : 'Failed to fetch accounts from SimpleFin';
+      const message = error instanceof Error ? error.message : 'Failed to fetch accounts from SimpleFin';
 
-      await updateSimpleFinConnectionSyncStatus(
-        connection.id,
-        isRevoked ? 'revoked' : 'failed',
-        message,
-      );
+      // A disabled server never reached the bridge — leave the (copied)
+      // connection's status alone.
+      if (!(error instanceof SimpleFinDisabledError)) {
+        await updateSimpleFinConnectionSyncStatus(connection.id, isRevoked ? 'revoked' : 'failed', message);
+      }
 
+      const { accounts, feedAt, relinkPairs } = await storedAccounts(connection.id);
       return NextResponse.json({
-        accounts: Array.from(accountMap.values()),
+        accounts,
+        relinkPairs,
         live: false,
+        feedAt,
         liveError: message,
         revoked: isRevoked,
       });
     }
   } catch (error) {
-    console.error('Error fetching SimpleFin accounts:', error);
-    return NextResponse.json({ error: 'Failed to fetch accounts' }, { status: 500 });
+    console.error('Error refreshing SimpleFin accounts:', error);
+    return NextResponse.json({ error: 'Failed to refresh accounts' }, { status: 500 });
   }
 }

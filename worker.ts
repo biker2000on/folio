@@ -21,6 +21,11 @@ import {
 import { listRefreshEnabledUserIdsFromStore } from './src/lib/worker/refresh-schedule-store';
 import { TimerRegistry } from './src/lib/worker/timer-registry';
 import { closeWithTimeout } from './src/lib/worker/close-with-timeout';
+import {
+  DEFAULT_SIMPLEFIN_INTERVAL_HOURS,
+  isSimpleFinDisabled,
+  parseSimpleFinIntervalHours,
+} from './src/lib/simplefin-quota';
 
 /**
  * Every timer this process arms and every promise a timer callback produces is
@@ -204,6 +209,14 @@ function recoverSimpleFinSchedules(): Promise<void> {
 async function rebuildSimpleFinSchedules() {
   clearSimpleFinTimers();
 
+  // A server running on a copy of the production database (dev) holds the
+  // same SimpleFin access URL, and every request it makes draws on the same
+  // 24-a-day quota as production. SIMPLEFIN_DISABLED=true arms no timers.
+  if (isSimpleFinDisabled()) {
+    console.log('SimpleFin disabled on this server (SIMPLEFIN_DISABLED) — no sync schedules armed');
+    return;
+  }
+
   try {
     const prisma = createWorkerPrisma();
     try {
@@ -215,8 +228,12 @@ async function rebuildSimpleFinSchedules() {
       for (const conn of connections) {
         const optedIn = await getPreference<string>(conn.user_id, 'simplefin_sync_with_refresh', 'false');
         if (optedIn !== 'true') continue;
-        const intervalRaw = await getPreference<string>(conn.user_id, 'simplefin_sync_interval_hours', '2');
-        const intervalHours = Math.max(1, Math.min(24, parseInt(intervalRaw, 10) || 2));
+        const intervalRaw = await getPreference<string>(
+          conn.user_id,
+          'simplefin_sync_interval_hours',
+          String(DEFAULT_SIMPLEFIN_INTERVAL_HOURS),
+        );
+        const intervalHours = parseSimpleFinIntervalHours(intervalRaw);
         const intervalMs = intervalHours * 60 * 60 * 1000;
 
         const lastSync = conn.last_successful_sync_at?.getTime() ?? 0;

@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { useToast } from '@/contexts/ToastContext';
+import { Tip } from '@/components/ui/Tooltip';
+import { DEFAULT_SIMPLEFIN_INTERVAL_HOURS } from '@/lib/simplefin-quota';
 import { useJobProgress, type JobProgressEventPayload } from '@/contexts/JobProgressContext';
 import { useUserPreferences } from '@/contexts/UserPreferencesContext';
 import { AccountSelector } from '@/components/ui/AccountSelector';
@@ -140,7 +142,7 @@ export default function ConnectionsPage() {
         setSfLastSyncError(data.lastSyncError ?? null);
         setSfRevoked(data.revoked ?? false);
         if (data.connected) {
-          setSfSchedule({ enabled: !!data.syncEnabled, hours: data.syncIntervalHours ?? 2 });
+          setSfSchedule({ enabled: !!data.syncEnabled, hours: data.syncIntervalHours ?? DEFAULT_SIMPLEFIN_INTERVAL_HOURS });
         }
         if (Array.isArray(data.accounts)) {
           // Stored rows only; the live refresh below replaces them once the
@@ -155,14 +157,19 @@ export default function ConnectionsPage() {
     }
   }, []);
 
-  const fetchSimplefinAccounts = useCallback(async () => {
-    setSfLiveLoading(true);
-    setSfLiveError(null);
+  // Plain loads read the accounts stored by the last sync or refresh; only an
+  // explicit "Refresh from bank" (POST) asks the bridge, which allows 24
+  // requests per day for everything — scheduled syncs included.
+  const fetchSimplefinAccounts = useCallback(async (fromBank = false) => {
+    if (fromBank) {
+      setSfLiveLoading(true);
+      setSfLiveError(null);
+    }
     try {
-      const res = await fetch('/api/simplefin/accounts');
+      const res = await fetch('/api/simplefin/accounts', fromBank ? { method: 'POST' } : undefined);
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to refresh SimpleFin accounts');
+        throw new Error(data.error || 'Failed to load SimpleFin accounts');
       }
       const accounts = (data.accounts || []).map((a: SimpleFinAccount) => ({
         ...a,
@@ -172,13 +179,17 @@ export default function ConnectionsPage() {
       setSfRelinkPairs(Array.isArray(data.relinkPairs) ? data.relinkPairs : []);
       setSfLiveReady(data.live === true);
       setSfLiveError(data.liveError ?? null);
-      setSfRevoked(data.revoked ?? false);
+      if (fromBank) setSfRevoked(data.revoked ?? false);
+      if (fromBank && !data.liveError) success('Accounts refreshed from SimpleFin');
     } catch (err) {
-      setSfLiveReady(false);
-      setSfLiveError(err instanceof Error ? err.message : 'Failed to refresh SimpleFin accounts');
+      if (fromBank) {
+        setSfLiveReady(false);
+        setSfLiveError(err instanceof Error ? err.message : 'Failed to refresh SimpleFin accounts');
+      }
     } finally {
-      setSfLiveLoading(false);
+      if (fromBank) setSfLiveLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -307,6 +318,7 @@ export default function ConnectionsPage() {
         setSfSyncStatus('queued');
       }
       await fetchSimplefinStatus();
+      if (data.direct) await fetchSimplefinAccounts();
     } catch {
       showError('Failed to sync');
     } finally {
@@ -345,9 +357,11 @@ export default function ConnectionsPage() {
           warnings: [],
         });
         void fetchSimplefinStatus();
+        void fetchSimplefinAccounts();
       } else if (event.status === 'failed') {
         setSfLiveProgress(null);
         void fetchSimplefinStatus();
+        void fetchSimplefinAccounts();
       }
     };
     window.addEventListener('job-progress', onProgress);
@@ -577,6 +591,15 @@ export default function ConnectionsPage() {
                 {sfSyncing && <span className="w-3 h-3 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" aria-hidden />}
                 {sfSyncing ? 'Syncing…' : 'Sync now'}
               </button>
+              <Tip content="Fetch the account list and balances from SimpleFin now. Uses one of the 24 requests SimpleFin allows per day.">
+                <button
+                  onClick={() => fetchSimplefinAccounts(true)}
+                  disabled={sfLiveLoading}
+                  className={`${SECONDARY_BUTTON} disabled:opacity-50`}
+                >
+                  {sfLiveLoading ? 'Refreshing…' : 'Refresh from bank'}
+                </button>
+              </Tip>
               <a href={SIMPLEFIN_BRIDGE_URL} target="_blank" rel="noopener noreferrer" className={SECONDARY_BUTTON}>
                 Manage on SimpleFin
               </a>
@@ -775,8 +798,8 @@ export default function ConnectionsPage() {
               {sfLiveLoading
                 ? 'Loading accounts from SimpleFin…'
                 : sfLiveError
-                  ? 'SimpleFin could not be reached and no accounts are stored yet. Try Sync now in a few minutes.'
-                  : <>No bank accounts yet. Connect banks on <a href={SIMPLEFIN_BRIDGE_URL} target="_blank" rel="noopener noreferrer" className="text-primary hover:text-primary-hover underline-offset-2 hover:underline">SimpleFin Bridge</a>, then refresh this page.</>}
+                  ? 'SimpleFin could not be reached and no accounts are stored yet. Try Refresh from bank in a few minutes.'
+                  : <>No bank accounts yet. Connect banks on <a href={SIMPLEFIN_BRIDGE_URL} target="_blank" rel="noopener noreferrer" className="text-primary hover:text-primary-hover underline-offset-2 hover:underline">SimpleFin Bridge</a>, then press Refresh from bank.</>}
             </p>
           ) : groups.length === 0 ? (
             <p className="px-6 pb-6 text-sm text-foreground-secondary">

@@ -29,6 +29,7 @@ import { calculateCalendarAge } from '@/lib/age';
 import type { BusinessActivity } from '@/lib/services/entity.service';
 import { FILING_STATUSES, FILING_STATUS_LABELS, type FilingStatus } from '@/lib/tax/types';
 import { Tip } from '@/components/ui/Tooltip';
+import { DEFAULT_SIMPLEFIN_INTERVAL_HOURS, SIMPLEFIN_INTERVAL_OPTIONS } from '@/lib/simplefin-quota';
 
 // Group heading style for the settings page — matches the sidebar section labels.
 const SETTINGS_GROUP_HEADING = 'text-[11px] font-semibold uppercase tracking-wider text-foreground-muted px-1';
@@ -199,7 +200,7 @@ export default function SettingsPage() {
   const [indexCoverage, setIndexCoverage] = useState<IndexCoverage | null>(null);
   const [taxRateInput, setTaxRateInput] = useState('');
   const [simplefinSyncEnabled, setSimplefinSyncEnabled] = useState(false);
-  const [simplefinSyncInterval, setSimplefinSyncInterval] = useState(2);
+  const [simplefinSyncInterval, setSimplefinSyncInterval] = useState(DEFAULT_SIMPLEFIN_INTERVAL_HOURS);
   const [simplefinConnected, setSimplefinConnected] = useState(false);
   const [savingBalance, setSavingBalance] = useState(false);
   const [entity, setEntity] = useState<EntityProfileForm | null>(null);
@@ -280,7 +281,7 @@ export default function SettingsPage() {
         const data = await res.json();
         setSimplefinConnected(data.connected);
         setSimplefinSyncEnabled(data.syncEnabled ?? false);
-        setSimplefinSyncInterval(data.syncIntervalHours ?? 2);
+        setSimplefinSyncInterval(data.syncIntervalHours ?? DEFAULT_SIMPLEFIN_INTERVAL_HOURS);
       }
     } catch {
       // Silently fail
@@ -401,7 +402,7 @@ export default function SettingsPage() {
       });
       setSimplefinSyncInterval(hours);
       void fetch('/api/simplefin/schedule', { method: 'POST' }).catch(() => {});
-      success(`SimpleFin sync interval set to every ${hours === 24 ? '24 hours' : `${hours} hour${hours === 1 ? '' : 's'}`}`);
+      success(`SimpleFin sync interval set to every ${hours} hours`);
     } catch {
       showError('Failed to update SimpleFin sync interval');
     }
@@ -1311,16 +1312,17 @@ export default function SettingsPage() {
                     onChange={(e) => updateSimplefinInterval(Number(e.target.value))}
                     className="w-full bg-input-bg border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary/50"
                   >
-                    {[1, 2, 4, 6, 12, 24].map((h) => (
+                    {SIMPLEFIN_INTERVAL_OPTIONS.map((h) => (
                       <option key={h} value={h}>
-                        {h === 24 ? 'Once a day' : `Every ${h} hour${h === 1 ? '' : 's'}`}
+                        {h === 24 ? 'Once a day' : `Every ${h} hours`}
                       </option>
                     ))}
                   </select>
                   <p className="text-xs text-foreground-muted">
-                    Bank transactions often post hours after they happen — a shorter interval
-                    catches them the same day. Syncs run in the background and only notify
-                    on failure.
+                    SimpleFin allows 24 requests a day and refreshes from your banks about
+                    once a day, so more frequent syncs only use up requests. Each sync, Sync
+                    now and Refresh from bank uses one. Syncs run in the background and only
+                    notify on failure.
                   </p>
                 </div>
               )}

@@ -3,8 +3,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { dateChunks } from '../simplefin.service';
 import {
   MAX_RETRY_LOOKBACK_DAYS,
+  SYNC_MAX_WINDOW_DAYS,
   computeSafeSyncCursor,
   computeSyncStart,
   describeFailedImports,
@@ -15,13 +17,13 @@ const NOW = new Date('2026-07-22T12:00:00.000Z');
 const DAY = 24 * 60 * 60 * 1000;
 
 describe('computeSyncStart', () => {
-  it('bootstraps 90 days back when no accounts are mapped', () => {
-    expect(computeSyncStart([], NOW).getTime()).toBe(NOW.getTime() - 90 * DAY);
+  it('bootstraps SYNC_MAX_WINDOW_DAYS back when no accounts are mapped', () => {
+    expect(computeSyncStart([], NOW).getTime()).toBe(NOW.getTime() - SYNC_MAX_WINDOW_DAYS * DAY);
   });
 
-  it('bootstraps 90 days back when any account has never synced', () => {
+  it('bootstraps SYNC_MAX_WINDOW_DAYS back when any account has never synced', () => {
     const recent = new Date(NOW.getTime() - 2 * 60 * 60 * 1000);
-    expect(computeSyncStart([recent, null], NOW).getTime()).toBe(NOW.getTime() - 90 * DAY);
+    expect(computeSyncStart([recent, null], NOW).getTime()).toBe(NOW.getTime() - SYNC_MAX_WINDOW_DAYS * DAY);
   });
 
   it('uses the oldest last-sync minus a 7-day overlap for freshly synced accounts', () => {
@@ -29,14 +31,25 @@ describe('computeSyncStart', () => {
     const yesterday = new Date(NOW.getTime() - 1 * DAY);
     const start = computeSyncStart([twoHoursAgo, yesterday], NOW);
     expect(start.getTime()).toBe(yesterday.getTime() - 7 * DAY);
-    // Well inside SimpleFin's 45-day recommended range.
-    expect(NOW.getTime() - start.getTime()).toBeLessThan(45 * DAY);
   });
 
-  it('widens naturally for stale accounts (old last-sync drives the window)', () => {
-    const staleSync = new Date(NOW.getTime() - 120 * DAY);
-    const start = computeSyncStart([staleSync], NOW);
-    expect(start.getTime()).toBe(staleSync.getTime() - 7 * DAY);
+  it('clamps a stale cursor to SYNC_MAX_WINDOW_DAYS instead of widening the window', () => {
+    // An account the feed never returns transactions for (prod: a mortgage
+    // stuck since May) used to drag every sync back 195 days = 4 requests.
+    const staleSync = new Date(NOW.getTime() - 188 * DAY);
+    const freshSync = new Date(NOW.getTime() - 2 * 60 * 60 * 1000);
+    const start = computeSyncStart([freshSync, staleSync], NOW);
+    expect(start.getTime()).toBe(NOW.getTime() - SYNC_MAX_WINDOW_DAYS * DAY);
+  });
+
+  it('keeps every sync to exactly one bridge request, however stale the cursors', () => {
+    // SimpleFin allows 24 requests a day; fetchAccountsChunked makes one per
+    // 60-day chunk, so the window must always fit in one chunk.
+    for (const cursors of [[], [null], [new Date(NOW.getTime() - 400 * DAY)], [NOW]]) {
+      const start = computeSyncStart(cursors as Array<Date | null>, NOW);
+      expect(Array.from(dateChunks(start, NOW))).toHaveLength(1);
+    }
+    expect(SYNC_MAX_WINDOW_DAYS).toBeLessThan(60);
   });
 });
 

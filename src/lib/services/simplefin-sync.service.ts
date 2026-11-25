@@ -15,7 +15,8 @@ import {
   type MaybeRawClient,
 } from '@/lib/book-lock';
 import { acquireSoleAccountNameLock } from '@/lib/account-lock-order';
-import { decryptAccessUrl, fetchAccountsChunked, SimpleFinTransaction, SimpleFinAccessRevokedError, SimpleFinHolding } from './simplefin.service';
+import { decryptAccessUrl, fetchAccountsChunked, SimpleFinTransaction, SimpleFinAccessRevokedError, SimpleFinDisabledError, SimpleFinHolding, type SimpleFinAccount } from './simplefin.service';
+import { isSimpleFinDisabled } from '@/lib/simplefin-quota';
 import { toNumDenom } from '@/lib/validation';
 import { buildSymbolSet, parseSymbol } from './simplefin-symbol-parser';
 import { applyRules } from './categorization.service';
@@ -132,8 +133,22 @@ export function isNonFatalSimpleFinWarning(message: string): boolean {
 
 /** Trailing overlap re-fetched on every sync so late-posting transactions land. */
 export const SYNC_OVERLAP_DAYS = 7;
-/** Bootstrap window for accounts that have never synced. */
-const SYNC_BOOTSTRAP_DAYS = 90;
+/**
+ * The widest window a sync ever requests — SimpleFin's recommended maximum.
+ *
+ * It must stay under the 60-day chunk size in `fetchAccountsChunked`, so a
+ * sync is always exactly ONE request to the bridge. The bridge allows 24
+ * requests per access token per day; before this cap, the window ran from the
+ * stalest account's cursor, and an account the feed never brings transactions
+ * for (a mortgage, a closed card, an account dropped from the feed) never
+ * advances its cursor. One such account stuck since May turned every sync into
+ * 4 requests (195 days / 60), and the 2-hourly schedule alone into 48 a day.
+ *
+ * Also the bootstrap for an account that has never synced — an account mapped
+ * but absent from the feed stays "never synced", so a wider bootstrap would
+ * cost extra requests on every run.
+ */
+export const SYNC_MAX_WINDOW_DAYS = 45;
 /**
  * Hard floor on how far back a FAILED transaction may hold an account's sync
  * cursor.
@@ -144,7 +159,7 @@ const SYNC_BOOTSTRAP_DAYS = 90;
  * would otherwise pin its account's cursor forever, and because
  * `computeSyncStart` takes the MIN across accounts, that one row widens the
  * fetch window for EVERY account on the connection, growing without limit at
- * the worker's 2-hourly cadence.
+ * every scheduled sync.
  *
  * 30 days, because:
  *  - 30 + SYNC_OVERLAP_DAYS = 37 days, still inside SimpleFin's 45-day
@@ -162,26 +177,27 @@ export const MAX_RETRY_LOOKBACK_DAYS = 30;
 /**
  * Start of the SimpleFin fetch window. Pure — exported for tests.
  *
- * - Any account never synced → 90 days back (bootstrap).
+ * - Any account never synced → SYNC_MAX_WINDOW_DAYS back (bootstrap).
  * - Otherwise → the OLDEST per-account last-sync minus a 7-day overlap
- *   (dedup by SimpleFin transaction id makes the overlap safe, and stale
- *   accounts naturally widen the window).
- *
- * Previously every sync fetched ≥90 days, tripping SimpleFin's
- * "exceeds recommended range of 45 days" warning on each run — untenable at
- * the new 2-hourly cadence, and fragile if the bridge starts capping.
+ *   (dedup by SimpleFin transaction id makes the overlap safe).
+ * - Never further back than SYNC_MAX_WINDOW_DAYS, so a stale cursor costs a
+ *   wider single request instead of one extra request per 60 days. A cursor
+ *   is deliberately NOT advanced for an account the feed returns empty — a
+ *   bank outage that later backfills older rows is still caught within the
+ *   window — so this clamp is what bounds such accounts.
  */
 export function computeSyncStart(
   lastSyncs: Array<Date | null>,
   now: Date,
 ): Date {
-  const bootstrap = new Date(now.getTime() - SYNC_BOOTSTRAP_DAYS * 24 * 60 * 60 * 1000);
-  if (lastSyncs.length === 0 || lastSyncs.some(d => !d)) return bootstrap;
+  const floor = new Date(now.getTime() - SYNC_MAX_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  if (lastSyncs.length === 0 || lastSyncs.some(d => !d)) return floor;
   let earliest = lastSyncs[0] as Date;
   for (const d of lastSyncs) {
     if (d && d < earliest) earliest = d;
   }
-  return new Date(earliest.getTime() - SYNC_OVERLAP_DAYS * 24 * 60 * 60 * 1000);
+  const start = new Date(earliest.getTime() - SYNC_OVERLAP_DAYS * 24 * 60 * 60 * 1000);
+  return start > floor ? start : floor;
 }
 
 /**
@@ -252,6 +268,71 @@ function recordFailedImport(
 // Shared with @/lib/notifications, which raises the same connection-level
 // failure from the notifications poll and must land on the identical key.
 export { simpleFinErrorFingerprint };
+
+/**
+ * Record what the bridge just returned for every account — mapped or not — on
+ * the connection's stored account rows: name, institution and balance, plus
+ * new rows for accounts the bridge has started returning.
+ *
+ * Called from each sync (which already fetched every account) and from the
+ * Connections page's explicit "Refresh from bank". The page itself renders
+ * these stored rows and never contacts the bridge on load: each page view used
+ * to cost one of the access token's 24 daily requests.
+ *
+ * On a MAPPED row `last_sync_at` is the import cursor, which only the import
+ * loop may move — advancing it here, without importing anything, made the
+ * next sync skip whatever the last one failed to bring in. Unmapped rows have
+ * no cursor yet, so for them it records "last seen".
+ */
+export async function recordSimpleFinFeedAccounts(
+  connectionId: number,
+  accounts: SimpleFinAccount[],
+  now: Date = new Date(),
+): Promise<void> {
+  for (const acc of accounts) {
+    const parsedBalance = acc.balance === undefined ? null : Number.parseFloat(acc.balance);
+    const balance = parsedBalance === null || Number.isNaN(parsedBalance) ? null : parsedBalance;
+    const balanceDate = balance === null ? null : now;
+    const hasHoldings = Array.isArray(acc.holdings) && acc.holdings.length > 0;
+
+    await prisma.$executeRaw`
+      INSERT INTO gnucash_web_simplefin_account_map
+        (
+          connection_id,
+          simplefin_account_id,
+          simplefin_account_name,
+          simplefin_institution,
+          gnucash_account_guid,
+          is_investment,
+          last_balance,
+          last_balance_date,
+          last_sync_at
+        )
+      VALUES
+        (
+          ${connectionId},
+          ${acc.id},
+          ${acc.name || null},
+          ${acc.org?.name || null},
+          ${null},
+          ${hasHoldings},
+          ${balance},
+          ${balanceDate},
+          ${now}
+        )
+      ON CONFLICT (connection_id, simplefin_account_id)
+      DO UPDATE SET
+        simplefin_account_name = COALESCE(${acc.name || null}, gnucash_web_simplefin_account_map.simplefin_account_name),
+        simplefin_institution = COALESCE(${acc.org?.name || null}, gnucash_web_simplefin_account_map.simplefin_institution),
+        last_balance = COALESCE(${balance}, gnucash_web_simplefin_account_map.last_balance),
+        last_balance_date = COALESCE(${balanceDate}, gnucash_web_simplefin_account_map.last_balance_date),
+        last_sync_at = CASE
+          WHEN gnucash_web_simplefin_account_map.gnucash_account_guid IS NULL THEN ${now}
+          ELSE gnucash_web_simplefin_account_map.last_sync_at
+        END
+    `;
+  }
+}
 
 export async function updateSimpleFinConnectionSyncStatus(
   connectionId: number,
@@ -601,6 +682,16 @@ export async function runSimpleFinSync(
     warnings: [],
   };
 
+  // A server sharing production's access URL (a dev copy of the database)
+  // must not spend production's request quota. Return before touching the
+  // connection's status so the copied row is left as it was.
+  if (isSimpleFinDisabled()) {
+    result.status = 'failed';
+    result.fatal = true;
+    result.errors.push({ account: 'connection', error: new SimpleFinDisabledError().message });
+    return result;
+  }
+
   // Get connection
   const connection = await prisma.gnucash_web_simplefin_connections.findFirst({
     // The service is invoked by jobs as well as HTTP handlers. Bind the
@@ -679,12 +770,13 @@ export async function runSimpleFinSync(
 
   const allMappedAccountGuids = mappedAccounts.map(a => a.gnucash_account_guid);
 
+  // One `now` for both ends, so the window is exactly what computeSyncStart
+  // bounded and can never tip into a second 60-day chunk.
+  const endDate = new Date();
   const earliestSync = computeSyncStart(
     mappedAccounts.map(a => a.last_sync_at),
-    new Date(),
+    endDate,
   );
-
-  const endDate = new Date();
 
   const emitProgress = (p: SyncProgressUpdate) => {
     try {
@@ -728,6 +820,15 @@ export async function runSimpleFinSync(
     } else {
       result.errors.push({ account: 'all', error });
     }
+  }
+
+  // Keep the Connections page's stored account list current from the fetch
+  // this sync already paid for — the page no longer asks the bridge on load.
+  // Best-effort: a failure here must never cost the import.
+  try {
+    await recordSimpleFinFeedAccounts(connectionId, accountSet.accounts, endDate);
+  } catch (err) {
+    console.error('Failed to record SimpleFin feed accounts:', err);
   }
 
   // Build a map of SimpleFin account id -> account data

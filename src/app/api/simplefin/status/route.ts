@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
 import prisma from '@/lib/prisma';
 import { getPreference } from '@/lib/user-preferences';
+import { DEFAULT_SIMPLEFIN_INTERVAL_HOURS, parseSimpleFinIntervalHours } from '@/lib/simplefin-quota';
 
 // GET /api/simplefin/status -- connection status + last sync
 export async function GET() {
@@ -79,8 +80,8 @@ export async function GET() {
 
     // Check if SimpleFin sync with refresh is enabled (user preference)
     const syncWithRefresh = await getPreference<string>(user.id, 'simplefin_sync_with_refresh', 'false');
-    const syncIntervalRaw = await getPreference<string>(user.id, 'simplefin_sync_interval_hours', '2');
-    const syncIntervalHours = Math.max(1, Math.min(24, parseInt(syncIntervalRaw, 10) || 2));
+    const syncIntervalRaw = await getPreference<string>(user.id, 'simplefin_sync_interval_hours', String(DEFAULT_SIMPLEFIN_INTERVAL_HOURS));
+    const syncIntervalHours = parseSimpleFinIntervalHours(syncIntervalRaw);
 
     return NextResponse.json({
       connected: true,
