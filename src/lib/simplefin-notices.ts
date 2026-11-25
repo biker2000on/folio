@@ -21,6 +21,15 @@ export interface SimpleFinIssueSummary {
 
 const INSTITUTION_NOTICE = /^Connection to (.+?) may need attention\b/i;
 
+/**
+ * Is this the bridge saying one institution's login is being repaired on its
+ * side? Other banks keep syncing, so it is a warning about that bank, not a
+ * failed sync.
+ */
+export function isSimpleFinInstitutionNotice(message: string): boolean {
+  return INSTITUTION_NOTICE.test(message.replace(/^\s*all:\s*/i, '').trim());
+}
+
 export function summarizeSimpleFinIssues(text: string | null | undefined): SimpleFinIssueSummary {
   const raw: string[] = [];
   const institutions: string[] = [];

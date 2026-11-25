@@ -18,7 +18,7 @@ import { formatAccountPath } from '@/lib/account-utils';
 import { formatDateForDisplay } from '@/lib/date-format';
 import { amountToneClass, formatCurrency } from '@/lib/format';
 import type { RelinkPair } from '@/lib/simplefin-relink';
-import { simpleFinLinkState, summarizeSimpleFinIssues, type SimpleFinLinkState } from '@/lib/simplefin-notices';
+import { isSimpleFinInstitutionNotice, simpleFinLinkState, summarizeSimpleFinIssues, type SimpleFinLinkState } from '@/lib/simplefin-notices';
 
 const SIMPLEFIN_BRIDGE_URL = 'https://beta-bridge.simplefin.org';
 
@@ -123,6 +123,9 @@ export default function ConnectionsPage() {
   // Whether the last refresh reached the bridge. Until it has, "not returned"
   // cannot be told apart from "not fetched yet", so no row is called stale.
   const [sfLiveReady, setSfLiveReady] = useState(false);
+  // Set once "Refresh from bank" succeeds: its bank notices then supersede
+  // the ones the last sync stored.
+  const [sfBankRefreshed, setSfBankRefreshed] = useState(false);
   const [sfLiveError, setSfLiveError] = useState<string | null>(null);
   const [sfRelinkPairs, setSfRelinkPairs] = useState<RelinkPair[]>([]);
   const [sfRelinkSkip, setSfRelinkSkip] = useState<Set<string>>(new Set());
@@ -179,7 +182,10 @@ export default function ConnectionsPage() {
       setSfRelinkPairs(Array.isArray(data.relinkPairs) ? data.relinkPairs : []);
       setSfLiveReady(data.live === true);
       setSfLiveError(data.liveError ?? null);
-      if (fromBank) setSfRevoked(data.revoked ?? false);
+      if (fromBank) {
+        setSfRevoked(data.revoked ?? false);
+        setSfBankRefreshed(data.live === true);
+      }
       if (fromBank && !data.liveError) success('Accounts refreshed from SimpleFin');
     } catch (err) {
       if (fromBank) {
@@ -443,14 +449,17 @@ export default function ConnectionsPage() {
   }, [sfAccounts]);
 
   // Bank-side notices describe the bridge right now, so a successful refresh
-  // supersedes the ones stored by the last sync; a failed sync's own errors
-  // stand until the next sync.
+  // supersedes the ones stored by the last sync. A successful sync still
+  // stores its institution notices (a bank being repaired at SimpleFin does
+  // not fail the sync); a failed sync's own errors stand until the next sync.
   const liveIssues = summarizeSimpleFinIssues(sfLiveError);
-  const syncIssues = summarizeSimpleFinIssues(sfSyncStatus === 'failed' ? sfLastSyncError : null);
+  const syncIssues = summarizeSimpleFinIssues(sfSyncStatus === 'revoked' ? null : sfLastSyncError);
+  const syncOther = sfSyncStatus === 'failed' ? syncIssues.other : [];
+  const institutionSource = sfBankRefreshed ? liveIssues : syncIssues;
   const issues = {
-    institutions: sfLiveReady ? liveIssues.institutions : syncIssues.institutions,
-    other: [...new Set([...liveIssues.other, ...syncIssues.other])],
-    raw: [...new Set([...liveIssues.raw, ...syncIssues.raw])],
+    institutions: institutionSource.institutions,
+    other: [...new Set([...liveIssues.other, ...syncOther])],
+    raw: [...new Set([...institutionSource.raw.filter(isSimpleFinInstitutionNotice), ...liveIssues.other, ...syncOther])],
   };
   const statusDot = sfRevoked || issues.other.length > 0
     ? 'bg-error'

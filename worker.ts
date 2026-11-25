@@ -222,7 +222,7 @@ async function rebuildSimpleFinSchedules() {
     try {
       const connections = await prisma.gnucash_web_simplefin_connections.findMany({
         where: { sync_enabled: true },
-        select: { id: true, book_guid: true, user_id: true, last_successful_sync_at: true },
+        select: { id: true, book_guid: true, user_id: true, last_sync_at: true, last_successful_sync_at: true },
       });
       const { getPreference } = await import('./src/lib/user-preferences');
       for (const conn of connections) {
@@ -236,7 +236,13 @@ async function rebuildSimpleFinSchedules() {
         const intervalHours = parseSimpleFinIntervalHours(intervalRaw);
         const intervalMs = intervalHours * 60 * 60 * 1000;
 
-        const lastSync = conn.last_successful_sync_at?.getTime() ?? 0;
+        // Phase from the last finished attempt, not the last success: while
+        // syncs kept failing, phasing from an old success made every deploy
+        // or restart sync at once.
+        const lastSync = Math.max(
+          conn.last_sync_at?.getTime() ?? 0,
+          conn.last_successful_sync_at?.getTime() ?? 0,
+        );
         const initialDelay = Math.max(60_000, Math.min(intervalMs, lastSync + intervalMs - Date.now()));
 
         const entry: SimpleFinTimerEntry = { initial: null, interval: null };

@@ -9,7 +9,7 @@ import {
   type SimpleFinAccount,
 } from '@/lib/services/simplefin.service';
 import {
-  isNonFatalSimpleFinWarning,
+  isSimpleFinDateRangeWarning,
   recordSimpleFinFeedAccounts,
   updateSimpleFinConnectionSyncStatus,
 } from '@/lib/services/simplefin-sync.service';
@@ -148,9 +148,10 @@ export async function POST() {
       const accessUrl = decryptAccessUrl(connection.access_url_encrypted);
       // No date range: accounts and balances only — one bridge request.
       const accountSet = await fetchAccounts(accessUrl);
-      const simplefinWarnings = accountSet.errors.filter(isNonFatalSimpleFinWarning);
-      // The bridge repeats a connection's notice once per affected account.
-      const simplefinErrors = [...new Set(accountSet.errors.filter(error => !isNonFatalSimpleFinWarning(error)))];
+      const simplefinWarnings = accountSet.errors.filter(isSimpleFinDateRangeWarning);
+      // Institution notices stay in liveError: the page names the affected
+      // banks from it. The bridge repeats a notice once per affected account.
+      const simplefinErrors = [...new Set(accountSet.errors.filter(error => !isSimpleFinDateRangeWarning(error)))];
 
       await recordSimpleFinFeedAccounts(connection.id, accountSet.accounts);
 

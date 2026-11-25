@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { simpleFinLinkState, summarizeSimpleFinIssues } from '../simplefin-notices';
+import { isSimpleFinInstitutionNotice, simpleFinLinkState, summarizeSimpleFinIssues } from '../simplefin-notices';
 
 describe('summarizeSimpleFinIssues', () => {
   const upgrading = (bank: string) =>
@@ -31,5 +31,18 @@ describe('simpleFinLinkState', () => {
     expect(simpleFinLinkState({ isMapped: true, isLive: false })).toBe('stale');
     expect(simpleFinLinkState({ isMapped: false, isLive: true })).toBe('unlinked');
     expect(simpleFinLinkState({ isMapped: false, isLive: true, isIgnored: true })).toBe('ignored');
+  });
+});
+
+describe('isSimpleFinInstitutionNotice', () => {
+  it('recognises the bridge repair notice, with or without the stored prefix', () => {
+    const notice = 'Connection to Chase may need attention. We are upgrading this connection.';
+    expect(isSimpleFinInstitutionNotice(notice)).toBe(true);
+    expect(isSimpleFinInstitutionNotice(`all: ${notice}`)).toBe(true);
+  });
+
+  it('does not match other bridge errors', () => {
+    expect(isSimpleFinInstitutionNotice('Access has been revoked')).toBe(false);
+    expect(isSimpleFinInstitutionNotice('Failed to fetch from SimpleFin: TimeoutError')).toBe(false);
   });
 });

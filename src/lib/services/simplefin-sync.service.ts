@@ -22,6 +22,7 @@ import { buildSymbolSet, parseSymbol } from './simplefin-symbol-parser';
 import { applyRules } from './categorization.service';
 import { createNotification, ensureNotificationsTable } from '@/lib/notifications';
 import { simpleFinErrorFingerprint } from '@/lib/simplefin-error-fingerprint';
+import { isSimpleFinInstitutionNotice } from '@/lib/simplefin-notices';
 import { cacheInvalidateFrom } from '@/lib/cache';
 import { publishDataChange } from '@/lib/data-events';
 import { scanForAnomalies } from '@/lib/anomaly-detection';
@@ -127,8 +128,21 @@ interface SyncSimpleFinOptions {
   onProgress?: (p: SyncProgressUpdate) => void | Promise<void>;
 }
 
-export function isNonFatalSimpleFinWarning(message: string): boolean {
+/** SimpleFin's note that a request spanned more than its recommended 45 days. */
+export function isSimpleFinDateRangeWarning(message: string): boolean {
   return /requested date range exceeds recommended range/i.test(message);
+}
+
+/**
+ * Bridge messages that do not make a sync fail: the date-range note, and an
+ * institution notice ("Connection to X may need attention. We are upgrading
+ * this connection.") — the other banks still import, and nothing on this side
+ * can fix it. Counting the notice as an error marked every sync failed for a
+ * month (last success 2026-10-27) while transactions kept importing, and kept
+ * the worker's schedule phase pinned so every restart synced immediately.
+ */
+export function isNonFatalSimpleFinWarning(message: string): boolean {
+  return isSimpleFinDateRangeWarning(message) || isSimpleFinInstitutionNotice(message);
 }
 
 /** Trailing overlap re-fetched on every sync so late-posting transactions land. */
@@ -334,6 +348,19 @@ export async function recordSimpleFinFeedAccounts(
   }
 }
 
+/**
+ * Record a sync's outcome on the connection.
+ *
+ * `error` on a SUCCESS is the bridge's warnings (institution notices) — kept
+ * so the Connections page can still name the bank that needs attention; the
+ * notifications poll only raises `failed`/`revoked` rows, so it never nags
+ * about them.
+ *
+ * `last_sync_at` is the last finished attempt, success or not. The worker
+ * phases its schedule from it, so a run of failures does not make every
+ * restart sync immediately (each run spends one of the bridge's 24 daily
+ * requests).
+ */
 export async function updateSimpleFinConnectionSyncStatus(
   connectionId: number,
   status: SimpleFinSyncStatus,
@@ -348,8 +375,21 @@ export async function updateSimpleFinConnectionSyncStatus(
         last_sync_at = ${now},
         last_successful_sync_at = ${now},
         last_sync_status = 'success',
-        last_sync_error = NULL,
-        last_sync_error_at = NULL
+        last_sync_error = ${error || null},
+        last_sync_error_at = ${error ? now : null}
+      WHERE id = ${connectionId}
+    `;
+    return;
+  }
+
+  if (status === 'failed' || status === 'revoked') {
+    await prisma.$executeRaw`
+      UPDATE gnucash_web_simplefin_connections
+      SET
+        last_sync_at = ${now},
+        last_sync_status = ${status},
+        last_sync_error = ${error || null},
+        last_sync_error_at = ${error ? now : null}
       WHERE id = ${connectionId}
     `;
     return;
@@ -1253,7 +1293,14 @@ async function finalizeSimpleFinSync(
       [...failedImports.values()],
     );
   } else {
-    await updateSimpleFinConnectionSyncStatus(connectionId, 'success');
+    // Same `account: message` lines as errors, so the page's notice parser
+    // reads both.
+    const notices = [...new Set(
+      result.warnings
+        .map(w => w.warning)
+        .filter(isSimpleFinInstitutionNotice),
+    )].map(message => `all: ${message}`);
+    await updateSimpleFinConnectionSyncStatus(connectionId, 'success', notices.length > 0 ? notices.join('\n') : null);
     if (options.notifyOnSuccess) {
       await createSimpleFinNotification(connection.user_id, bookGuid, connectionId, result, options);
     }

@@ -27,7 +27,7 @@ vi.mock('@/lib/services/simplefin.service', async (importActual) => ({
   fetchAccounts: (...args: unknown[]) => fetchAccountsMock(...args),
 }));
 vi.mock('@/lib/services/simplefin-sync.service', () => ({
-  isNonFatalSimpleFinWarning: () => false,
+  isSimpleFinDateRangeWarning: () => false,
   recordSimpleFinFeedAccounts: (...args: unknown[]) => recordMock(...args),
   updateSimpleFinConnectionSyncStatus: (...args: unknown[]) => statusMock(...args),
 }));

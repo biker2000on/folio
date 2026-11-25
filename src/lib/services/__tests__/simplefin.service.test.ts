@@ -73,6 +73,12 @@ describe('isNonFatalSimpleFinWarning', () => {
     )).toBe(true);
   });
 
+  it('treats a bank being repaired at SimpleFin as a warning, not a failed sync', () => {
+    expect(isNonFatalSimpleFinWarning(
+      'Connection to Synchrony - Credit Cards may need attention. We are upgrading this connection. Please wait...',
+    )).toBe(true);
+  });
+
   it('does not hide unrelated SimpleFin errors', () => {
     expect(isNonFatalSimpleFinWarning('Access has been revoked')).toBe(false);
   });

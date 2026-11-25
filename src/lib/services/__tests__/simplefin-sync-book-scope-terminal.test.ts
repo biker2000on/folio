@@ -69,6 +69,7 @@ describe('SimpleFin terminal status after book-scope mapping rejection', () => {
     }]);
     expect(mocks.executeRaw).toHaveBeenCalledWith(
       expect.any(Array),
+      expect.any(Date),
       'failed',
       'Checking: Mapped GnuCash account not found in this book',
       expect.any(Date),
@@ -80,5 +81,60 @@ describe('SimpleFin terminal status after book-scope mapping rejection', () => {
       severity: 'warning',
       type: 'simplefin_sync',
     }));
+  });
+});
+
+describe('SimpleFin institution notices do not fail a sync', () => {
+  const NOTICE = 'Connection to Synchrony - Credit Cards may need attention. We are upgrading this connection. Please wait...';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getAccountGuidsForBook.mockResolvedValue([IN_BOOK]);
+    mocks.decryptAccessUrl.mockReturnValue('https://user:pass@bridge.example/simplefin');
+    mocks.ensureNotificationsTable.mockResolvedValue(undefined);
+    mocks.queryRaw.mockResolvedValue([]);
+    mocks.executeRaw.mockResolvedValue(1);
+    Object.assign(mocks.prisma, {
+      gnucash_web_simplefin_connections: {
+        findFirst: vi.fn(async () => ({ id: 7, user_id: 42, access_url_encrypted: 'ciphertext', last_sync_at: null })),
+      },
+      gnucash_web_simplefin_account_map: {
+        findMany: vi.fn(async () => [{
+          id: 11,
+          simplefin_account_id: 'sf-checking',
+          simplefin_account_name: 'Checking',
+          gnucash_account_guid: IN_BOOK,
+          last_sync_at: new Date(),
+          is_investment: false,
+        }]),
+        update: vi.fn(async () => ({})),
+      },
+      gnucash_web_transaction_meta: { findMany: vi.fn(async () => []) },
+      book_lock: { findFirst: vi.fn(async () => null) },
+      $executeRaw: mocks.executeRaw,
+      $queryRaw: mocks.queryRaw,
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      // The bridge repeats the notice once per affected account.
+      json: async () => ({
+        errors: [NOTICE, NOTICE],
+        accounts: [{ id: 'sf-checking', name: 'Checking', currency: 'USD', balance: '10.00', transactions: [] }],
+      }),
+    } as Response);
+  });
+
+  it('succeeds with the notice as a warning, and keeps it on the connection for the page', async () => {
+    const result = await runSimpleFinSync(7, BOOK, { source: 'scheduled' });
+
+    expect(result.errors).toEqual([]);
+    expect(result.status).toBe('success');
+    expect(result.warnings).toEqual([{ account: 'all', warning: NOTICE }]);
+
+    const successCall = mocks.executeRaw.mock.calls.find(call => (call[0] as string[]).join('').includes("last_sync_status = 'success'"));
+    expect(successCall).toBeDefined();
+    expect(successCall).toContain(`all: ${NOTICE}`);
+    expect(mocks.createNotification).not.toHaveBeenCalled();
   });
 });
